@@ -1,0 +1,188 @@
+/* Inter font loading */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+body {
+    font-family: 'Inter', sans-serif;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* Custom Tab Switching Display Properties */
+.tab-panel {
+    display: none;
+    animation: fadeInAnimation 0.25s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.hidden-panel {
+    display: none !important;
+}
+
+.active-panel {
+    display: block !important;
+}
+
+.tab-active {
+    border-bottom: 2px solid #2563eb !important;
+    color: #2563eb !important;
+    font-weight: 700 !important;
+}
+
+/* Dynamic Grid Matrix Blueprint styling */
+.dynamic-grid-lines {
+    background-size: 4% 4%;
+    background-image: linear-gradient(to right, rgba(148, 163, 184, 0.15) 1px, transparent 1px),
+                      linear-gradient(to bottom, rgba(148, 163, 184, 0.15) 1px, transparent 1px);
+}
+
+/* Layout background image layer behind grid */
+.spatial-bg-image {
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center center;
+}
+
+/* High density view rendering custom track properties */
+.custom-scroller::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+}
+
+.custom-scroller::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 12px;
+}
+
+/* Safe area considerations for modern iOS devices */
+.pb-safe-area {
+    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+}
+
+@keyframes fadeInAnimation {
+    from {
+        opacity: 0;
+        transform: translateY(3px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* CSS-Driven Classification Tree Node Indent Lines */
+.tree-branch-line {
+    position: relative;
+}
+.tree-branch-line::before {
+    content: "";
+    position: absolute;
+    left: -12px;
+    top: 10px;
+    width: 10px;
+    height: 1px;
+    border-top: 1px dashed #cbd5e1;
+}
+
+/* Mobile Nav Optimization override */
+@media (max-width: 767px) {
+    .tab-active-mobile {
+        color: #2563eb !important;
+        font-weight: 700 !important;
+        background-color: #f8fafc;
+    }
+}
+
+/* AI Search Loading Pulse */
+.ai-searching {
+    animation: aiPulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes aiPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Container asset list highlight */
+.container-asset-item {
+    transition: background-color 0.15s ease;
+}
+.container-asset-item:hover {
+    background-color: #f1f5f9;
+}
+
+/* Collapsible configurator */
+.configurator-collapsed .config-toggle-icon {
+    transform: rotate(-90deg);
+}
+
+/* FAB pulse animation */
+.fab-pulse {
+    animation: fabPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes fabPulse {
+    0%, 100% { box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.3); }
+    50% { box-shadow: 0 4px 16px -1px rgba(37, 99, 235, 0.6); }
+}
+
+/* ===== UX Accessibility Improvements ===== */
+
+/* Stronger text contrast - replace slate-400/500 with slate-600/700 */
+.text-muted { color: #475569; }
+
+/* Minimum 44px touch targets for mobile */
+button, select, .tab-nav, .container-asset-item {
+    min-height: 44px;
+}
+.tab-nav {
+    display: inline-flex;
+    align-items: center;
+}
+
+/* Mobile nav active state */
+.tab-active-mobile {
+    color: #2563eb !important;
+    font-weight: 700 !important;
+    background-color: #eff6ff;
+    border-top: 2px solid #2563eb;
+}
+.tab-active-mobile svg {
+    color: #2563eb;
+}
+
+/* Desktop tab hover + active */
+.tab-nav:hover {
+    color: #2563eb;
+    background-color: #f8fafc;
+}
+.tab-active {
+    border-bottom: 3px solid #2563eb !important;
+    color: #1d4ed8 !important;
+    font-weight: 700 !important;
+    background-color: #eff6ff;
+}
+
+/* Bigger table text for readability */
+#inventoryTableDataRows td {
+    font-size: 0.8125rem;
+}
+#inventoryTableDataRows .text-mono {
+    font-size: 0.6875rem;
+}
+
+/* Stronger section headers */
+h2[class*="text-sm"][class*="uppercase"] {
+    color: #334155;
+    letter-spacing: 0.08em;
+}
+
+/* Better form input sizing */
+input[type="text"], input[type="date"], input[type="email"], 
+input[type="number"], input[type="password"], input[type="search"],
+textarea, select {
+    min-height: 44px;
+}
+
+/* Active node label more visible */
+#activeMappingContainerNode {
+    color: #1d4ed8 !important;
+    background-color: #dbeafe !important;
+    border-color: #93c5fd !important;
+}

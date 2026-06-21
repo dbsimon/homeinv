@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Find My Item — 物件追蹤</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen pb-20 md:pb-0">
+
+    <div id="passwordOverlay" class="fixed inset-0 bg-slate-900 z-[9999] flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm border border-slate-100">
+            <h3 class="text-xl font-bold text-slate-900 mb-2" data-i18n="passwordTitle">Access Restrained</h3>
+            <p class="text-xs text-slate-500 mb-4" data-i18n="passwordHint">Input Master System Password to decrypt inventory ledger.</p>
+            <input type="password" id="pagePasswordInput" class="w-full border border-slate-300 rounded-lg px-3 py-2.5 mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-center tracking-widest" placeholder="••••">
+            <p id="passwordError" class="text-red-500 text-xs font-medium mb-3 hidden" data-i18n="incorrectPwd">Incorrect Access Credentials.</p>
+            <button onclick="validateSystemAccess()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-lg text-sm transition-colors shadow-sm" data-i18n="authorize">Authorize</button>
+        </div>
+    </div>
+
+    <header class="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm md:hidden">
+        <div class="px-4 h-12 flex items-center justify-between">
+            <div class="flex items-center space-x-2.5">
+                <div class="h-7 w-7 bg-blue-600 rounded-lg flex items-center justify-center text-white">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                </div>
+                <h1 class="text-sm font-bold tracking-tight text-slate-900" data-i18n="appTitle">Find My Item</h1>
+            </div>
+            <div class="flex items-center gap-2">
+                <select id="headerUserSelectMobile" onchange="switchCurrentUser(this.value)" class="text-[11px] border border-slate-200 rounded-md px-2 py-1 focus:ring-2 focus:ring-blue-500 outline-none bg-slate-50 text-slate-700 font-medium max-w-[80px]"></select>
+                <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en')" class="text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md px-2 py-1 text-slate-600 font-medium transition-colors">中</button>
+            </div>
+        </div>
+    </header>
+
+    <header class="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm hidden md:block">
+        <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="h-8 w-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-lg">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                </div>
+                <h1 class="text-lg font-bold tracking-tight text-slate-900" data-i18n="appTitle">Find My Item</h1>
+                <div class="flex items-center gap-1.5 ml-3 pl-3 border-l border-slate-200">
+                    <span class="text-[10px] uppercase tracking-wider text-slate-400 font-bold">User</span>
+                    <select id="headerUserSelect" onchange="switchCurrentUser(this.value)" class="text-xs border border-slate-200 rounded-md px-2 py-1 focus:ring-2 focus:ring-blue-500 outline-none bg-slate-50 text-slate-700 font-medium"></select>
+                </div>
+                <div class="flex items-center gap-1.5 ml-2 pl-2 border-l border-slate-200">
+                    <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en')" class="text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md px-2 py-1 text-slate-600 font-medium transition-colors">中/EN</button>
+                </div>
+            </div>
+            <nav class="flex space-x-1" aria-label="Desktop Navigation">
+                <button onclick="switchTab('tab-spatial')" id="btn-desktop-spatial" class="tab-nav tab-active px-4 py-2 text-sm font-medium transition-all" data-i18n="tabLocation">Location</button>
+                <button onclick="switchTab('tab-inventory')" id="btn-desktop-inventory" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabInventory">Inventory</button>
+                <button onclick="switchTab('tab-classes')" id="btn-desktop-classes" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabClasses">Categories</button>
+                <button onclick="switchTab('tab-cloud')" id="btn-desktop-cloud" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabCloud">Cloud</button>
+            </nav>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto p-4 md:py-6">
+        
+        <section id="tab-spatial" class="tab-panel active-panel">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="space-y-6 lg:col-span-1">
+                    <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                        <div class="flex justify-between items-center cursor-pointer" onclick="toggleConfigurator()">
+                            <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400" data-i18n="configuratorTitle">Segment Configurator</h2>
+                            <span id="configuratorToggleIcon" class="text-slate-400 text-sm font-bold transition-transform duration-200">▼</span>
+                        </div>
+                        <div id="configuratorContent" class="space-y-3 mt-4 hidden">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="addSegment">Add Segment Zone</label>
+                                <div class="flex gap-2">
+                                    <input type="text" id="newSegmentName" data-i18n-placeholder="chooseSegPlaceholder" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                                    <button onclick="addSegmentNode()" class="bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium px-3 rounded-lg transition-colors">+</button>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="addContainer">Add Container</label>
+                                <div class="space-y-2">
+                                    <select id="targetSegmentSelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">-- Choose Segment --</option></select>
+                                    <div class="flex gap-2">
+                                        <input type="text" id="newContainerName" data-i18n-placeholder="chooseConPlaceholder" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                                        <button onclick="addContainerNode()" class="bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium px-3 rounded-lg transition-colors">+</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="addSubContainer">Add Sub-Container</label>
+                                <div class="space-y-2">
+                                    <select id="targetContainerSegmentSelect" onchange="syncTargetContainerDropdown()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">-- Choose Segment --</option></select>
+                                    <select id="targetContainerSelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">-- Choose Container --</option></select>
+                                    <div class="flex gap-2">
+                                        <input type="text" id="newSubContainerName" data-i18n-placeholder="chooseSubPlaceholder" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                                        <button onclick="addSubContainerNode()" class="bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium px-3 rounded-lg transition-colors">+</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm max-h-[400px] overflow-y-auto">
+                        <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 mb-3" data-i18n="structuralIndex">Structural Index</h2>
+                        <div id="spatialTreeHierarchy" class="text-sm space-y-2"></div>
+                    </div>
+                </div>
+
+                <div class="lg:col-span-2 space-y-4">
+                    <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
+                            <div>
+                                <h2 class="text-base font-bold text-slate-900" data-i18n="locationMap">Location Map</h2>
+                                <p class="text-xs text-slate-500" data-i18n="gridHint">Select a sub-container from structural index to map its position by clicking on the grid matrix.</p>
+                            </div>
+                            <div class="flex items-center gap-2 w-full sm:w-auto">
+                                <span class="text-xs font-medium text-slate-600 whitespace-nowrap">Active Node:</span>
+                                <span id="activeMappingContainerNode" class="text-xs bg-blue-50 text-blue-700 px-2.5 py-1 rounded-md font-bold border border-blue-100 truncate max-w-[180px]">None Selected</span>
+                                <button onclick="clearActiveNode()" id="btnClearActiveNode" class="text-xs text-slate-300 hover:text-red-500 font-bold px-1 hidden" title="Clear selection">✕</button>
+                            </div>
+                        </div>
+                        
+                         <div class="flex items-center gap-2 mb-3">
+                              <input type="file" id="layoutBackgroundFileInput" accept="image/*" capture="environment" class="hidden" onchange="handleLayoutBackgroundUpload(event)">
+                              <button onclick="document.getElementById('layoutBackgroundFileInput').click()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors" data-i18n="importLayout">Import Layout Image</button>
+                              <button onclick="clearLayoutBackground()" id="btnClearLayoutBg" class="text-xs bg-slate-100 hover:bg-red-50 text-slate-500 hover:text-red-600 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors hidden" data-i18n="removeImage">Remove Image</button>
+                         </div>
+                         <div class="relative bg-slate-100 border border-slate-300 rounded-xl overflow-hidden shadow-inner aspect-[4/3] w-full max-w-3xl mx-auto">
+                             <div id="spatialMapBgImage" class="absolute inset-0 spatial-bg-image pointer-events-none" style="display:none;"></div>
+                             <div id="spatialMapGridMatrix" class="absolute inset-0 grid dynamic-grid-lines"></div>
+                          </div>
+                     </div>
+                     <div id="containerAssetsPanel" class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm hidden">
+                         <div class="flex justify-between items-center mb-3">
+                             <h3 class="text-sm font-bold text-slate-800">Assets in <span id="containerAssetsLabel" class="text-blue-600">—</span></h3>
+                             <span id="containerAssetsCount" class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-bold">0 items</span>
+                         </div>
+                         <div id="containerAssetsList" class="text-xs space-y-1 max-h-[300px] overflow-y-auto"></div>
+                     </div>
+                 </div>
+            </div>
+        </section>
+
+        <section id="tab-classes" class="tab-panel hidden-panel">
+            <div class="max-w-3xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm h-fit">
+                    <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4" data-i18n="classificationTitle">Classification Architect</h2>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="selectedPath">Selected Parent Pathway</label>
+                            <input type="text" id="targetCategoryPathDisplay" readonly value="Root Level" class="w-full text-sm bg-slate-50 text-slate-500 border border-slate-200 rounded-lg px-3 py-2 outline-none font-medium" data-i18n="rootLevel">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="newBranch">New Branch/Node Classification Title</label>
+                            <div class="flex gap-2">
+                                <input type="text" id="newCategoryNodeName" placeholder="e.g., Summer, Shirts" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                                <button onclick="createClassificationNode()" id="btnAddCategoryNode" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 rounded-lg transition-colors" data-i18n="addBranch">Add Branch</button>
+                            </div>
+                            <p id="categoryDepthWarning" class="text-amber-600 text-xs mt-1.5 hidden font-medium" data-i18n="tierWarning">⚠️ Tier structural threshold reached (Max 4 Levels Allowed).</p>
+                        </div>
+                        <div class="pt-2 border-t border-slate-100 flex justify-between">
+                            <button onclick="resetCategorySelectionContext()" class="text-xs text-slate-500 hover:text-slate-800 font-medium" data-i18n="resetSelection">Reset Selection to Root</button>
+                            <button onclick="deleteSelectedCategoryNode()" class="text-xs text-red-500 hover:text-red-700 font-medium" data-i18n="deleteBranch">Delete Selection Branch</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 mb-3" data-i18n="classDirTitle">Classification Directory Tree (Max 4 Tiers)</h2>
+                    <div id="classificationDirectoryTree" class="text-sm space-y-1 max-h-[500px] overflow-y-auto"></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="tab-inventory" class="tab-panel hidden-panel">
+            <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-4">
+                <div class="flex gap-2">
+                    <div class="flex-1 relative">
+                        <input type="text" id="aiSearchDescription" placeholder="Describe what you are looking for... e.g. 'blue jacket in bedroom wardrobe'" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-blue-500 outline-none pr-24">
+                        <button onclick="performAISearch()" id="btnAISearch" class="absolute right-1 top-1 bottom-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 rounded-md transition-colors">AI Search</button>
+                    </div>
+                    <button onclick="resetAISearchFilter()" id="btnResetAISearch" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-500 font-medium px-3 py-2 rounded-lg border border-slate-300 transition-colors hidden whitespace-nowrap">Clear AI Filter</button>
+                </div>
+                <p id="aiSearchStatus" class="text-xs text-slate-400 mt-2 hidden"></p>
+            </div>
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm mb-6">
+                <div class="flex justify-between items-center mb-4 border-b border-slate-100 pb-3 cursor-pointer" onclick="toggleInventoryForm()">
+                    <div class="flex items-center gap-2">
+                        <h2 id="inventoryFormTitle" class="text-base font-bold text-slate-900">Register Inventory Stock Asset</h2>
+                        <span id="invFormToggleIcon" class="text-slate-400 text-sm font-bold transition-transform duration-200">▼</span>
+                    </div>
+                    <button onclick="event.stopPropagation(); clearInventoryFormContext()" id="btnResetFormState" class="text-xs text-slate-500 hover:text-slate-800 hidden font-medium">Exit Modification Mode</button>
+                </div>
+                
+                <input type="hidden" id="editTargetItemId">
+                <div id="inventoryFormContent" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 hidden">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="itemName">Item Reference Designation</label>
+                        <input type="text" id="invItemName" data-i18n-placeholder="itemNamePlaceholder" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="categoryRoute">Category Route Allocation</label>
+                        <select id="invItemCategorySelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"></select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="targetSegment">Target Home Segment</label>
+                        <select id="invItemSegmentSelect" onchange="syncInventoryFormContainersDropdown()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="chooseSegment">-- Choose Segment --</option></select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="containerAssign">Container Assignment</label>
+                        <select id="invItemContainerSelect" onchange="syncInventoryFormSubContainersDropdown()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="chooseContainer">-- Choose Container --</option></select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="subContainerAssign">Sub-Container Assignment</label>
+                        <select id="invItemSubContainerSelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="chooseSubContainer">-- Choose Sub-Container --</option></select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="owner">Owner</label>
+                        <select id="invItemOwnerSelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="selectUser">-- Select User --</option></select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">Purchase Date</label>
+                        <input type="date" id="invItemPurchaseDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">Expiry Date</label>
+                        <input type="date" id="invItemExpiryDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+                    <div class="sm:col-span-2">
+                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="assetImage">Asset Image (Upload or URL)</label>
+                        <div class="flex gap-2 items-start">
+                            <div class="flex-1 space-y-2">
+                                <div class="flex gap-2">
+                                    <input type="file" id="invItemImageFile" accept="image/*" capture="environment" class="hidden" onchange="handleAssetImageUpload(event)">
+                                    <button type="button" onclick="document.getElementById('invItemImageFile').click()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-3 py-2 rounded-lg border border-slate-300 transition-colors whitespace-nowrap" data-i18n="uploadPhoto">Upload Photo</button>
+                                    <input type="text" id="invItemImageUrl" data-i18n-placeholder="imageUrlPlaceholder" oninput="updateImagePreviewFromUrl()" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                                    <button type="button" onclick="aiAnalyzeImage()" id="btnAIAnalyze" style="display:none" class="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-medium px-3 py-2 rounded-lg border border-indigo-200 transition-colors whitespace-nowrap">AI Analyze</button>
+                                </div>
+                            </div>
+                            <img id="invItemImagePreview" src="" class="h-16 w-16 object-cover rounded-lg border border-slate-200 bg-slate-100 hidden" alt="Preview">
+                        </div>
+                    </div>
+                    <div class="sm:col-span-2">
+                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="aiMetadata">AI Metadata (Image Description for Search)</label>
+                        <textarea id="invItemAiMetadata" rows="2" data-i18n-placeholder="aiMetadataPlaceholder" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 outline-none resize-none"></textarea>
+                    </div>
+                    <div class="sm:col-span-2 md:col-span-3 lg:col-span-2">
+                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="remarks">Annotations / Remarks</label>
+                        <div class="flex gap-2">
+                            <input type="text" id="invItemRemarks" data-i18n-placeholder="remarksPlaceholder" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                            <button onclick="commitItemToInventory()" id="btnSubmitInventoryForm" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-5 rounded-lg transition-colors tracking-wide whitespace-nowrap" data-i18n="saveAsset">Save Asset</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-4 flex flex-col md:flex-row justify-between items-stretch md:items-center gap-3">
+                <div class="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                    <input type="text" id="filterSearchQuery" oninput="renderFilteredInventoryTable()" placeholder="Search Item Reference..." class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none">
+                    <select id="filterSegmentSelect" onchange="syncFilterContainersDropdown(); renderFilteredInventoryTable();" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Segments</option></select>
+                    <select id="filterContainerSelect" onchange="renderFilteredInventoryTable()" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Containers</option></select>
+                    <select id="filterCategorySelect" onchange="renderFilteredInventoryTable()" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Categories</option></select>
+                    <select id="filterOwnerSelect" onchange="renderFilteredInventoryTable()" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Owners</option></select>
+                </div>
+                <div class="text-xs font-bold text-slate-400 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 text-center md:text-right whitespace-nowrap">
+                    Active Registry Count: <span id="inventoryMetricCount" class="text-blue-600 font-extrabold text-sm">0</span>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse min-w-[800px]">
+                        <thead>
+                            <tr class="bg-slate-50 border-b border-slate-200 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                                <th class="px-4 py-3 w-20 text-center">Visual</th>
+                                <th class="px-4 py-3">Asset Item Details</th>
+                                <th class="px-4 py-3">Classification</th>
+                                <th class="px-4 py-3">Location</th>
+                                <th class="px-4 py-3 w-16 text-center">Owner</th>
+                                <th class="px-4 py-3 w-40">Remarks</th>
+                                <th class="px-4 py-3 w-28 text-center">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="inventoryTableDataRows" class="text-sm divide-y divide-slate-100"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <section id="tab-cloud" class="tab-panel hidden-panel">
+            <div class="max-w-3xl mx-auto space-y-6">
+                <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">Pipeline Credentials <span id="syncStatusBadge" class="text-[10px] text-slate-400 font-medium ml-2">⚪ Not synced</span></h2>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1">Google Apps Script Web App Deployment Endpoint URL</label>
+                            <input type="url" id="settingGoogleAppsScriptUrl" placeholder="https://script.google.com/macros/s/.../exec" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-blue-500 outline-none font-mono">
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 mb-1">System Security Access Code</label>
+                                <input type="password" id="settingSystemPassword" placeholder="Change System Password" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 mb-1">Data Stream Transceiver Key</label>
+                                <input type="password" id="settingApiSecretToken" placeholder="Payload Verification Token" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1">DeepSeek AI API Key (for Inventory Semantic Search)</label>
+                            <input type="password" id="settingDeepSeekApiKey" placeholder="sk-..." class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-blue-500 outline-none font-mono">
+                        </div>
+                        <button onclick="commitCloudSystemCredentials()" class="w-full sm:w-auto bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-colors">Commit Network Profile Changes</button>
+                    </div>
+                </div>
+
+                <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">Interoperability Processing Engine (Flat Sheet Formatting)</h2>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="p-4 border border-slate-200 rounded-xl bg-slate-50 flex flex-col justify-between">
+                            <div>
+                                <h3 class="text-sm font-bold text-slate-900 mb-1">Compile Spreadsheet Output</h3>
+                                <p class="text-xs text-slate-500 mb-4">Process current local registers into a cleanly formatted multi-column flattened dynamic `.xlsx` file sheet matrix.</p>
+                            </div>
+                            <button onclick="exportLocalDatabasesToExcel()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors w-full sm:w-auto shadow-sm">Generate `.xlsx` Export</button>
+                        </div>
+                        <div class="p-4 border border-slate-200 rounded-xl bg-slate-50 flex flex-col justify-between">
+                            <div>
+                                <h3 class="text-sm font-bold text-slate-900 mb-1">Ingest Spreadsheet Matrix</h3>
+                                <p class="text-xs text-slate-500 mb-3">Load structured spreadsheet files to append missing item parameters back into local system storage configurations.</p>
+                                <input type="file" id="excelFileStreamUploader" accept=".xlsx, .xls" class="hidden" onchange="importExcelToLocalDatabases(event)">
+                            </div>
+                            <button onclick="document.getElementById('excelFileStreamUploader').click()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors w-full sm:w-auto shadow-sm text-center">Process Local `.xlsx` Document</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">Household Members</h2>
+                    <div class="flex flex-col sm:flex-row gap-2 mb-3">
+                        <input type="text" id="newUserName" placeholder="e.g., John" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                        <input type="email" id="newUserEmail" placeholder="user@email.com" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                        <button onclick="addUser()" class="bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium px-4 rounded-lg transition-colors whitespace-nowrap">Add</button>
+                    </div>
+                    <div id="userListDisplay" class="text-xs text-slate-600 space-y-1"></div>
+                </div>
+
+                <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">Reminder Settings</h2>
+                    <div class="flex items-center gap-3">
+                        <label class="text-xs text-slate-600">Send expiry reminder</label>
+                        <input type="number" id="settingReminderDays" value="30" min="1" max="365" class="w-16 text-sm border border-slate-300 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none text-center">
+                        <span class="text-xs text-slate-500">days before expiry</span>
+                        <button onclick="commitReminderSettings()" class="bg-slate-100 hover:bg-slate-200 text-xs font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors">Save</button>
+                    </div>
+                    <p class="text-[10px] text-slate-400 mt-2">Reminders are sent via the Google Script when you push to cloud. Ensure user emails are set above.</p>
+                </div>
+
+                <div class="bg-white p-5 rounded-xl border border-red-200 bg-red-50/30 shadow-sm">
+                    <h2 class="text-sm font-bold uppercase tracking-wider text-red-500 mb-2">Destructive Operations Matrix</h2>
+                    <p class="text-xs text-slate-500 mb-4">Purges application states and removes records permanently. Back up configurations via spreadsheets before proceeding.</p>
+                    <div class="flex flex-wrap gap-3">
+                        <button onclick="triggerSynchronousCloudBackupPush()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors shadow-sm">Push to Cloud</button>
+                        <button onclick="triggerSynchronousCloudFetchPull()" class="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors shadow-sm">Pull from Cloud</button>
+                        <button onclick="verifyCloudSync()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold py-2 px-4 rounded-lg transition-colors shadow-sm border border-slate-300">Verify Sync</button>
+                        <button onclick="purgeSystemStorageCache()" class="bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors shadow-sm">Wipe Local Cache</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <div class="text-center py-3 text-[10px] text-slate-400 font-medium">
+            Copyright &copy; Westdoor Streetson 2026 &mdash; <span id="versionDisplay">v1.0</span>
+        </div>
+    </main>
+
+    <nav class="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-40 shadow-xl flex justify-around md:hidden px-2 pb-safe-area" aria-label="Mobile Navigation">
+        <button onclick="switchTab('tab-spatial')" id="btn-mobile-spatial" class="flex flex-col items-center justify-center py-2 text-slate-400 font-medium transition-all flex-1">
+            <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <span class="text-[10px] tracking-tight font-medium" data-i18n="tabLocation">Location</span>
+        </button>
+        <button onclick="switchTab('tab-inventory')" id="btn-mobile-inventory" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all flex-1">
+            <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+            <span class="text-[10px] tracking-tight font-medium" data-i18n="tabInventory">Inventory</span>
+        </button>
+        <button onclick="switchTab('tab-classes')" id="btn-mobile-classes" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all flex-1">
+            <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+            <span class="text-[10px] tracking-tight font-medium" data-i18n="tabClasses">Categories</span>
+        </button>
+        <button onclick="switchTab('tab-cloud')" id="btn-mobile-cloud" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all flex-1">
+            <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
+            <span class="text-[10px] tracking-tight font-medium" data-i18n="tabCloud">Cloud</span>
+        </button>
+    </nav>
+
+    <script src="app.js"></script>
+
+    <button onclick="quickAddAsset()" class="fixed bottom-20 md:bottom-6 right-6 w-14 h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-xl flex items-center justify-center z-50 transition-transform hover:scale-110 active:scale-95" title="Quick Add Asset">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+    </button>
+
+    <div id="itemDetailModal" class="fixed inset-0 bg-black/50 z-[9998] flex items-center justify-center p-4 hidden" onclick="closeItemDetail()">
+        <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-start mb-4">
+                <h3 id="detailItemName" class="text-lg font-bold text-slate-900"></h3>
+                <button onclick="closeItemDetail()" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
+            </div>
+            <img id="detailItemImage" src="" class="w-full max-h-64 object-contain rounded-lg border border-slate-200 bg-slate-100 mb-4 hidden">
+            <div class="space-y-2 text-sm">
+                <div class="flex justify-between"><span class="text-slate-400">Category</span><span id="detailItemCategory" class="font-medium text-slate-700"></span></div>
+                <div class="flex justify-between"><span class="text-slate-400">Location</span><span id="detailItemLocation" class="font-medium text-slate-700"></span></div>
+                <div class="flex justify-between"><span class="text-slate-400">Owner</span><span id="detailItemOwner" class="font-medium text-slate-700"></span></div>
+                <div class="flex justify-between"><span class="text-slate-400">Added</span><span id="detailItemTime" class="font-medium text-slate-700"></span></div>
+                <div class="pt-2 border-t border-slate-100"><span class="text-slate-400 text-xs">Remarks</span><p id="detailItemRemarks" class="text-slate-600 mt-1"></p></div>
+                <div class="pt-2"><span class="text-slate-400 text-xs">System ID</span><p id="detailItemId" class="text-[10px] text-slate-400 font-mono mt-0.5"></p></div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
