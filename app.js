@@ -3,13 +3,15 @@
  * Data Model (v2)
  * Copyright (c) Westdoor Streetson 2026
  */
-const APP_VERSION = '1.25';
+const APP_VERSION = '1.34';
 
 // ===== Translation System =====
 const LANG = {
   en: {
     appTitle: 'Find My Item',
     tabLocation: 'Location',
+    tabRegister: 'Register',
+    tabBrowse: 'Browse',
     tabClasses: 'Classifications',
     tabInventory: 'Inventory Database',
     tabCloud: 'Cloud Engine',
@@ -182,6 +184,8 @@ const LANG = {
   'zh-Hant': {
     appTitle: '物件追蹤',
     tabLocation: '位置',
+    tabRegister: '登記',
+    tabBrowse: '瀏覽',
     tabClasses: '分類',
     tabInventory: '庫存數據庫',
     tabCloud: '雲端引擎',
@@ -397,6 +401,8 @@ window.addEventListener('DOMContentLoaded', () => {
         syncUIComponents();
         switchTab('tab-spatial');
         clearActiveNode();
+        installIOSZoomFix();
+        autoPullFromCloudIfPossible();
     } catch (e) {
         alert('Init error: ' + e.message + ' (line ' + e.lineNumber + ')');
         console.error(e);
@@ -406,6 +412,25 @@ window.addEventListener('DOMContentLoaded', () => {
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') closeItemDetail();
 });
+
+function installIOSZoomFix() {
+    var isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    if (!isIOS) return;
+    var metaViewport = document.querySelector('meta[name="viewport"]');
+    if (!metaViewport) return;
+    document.addEventListener('focusout', function(event) {
+        if (event.target.matches('input, textarea, select')) {
+            setTimeout(function() {
+                metaViewport.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover');
+                requestAnimationFrame(function() {
+                    requestAnimationFrame(function() {
+                        metaViewport.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover');
+                    });
+                });
+            }, 50);
+        }
+    });
+}
 
 /* ==========================================================================
    Section 1: Authentication & Protection Layer
@@ -981,23 +1006,8 @@ function selectSubContainerForMapping(segment, container, subContainer) {
 
 function quickAddAsset() {
     clearInventoryFormContext();
-    switchTab('tab-inventory');
-    expandInventoryForm();
+    switchTab('tab-register');
     document.getElementById('invItemName').focus();
-}
-
-function toggleInventoryForm() {
-    const content = document.getElementById('inventoryFormContent');
-    const icon = document.getElementById('invFormToggleIcon');
-    const hidden = content.classList.toggle('hidden');
-    icon.style.transform = hidden ? 'rotate(0deg)' : 'rotate(180deg)';
-}
-
-function expandInventoryForm() {
-    const content = document.getElementById('inventoryFormContent');
-    const icon = document.getElementById('invFormToggleIcon');
-    content.classList.remove('hidden');
-    icon.style.transform = 'rotate(180deg)';
 }
 
 function renderSpatialMapGrid() {
@@ -1017,17 +1027,19 @@ function renderSpatialMapGrid() {
         btnClear.classList.add('hidden');
     }
 
-    // Click to place a sub-container (only when one is actively selected for mapping)
+    // Click to place a sub-container that has no coordinates yet
     gridMatrix.onclick = function(e) {
         var node = appState.activeMappingNode;
         if (!node || !node.subContainer) return;
+        var nodeKey = buildCoordKey(node.segment, node.container, node.subContainer);
+        if (appState.coordinates[nodeKey]) return;
         const dimensions = gridMatrix.getBoundingClientRect();
         const xPercent = Math.round(((e.clientX - dimensions.left) / dimensions.width) * 100);
         const yPercent = Math.round(((e.clientY - dimensions.top) / dimensions.height) * 100);
-        const nodeKey = buildCoordKey(node.segment, node.container, node.subContainer);
         appState.coordinates[nodeKey] = { x: xPercent, y: yPercent };
         saveStateToLocalStorage();
         renderSpatialMapGrid();
+        triggerAutoCloudSyncIfPossible();
     };
 
     // Determine which segments/containers to show based on selection
@@ -1056,13 +1068,18 @@ function renderSpatialMapGrid() {
                     appState.activeMappingNode.segment === seg;
 
                 var marker = document.createElement('div');
-                marker.className = 'absolute transform -translate-x-1/2 -translate-y-1/2 px-2 py-1 rounded text-[10px] font-bold shadow-md cursor-pointer transition-transform hover:scale-105 whitespace-nowrap z-10 ' +
+                marker.className = 'absolute transform -translate-x-1/2 -translate-y-1/2 px-2 py-1 rounded text-[10px] font-bold shadow-md cursor-grab active:cursor-grabbing select-none whitespace-nowrap z-10 ' +
                     (isSelected ? 'bg-blue-600 text-white ring-2 ring-offset-1 ring-blue-400' : 'bg-slate-800 text-slate-100');
                 marker.style.left = coords.x + '%';
                 marker.style.top = coords.y + '%';
                 marker.innerText = scName;
+                marker.setAttribute('data-seg', seg);
+                marker.setAttribute('data-con', con);
+                marker.setAttribute('data-sub', scName);
+                marker.addEventListener('mousedown', function(ev) { startMarkerDrag(ev, marker, seg, con, scName); });
+                marker.addEventListener('touchstart', function(ev) { startMarkerDrag(ev, marker, seg, con, scName); }, { passive: false });
                 marker.onclick = (function(segVal, conVal, subVal) {
-                    return function(ev) { ev.stopPropagation(); selectSubContainerForMapping(segVal, conVal, subVal); };
+                    return function(ev) { if (window._markerDidDrag) { window._markerDidDrag = false; return; } ev.stopPropagation(); selectSubContainerForMapping(segVal, conVal, subVal); };
                 })(seg, con, scName);
                 gridMatrix.appendChild(marker);
             });
@@ -1072,17 +1089,63 @@ function renderSpatialMapGrid() {
     renderContainerAssetList();
 }
 
+function startMarkerDrag(e, marker, seg, con, sub) {
+    e.preventDefault();
+    e.stopPropagation();
+    window._markerDidDrag = false;
+    var grid = document.getElementById('spatialMapGridMatrix');
+    var rect = grid.getBoundingClientRect();
+    var startX = e.touches ? e.touches[0].clientX : e.clientX;
+    var startY = e.touches ? e.touches[0].clientY : e.clientY;
+
+    function onMove(ev) {
+        ev.preventDefault();
+        var clientX = ev.touches ? ev.touches[0].clientX : ev.clientX;
+        var clientY = ev.touches ? ev.touches[0].clientY : ev.clientY;
+        var dx = clientX - startX;
+        var dy = clientY - startY;
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+            window._markerDidDrag = true;
+        }
+        var pctX = Math.round(((clientX - rect.left) / rect.width) * 100);
+        var pctY = Math.round(((clientY - rect.top) / rect.height) * 100);
+        pctX = Math.max(0, Math.min(100, pctX));
+        pctY = Math.max(0, Math.min(100, pctY));
+        marker.style.left = pctX + '%';
+        marker.style.top = pctY + '%';
+    }
+
+    function onEnd(ev) {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onEnd);
+        document.removeEventListener('touchmove', onMove);
+        document.removeEventListener('touchend', onEnd);
+        if (window._markerDidDrag) {
+            var leftPct = parseFloat(marker.style.left);
+            var topPct = parseFloat(marker.style.top);
+            var key = buildCoordKey(seg, con, sub);
+            appState.coordinates[key] = { x: Math.round(leftPct), y: Math.round(topPct) };
+            saveStateToLocalStorage();
+            renderSpatialMapGrid();
+            triggerAutoCloudSyncIfPossible();
+        }
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onEnd);
+    document.addEventListener('touchmove', onMove, { passive: false });
+    document.addEventListener('touchend', onEnd);
+}
+
 function handleLayoutBackgroundUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = function(e) {
-        appState.spatialBackgroundImage = e.target.result;
+    compressImageFile(file, 1600, 0.75, function(dataUrl) {
+        appState.spatialBackgroundImage = dataUrl;
         saveStateToLocalStorage();
         renderSpatialMapGrid();
-    };
-    reader.readAsDataURL(file);
+    });
     event.target.value = '';
 }
 
@@ -1241,6 +1304,109 @@ function flattenCategoryTreeToLinearRoutes(rootNode, activePrefixArray = [], col
     return collectedOutputList;
 }
 
+function getCategoryChildrenMap(parentMap, pathArr) {
+    let current = parentMap || appState.categories;
+    if (pathArr && pathArr.length > 0) {
+        current = getCategoryNodeByPath(appState.categories, pathArr);
+    }
+    return current || {};
+}
+
+function buildCategoryPathFromSelects() {
+    var parts = [];
+    var l1 = document.getElementById('invCatL1').value;
+    var l2 = document.getElementById('invCatL2').value;
+    var l3 = document.getElementById('invCatL3').value;
+    var l4 = document.getElementById('invCatL4').value;
+    if (l1) parts.push(l1);
+    if (l2) parts.push(l2);
+    if (l3) parts.push(l3);
+    if (l4) parts.push(l4);
+    return parts.join(' > ');
+}
+
+function setCascadingCategorySelects(pathStr) {
+    if (!pathStr) { resetCascadingCategorySelects(); return; }
+    var parts = pathStr.split(' > ');
+    syncCategoryLevel1();
+    if (parts.length > 0) document.getElementById('invCatL1').value = parts[0];
+    syncCategoryLevel2();
+    if (parts.length > 1) document.getElementById('invCatL2').value = parts[1];
+    syncCategoryLevel3();
+    if (parts.length > 2) document.getElementById('invCatL3').value = parts[2];
+    syncCategoryLevel4();
+    if (parts.length > 3) document.getElementById('invCatL4').value = parts[3];
+}
+
+function resetCascadingCategorySelects() {
+    document.getElementById('invCatL1').value = '';
+    syncCategoryLevel2();
+    document.getElementById('invCatL2').value = '';
+    syncCategoryLevel3();
+    document.getElementById('invCatL3').value = '';
+    syncCategoryLevel4();
+    document.getElementById('invCatL4').value = '';
+}
+
+function syncCategoryLevel1() {
+    var sel = document.getElementById('invCatL1');
+    var saved = sel.value;
+    sel.innerHTML = '<option value="">Level 1</option>';
+    Object.keys(appState.categories).forEach(function(k) {
+        var opt = document.createElement('option');
+        opt.value = k; opt.innerText = k; sel.appendChild(opt);
+    });
+    if ([...sel.options].some(function(o) { return o.value === saved; })) sel.value = saved;
+}
+
+function syncCategoryLevel2() {
+    var sel = document.getElementById('invCatL2');
+    var l1 = document.getElementById('invCatL1').value;
+    var saved = sel.value;
+    sel.innerHTML = '<option value="">Level 2</option>';
+    if (l1 && appState.categories[l1]) {
+        Object.keys(appState.categories[l1]).forEach(function(k) {
+            var opt = document.createElement('option');
+            opt.value = k; opt.innerText = k; sel.appendChild(opt);
+        });
+    }
+    if ([...sel.options].some(function(o) { return o.value === saved; })) sel.value = saved;
+    syncCategoryLevel3();
+    syncCategoryLevel4();
+}
+
+function syncCategoryLevel3() {
+    var sel = document.getElementById('invCatL3');
+    var l1 = document.getElementById('invCatL1').value;
+    var l2 = document.getElementById('invCatL2').value;
+    var saved = sel.value;
+    sel.innerHTML = '<option value="">Level 3</option>';
+    if (l1 && l2 && appState.categories[l1] && appState.categories[l1][l2]) {
+        Object.keys(appState.categories[l1][l2]).forEach(function(k) {
+            var opt = document.createElement('option');
+            opt.value = k; opt.innerText = k; sel.appendChild(opt);
+        });
+    }
+    if ([...sel.options].some(function(o) { return o.value === saved; })) sel.value = saved;
+    syncCategoryLevel4();
+}
+
+function syncCategoryLevel4() {
+    var sel = document.getElementById('invCatL4');
+    var l1 = document.getElementById('invCatL1').value;
+    var l2 = document.getElementById('invCatL2').value;
+    var l3 = document.getElementById('invCatL3').value;
+    var saved = sel.value;
+    sel.innerHTML = '<option value="">Level 4</option>';
+    if (l1 && l2 && l3 && appState.categories[l1] && appState.categories[l1][l2] && appState.categories[l1][l2][l3]) {
+        Object.keys(appState.categories[l1][l2][l3]).forEach(function(k) {
+            var opt = document.createElement('option');
+            opt.value = k; opt.innerText = k; sel.appendChild(opt);
+        });
+    }
+    if ([...sel.options].some(function(o) { return o.value === saved; })) sel.value = saved;
+}
+
 /* ==========================================================================
    Section 5: Inventory Registration & Operations Matrix (3-level)
    ========================================================================== */
@@ -1310,7 +1476,7 @@ function syncFilterContainersDropdown() {
 
 function commitItemToInventory() {
     const name = document.getElementById('invItemName').value.trim();
-    const categoryStr = document.getElementById('invItemCategorySelect').value;
+    const categoryStr = buildCategoryPathFromSelects();
     const segment = document.getElementById('invItemSegmentSelect').value;
     const container = document.getElementById('invItemContainerSelect').value;
     const subContainer = document.getElementById('invItemSubContainerSelect').value;
@@ -1357,13 +1523,14 @@ function setupItemModificationContext(itemId) {
         const item = appState.inventory.find(i => i.id === itemId);
         if (!item) { alert(t('itemNotFound') + itemId); return; }
 
+        switchTab('tab-register');
         document.getElementById('inventoryFormTitle').innerText = t('modifyFormTitle');
         document.getElementById('btnResetFormState').classList.remove('hidden');
-        expandInventoryForm();
 
         document.getElementById('editTargetItemId').value = item.id;
         document.getElementById('invItemName').value = item.name;
-        document.getElementById('invItemCategorySelect').value = item.category;
+        setCascadingCategorySelects(item.category);
+
         document.getElementById('invItemSegmentSelect').value = item.segment;
 
         syncInventoryFormContainersDropdown();
@@ -1402,6 +1569,7 @@ function clearInventoryFormContext() {
     document.getElementById('editTargetItemId').value = '';
     document.getElementById('invItemName').value = '';
     document.getElementById('invItemSegmentSelect').value = '';
+    resetCascadingCategorySelects();
     document.getElementById('invItemContainerSelect').innerHTML = '<option value="">' + t('chooseContainer') + '</option>';
     document.getElementById('invItemSubContainerSelect').innerHTML = '<option value="">' + t('chooseSubContainer') + '</option>';
     document.getElementById('invItemImageUrl').value = '';
@@ -1426,19 +1594,41 @@ function removeItemFromInventory(itemId) {
     triggerAutoCloudSyncIfPossible();
 }
 
+function compressImageFile(file, maxPx, quality, callback) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        var img = new Image();
+        img.onload = function() {
+            var w = img.width, h = img.height;
+            if (w > maxPx || h > maxPx) {
+                var ratio = Math.min(maxPx / w, maxPx / h);
+                w = Math.round(w * ratio);
+                h = Math.round(h * ratio);
+            }
+            var canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            var ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, w, h);
+            var compressed = canvas.toDataURL('image/jpeg', quality);
+            callback(compressed);
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
 function handleAssetImageUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = function(e) {
-        document.getElementById('invItemImageUrl').value = e.target.result;
-        const preview = document.getElementById('invItemImagePreview');
-        preview.src = e.target.result;
+    compressImageFile(file, 1024, 0.7, function(dataUrl) {
+        document.getElementById('invItemImageUrl').value = dataUrl;
+        var preview = document.getElementById('invItemImagePreview');
+        preview.src = dataUrl;
         preview.classList.remove('hidden');
         document.getElementById('btnAIAnalyze').style.display = '';
-    };
-    reader.readAsDataURL(file);
+    });
     event.target.value = '';
 }
 
@@ -1468,77 +1658,100 @@ async function aiAnalyzeImage() {
     btn.innerText = 'Analyzing...';
 
     try {
-        const categories = flattenCategoryTreeToLinearRoutes(appState.categories);
-        const categoriesHint = categories.length > 0 ? categories.join(', ') : 'General';
+        var categories = flattenCategoryTreeToLinearRoutes(appState.categories);
+        var categoriesHint = categories.length > 0 ? categories.join(' | ') : 'Uncategorized';
+        var itemName = document.getElementById('invItemName').value.trim() || 'unknown item';
         var content = '';
         var usedVision = false;
 
-        // Try vision first
+        // Vision call
         try {
-            const visResp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+            var visResp = await fetch('https://api.deepseek.com/v1/chat/completions', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
                 body: JSON.stringify({
                     model: 'deepseek-chat',
                     messages: [
-                        { role: 'system', content: 'Analyze the image. Return EXACTLY this JSON structure: {"category":"...", "aiMetadata":"..."}. For category, pick the best match from: ' + categoriesHint + '. For aiMetadata, write a detailed description covering: colors, materials/fabric, item type, style, any visible brand logos. Return ONLY the JSON, no other text.' },
-                        { role: 'user', content: [{ type: 'text', text: 'Analyze and return JSON.' }, { type: 'image_url', image_url: { url: imageUrl } }] }
+                        { role: 'system', content: 'You are an inventory classifier. Analyze the image and return ONLY a JSON object with exactly two fields:\n\n"category": Pick the EXACT full path from this list that best matches the item: ' + categoriesHint + '. If nothing matches exactly, pick the closest parent path.\n\n"aiMetadata": Write a concise visual description (colors, material, type, style, brand). Keep under 200 characters.\n\nReturn ONLY {"category":"...","aiMetadata":"..."} with no other text.' },
+                        { role: 'user', content: [{ type: 'text', text: 'Item name: "' + itemName + '". Return JSON.' }, { type: 'image_url', image_url: { url: imageUrl } }] }
                     ],
-                    temperature: 0.3, max_tokens: 400
+                    temperature: 0.2, max_tokens: 500
                 })
             });
-            const visData = await visResp.json();
-            // Any error or missing choices = vision not supported, fall through silently
+            var visData = await visResp.json();
             if (!visData.error && visData.choices && visData.choices[0]) {
                 content = visData.choices[0].message.content.trim();
                 usedVision = true;
             }
-        } catch (visErr) { /* vision unavailable, use text fallback */ }
+        } catch (visErr) { /* fall through to text fallback */ }
 
-        // Text fallback
+        // Text fallback (no vision support)
         if (!usedVision) {
-            const itemName = document.getElementById('invItemName').value.trim() || 'unknown';
-            const txtResp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+            var txtResp = await fetch('https://api.deepseek.com/v1/chat/completions', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
                 body: JSON.stringify({
                     model: 'deepseek-chat',
                     messages: [
-                        { role: 'system', content: 'Return EXACTLY this JSON: {"category":"...", "aiMetadata":"..."}. Pick category from: ' + categoriesHint + '. aiMetadata must describe: colors, materials, type, style, brand. No other text.' },
+                        { role: 'system', content: 'Return ONLY a JSON object with "category" and "aiMetadata". Pick category from: ' + categoriesHint + '. Describe colors, materials, type, style, brand. No other text.' },
                         { role: 'user', content: 'Item: "' + itemName + '". Return JSON.' }
                     ],
-                    temperature: 0.3, max_tokens: 300
+                    temperature: 0.2, max_tokens: 400
                 })
             });
-            const txtData = await txtResp.json();
+            var txtData = await txtResp.json();
             if (txtData.error) throw new Error(txtData.error.message);
             if (txtData.choices && txtData.choices[0]) content = txtData.choices[0].message.content.trim();
         }
 
-        const jsonMatch = content.match(/\{.*\}/s);
-        if (!jsonMatch) throw new Error('No JSON in response: ' + content);
+        // Parse JSON from response
+        var jsonMatch = content.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error('No JSON in response');
+        var meta = JSON.parse(jsonMatch[0]);
 
-        const meta = JSON.parse(jsonMatch[0]);
+        // Apply category with fuzzy fallback
         if (meta.category) {
-            var catSelect = document.getElementById('invItemCategorySelect');
-            for (var i = 0; i < catSelect.options.length; i++) {
-                if (catSelect.options[i].value.toLowerCase().indexOf(meta.category.toLowerCase()) >= 0) {
-                    catSelect.value = catSelect.options[i].value; break;
-                }
+            var matched = tryMatchCategoryPath(meta.category, categories);
+            if (matched) {
+                setCascadingCategorySelects(matched);
+            } else {
+                setCascadingCategorySelects(meta.category);
             }
         }
-        // Accept aiMetadata, description, or desc as field name
+
+        // Apply AI metadata
         var aiDesc = meta.aiMetadata || meta.description || meta.desc || '';
         if (aiDesc) document.getElementById('invItemAiMetadata').value = aiDesc;
 
-        btn.innerText = usedVision ? '✓ Vision' : '✓ Text';
-        setTimeout(function() { btn.innerText = 'AI Analyze'; }, 2000);
+        // Also suggest item name if empty
+        if (meta.itemName && !document.getElementById('invItemName').value.trim()) {
+            document.getElementById('invItemName').value = meta.itemName;
+        }
+
+        btn.innerText = usedVision ? '\u2713 Analyzed' : '\u2713 Text';
+        setTimeout(function() { btn.innerText = 'AI Analyze'; }, 2500);
 
     } catch (err) {
         btn.innerText = 'AI Analyze';
         alert('AI analysis failed: ' + err.message);
     }
     btn.disabled = false;
+}
+
+function tryMatchCategoryPath(aiCategory, categoryList) {
+    if (!aiCategory || !categoryList) return null;
+    var exact = categoryList.find(function(c) { return c === aiCategory; });
+    if (exact) return exact;
+    var lower = aiCategory.toLowerCase();
+    var contains = categoryList.find(function(c) { return c.toLowerCase().indexOf(lower) >= 0; });
+    if (contains) return contains;
+    var parts = aiCategory.split(' > ');
+    for (var i = parts.length; i >= 1; i--) {
+        var prefix = parts.slice(0, i).join(' > ');
+        var prefixMatch = categoryList.find(function(c) { return c.toLowerCase().indexOf(prefix.toLowerCase()) >= 0; });
+        if (prefixMatch) return prefixMatch;
+    }
+    return null;
 }
 
 /* ==========================================================================
@@ -1827,38 +2040,30 @@ async function verifyCloudSync() {
 function triggerAutoCloudSyncIfPossible() {
     const endpoint = localStorage.getItem('sys_gas_url');
     if (endpoint) {
-        triggerSynchronousCloudBackupPush().catch(() => {});
+        triggerSynchronousCloudBackupPush().catch(function() {});
+        setTimeout(function() {
+            autoPullFromCloudIfPossible();
+        }, 3000);
     }
 }
 
-async function verifyCloudSync() {
+function autoPullFromCloudIfPossible() {
     const endpoint = localStorage.getItem('sys_gas_url');
     const secret = localStorage.getItem('sys_api_pwd');
-    if(!endpoint) { alert("Missing Google Script URL."); return; }
+    if (!endpoint) return;
 
     try {
-        const verifyUrl = `${endpoint}?token=${encodeURIComponent(secret)}&action=SYNC_PULL`;
-        const resp = await fetch(verifyUrl);
-        const cloud = await resp.json();
-        const localItems = appState.inventory.length;
-        const cloudItems = (cloud && cloud.inventory) ? cloud.inventory.length : -1;
-        const localSegs = Object.keys(appState.segments).length;
-        const cloudSegs = (cloud && cloud.segments) ? Object.keys(cloud.segments).length : -1;
-
-        if (cloudItems === localItems && cloudSegs === localSegs) {
-            document.getElementById('syncStatusBadge').innerText = '✅ In Sync (' + localItems + ' items)';
-            document.getElementById('syncStatusBadge').className = 'text-[10px] text-emerald-600 font-medium';
-            alert('✅ In sync: ' + localItems + ' items, ' + localSegs + ' segments match.');
-        } else {
-            document.getElementById('syncStatusBadge').innerText = '⚠️ Cloud:' + cloudItems + ' items Local:' + localItems;
-            document.getElementById('syncStatusBadge').className = 'text-[10px] text-amber-600 font-medium';
-            alert('⚠️ Mismatch — Cloud: ' + cloudItems + ' items / ' + cloudSegs + ' segs vs Local: ' + localItems + ' items / ' + localSegs + ' segs.');
-        }
-    } catch(e) {
-        document.getElementById('syncStatusBadge').innerText = '❌ Offline';
-        document.getElementById('syncStatusBadge').className = 'text-[10px] text-red-500 font-medium';
-        alert('Cannot reach cloud: ' + e.message);
-    }
+        var url = endpoint + '?token=' + encodeURIComponent(secret) + '&action=SYNC_PULL';
+        jsonpFetch(url, 'hkAutoPullCb', 12000).then(function(json) {
+            if (json && json.inventory) {
+                var mergedState = migrateLegacyState(json);
+                if (!mergedState.language) mergedState.language = appState.language;
+                appState = mergedState;
+                saveStateToLocalStorage();
+                syncUIComponents();
+            }
+        }).catch(function() {});
+    } catch(e) {}
 }
 
 /* ==========================================================================
@@ -1963,6 +2168,20 @@ function resetAISearchFilter() {
     document.getElementById('aiSearchStatus').classList.add('hidden');
     document.getElementById('btnResetAISearch').classList.add('hidden');
     renderFilteredInventoryTable();
+}
+
+function toggleAIPanel() {
+    var panel = document.getElementById('aiSearchPanel');
+    var arrow = document.getElementById('aiToggleArrow');
+    if (panel.classList.contains('hidden')) {
+        panel.classList.remove('hidden');
+        arrow.textContent = '\u25B2';
+        document.getElementById('btnToggleAILabel').textContent = 'Hide AI Search';
+    } else {
+        panel.classList.add('hidden');
+        arrow.textContent = '\u25C0';
+        document.getElementById('btnToggleAILabel').textContent = 'AI Deep Search';
+    }
 }
 
 /* ==========================================================================
@@ -2104,23 +2323,20 @@ function syncUIComponents() {
     syncFilterContainersDropdown();
 
     // 2. Categories Selectors Flatten Mapping
-    const formCatSelect = document.getElementById('invItemCategorySelect');
     const filterCatSelect = document.getElementById('filterCategorySelect');
-
-    const savedCatValue = formCatSelect.value;
     const savedFilterCatValue = filterCatSelect.value;
 
-    formCatSelect.innerHTML = '<option value="">' + t('chooseCategory') + '</option>';
     filterCatSelect.innerHTML = '<option value="">' + t('allCategories') + '</option>';
 
     const continuousCategoriesList = flattenCategoryTreeToLinearRoutes(appState.categories);
     continuousCategoriesList.forEach(route => {
-        const optA = document.createElement('option'); optA.value = route; optA.innerText = route; formCatSelect.appendChild(optA);
         const optB = document.createElement('option'); optB.value = route; optB.innerText = route; filterCatSelect.appendChild(optB);
     });
 
-    formCatSelect.value = savedCatValue;
     filterCatSelect.value = savedFilterCatValue;
+
+    // 2b. Populate cascading category Level 1
+    syncCategoryLevel1();
 
     // 3. Render Tree Subcomponents Assemblies
     syncUserInterface();

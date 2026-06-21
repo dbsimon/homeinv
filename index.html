@@ -2,7 +2,7 @@
 <html lang="zh-Hant-HK">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
     <title>Find My Item — 物件追蹤</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
@@ -52,7 +52,8 @@
             </div>
             <nav class="flex space-x-1" aria-label="Desktop Navigation">
                 <button onclick="switchTab('tab-spatial')" id="btn-desktop-spatial" class="tab-nav tab-active px-4 py-2 text-sm font-medium transition-all" data-i18n="tabLocation">Location</button>
-                <button onclick="switchTab('tab-inventory')" id="btn-desktop-inventory" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabInventory">Inventory</button>
+                <button onclick="switchTab('tab-register')" id="btn-desktop-register" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabRegister">Register</button>
+                <button onclick="switchTab('tab-inventory')" id="btn-desktop-inventory" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabBrowse">Browse</button>
                 <button onclick="switchTab('tab-classes')" id="btn-desktop-classes" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabClasses">Categories</button>
                 <button onclick="switchTab('tab-cloud')" id="btn-desktop-cloud" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabCloud">Cloud</button>
             </nav>
@@ -122,7 +123,7 @@
                         </div>
                         
                          <div class="flex items-center gap-2 mb-3">
-                              <input type="file" id="layoutBackgroundFileInput" accept="image/*" capture="environment" class="hidden" onchange="handleLayoutBackgroundUpload(event)">
+                              <input type="file" id="layoutBackgroundFileInput" accept="image/*" class="hidden" onchange="handleLayoutBackgroundUpload(event)">
                               <button onclick="document.getElementById('layoutBackgroundFileInput').click()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors" data-i18n="importLayout">Import Layout Image</button>
                               <button onclick="clearLayoutBackground()" id="btnClearLayoutBg" class="text-xs bg-slate-100 hover:bg-red-50 text-slate-500 hover:text-red-600 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors hidden" data-i18n="removeImage">Remove Image</button>
                          </div>
@@ -173,35 +174,27 @@
             </div>
         </section>
 
-        <section id="tab-inventory" class="tab-panel hidden-panel">
-            <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-4">
-                <div class="flex gap-2">
-                    <div class="flex-1 relative">
-                        <input type="text" id="aiSearchDescription" placeholder="Describe what you are looking for... e.g. 'blue jacket in bedroom wardrobe'" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-blue-500 outline-none pr-24">
-                        <button onclick="performAISearch()" id="btnAISearch" class="absolute right-1 top-1 bottom-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 rounded-md transition-colors">AI Search</button>
-                    </div>
-                    <button onclick="resetAISearchFilter()" id="btnResetAISearch" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-500 font-medium px-3 py-2 rounded-lg border border-slate-300 transition-colors hidden whitespace-nowrap">Clear AI Filter</button>
-                </div>
-                <p id="aiSearchStatus" class="text-xs text-slate-400 mt-2 hidden"></p>
-            </div>
-            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm mb-6">
-                <div class="flex justify-between items-center mb-4 border-b border-slate-100 pb-3 cursor-pointer" onclick="toggleInventoryForm()">
-                    <div class="flex items-center gap-2">
-                        <h2 id="inventoryFormTitle" class="text-base font-bold text-slate-900">Register Inventory Stock Asset</h2>
-                        <span id="invFormToggleIcon" class="text-slate-400 text-sm font-bold transition-transform duration-200">▼</span>
-                    </div>
-                    <button onclick="event.stopPropagation(); clearInventoryFormContext()" id="btnResetFormState" class="text-xs text-slate-500 hover:text-slate-800 hidden font-medium">Exit Modification Mode</button>
+        <section id="tab-register" class="tab-panel hidden-panel">
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                <div class="flex justify-between items-center mb-4 border-b border-slate-100 pb-3">
+                    <h2 id="inventoryFormTitle" class="text-base font-bold text-slate-900">Register Inventory Stock Asset</h2>
+                    <button onclick="clearInventoryFormContext()" id="btnResetFormState" class="text-xs text-slate-500 hover:text-slate-800 hidden font-medium">Exit Modification Mode</button>
                 </div>
                 
                 <input type="hidden" id="editTargetItemId">
-                <div id="inventoryFormContent" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 hidden">
+                <div id="inventoryFormContent" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                     <div>
                         <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="itemName">Item Reference Designation</label>
                         <input type="text" id="invItemName" data-i18n-placeholder="itemNamePlaceholder" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
                     </div>
                     <div>
                         <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="categoryRoute">Category Route Allocation</label>
-                        <select id="invItemCategorySelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"></select>
+                        <div class="space-y-1.5">
+                            <select id="invCatL1" onchange="syncCategoryLevel2()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 1</option></select>
+                            <select id="invCatL2" onchange="syncCategoryLevel3()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 2</option></select>
+                            <select id="invCatL3" onchange="syncCategoryLevel4()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 3</option></select>
+                            <select id="invCatL4" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 4</option></select>
+                        </div>
                     </div>
                     <div>
                         <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="targetSegment">Target Home Segment</label>
@@ -232,7 +225,7 @@
                         <div class="flex gap-2 items-start">
                             <div class="flex-1 space-y-2">
                                 <div class="flex gap-2">
-                                    <input type="file" id="invItemImageFile" accept="image/*" capture="environment" class="hidden" onchange="handleAssetImageUpload(event)">
+                                    <input type="file" id="invItemImageFile" accept="image/*" class="hidden" onchange="handleAssetImageUpload(event)">
                                     <button type="button" onclick="document.getElementById('invItemImageFile').click()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-3 py-2 rounded-lg border border-slate-300 transition-colors whitespace-nowrap" data-i18n="uploadPhoto">Upload Photo</button>
                                     <input type="text" id="invItemImageUrl" data-i18n-placeholder="imageUrlPlaceholder" oninput="updateImagePreviewFromUrl()" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
                                     <button type="button" onclick="aiAnalyzeImage()" id="btnAIAnalyze" style="display:none" class="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-medium px-3 py-2 rounded-lg border border-indigo-200 transition-colors whitespace-nowrap">AI Analyze</button>
@@ -254,17 +247,42 @@
                     </div>
                 </div>
             </div>
+        </section>
 
-            <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-4 flex flex-col md:flex-row justify-between items-stretch md:items-center gap-3">
-                <div class="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                    <input type="text" id="filterSearchQuery" oninput="renderFilteredInventoryTable()" placeholder="Search Item Reference..." class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none">
-                    <select id="filterSegmentSelect" onchange="syncFilterContainersDropdown(); renderFilteredInventoryTable();" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Segments</option></select>
-                    <select id="filterContainerSelect" onchange="renderFilteredInventoryTable()" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Containers</option></select>
-                    <select id="filterCategorySelect" onchange="renderFilteredInventoryTable()" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Categories</option></select>
-                    <select id="filterOwnerSelect" onchange="renderFilteredInventoryTable()" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Owners</option></select>
+        <section id="tab-inventory" class="tab-panel hidden-panel">
+            <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-4">
+                <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 mb-3">
+                    <div class="flex-1">
+                        <input type="text" id="filterSearchQuery" oninput="renderFilteredInventoryTable()" placeholder="Search by name or remarks..." class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+                    <button onclick="toggleAIPanel()" id="btnToggleAI" class="flex items-center gap-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg px-3 py-2 transition-colors whitespace-nowrap">
+                        <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+                        <span id="btnToggleAILabel">AI Deep Search</span>
+                        <span id="aiToggleArrow" class="text-[10px] transition-transform duration-200">&#9650;</span>
+                    </button>
                 </div>
-                <div class="text-xs font-bold text-slate-400 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 text-center md:text-right whitespace-nowrap">
-                    Active Registry Count: <span id="inventoryMetricCount" class="text-blue-600 font-extrabold text-sm">0</span>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-2">
+                    <select id="filterSegmentSelect" onchange="syncFilterContainersDropdown(); renderFilteredInventoryTable();" class="text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Segments</option></select>
+                    <select id="filterContainerSelect" onchange="renderFilteredInventoryTable()" class="text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Containers</option></select>
+                    <select id="filterCategorySelect" onchange="renderFilteredInventoryTable()" class="text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Categories</option></select>
+                    <select id="filterOwnerSelect" onchange="renderFilteredInventoryTable()" class="text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">All Owners</option></select>
+                </div>
+
+                <div class="flex items-center justify-between">
+                    <span id="aiSearchStatus" class="text-xs text-indigo-500 font-medium hidden"></span>
+                    <button onclick="resetAISearchFilter()" id="btnResetAISearch" class="text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 font-medium px-2.5 py-1 rounded-lg border border-amber-200 transition-colors hidden whitespace-nowrap">Clear AI Filter</button>
+                    <span class="text-xs font-bold text-slate-400 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 ml-auto">
+                        <span id="inventoryMetricCount" class="text-blue-600 font-extrabold text-sm">0</span> items
+                    </span>
+                </div>
+
+                <div id="aiSearchPanel" class="mt-3 pt-3 border-t border-slate-100 hidden">
+                    <p class="text-[11px] text-slate-500 mb-2">Describe items by appearance, location, or category — AI will find matches across names, AI metadata, and remarks.</p>
+                    <div class="flex gap-2">
+                        <input type="text" id="aiSearchDescription" placeholder="e.g. 'blue jacket in bedroom wardrobe' or 'summer clothes'" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 outline-none">
+                        <button onclick="performAISearch()" id="btnAISearch" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 rounded-lg transition-colors whitespace-nowrap">AI Search</button>
+                    </div>
                 </div>
             </div>
 
@@ -375,14 +393,18 @@
         </div>
     </main>
 
-    <nav class="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-40 shadow-xl flex justify-around md:hidden px-2 pb-safe-area" aria-label="Mobile Navigation">
+    <nav class="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-40 shadow-xl flex justify-around md:hidden px-1 pb-safe-area" aria-label="Mobile Navigation">
         <button onclick="switchTab('tab-spatial')" id="btn-mobile-spatial" class="flex flex-col items-center justify-center py-2 text-slate-400 font-medium transition-all flex-1">
             <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
             <span class="text-[10px] tracking-tight font-medium" data-i18n="tabLocation">Location</span>
         </button>
+        <button onclick="switchTab('tab-register')" id="btn-mobile-register" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all flex-1">
+            <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+            <span class="text-[10px] tracking-tight font-medium" data-i18n="tabRegister">Register</span>
+        </button>
         <button onclick="switchTab('tab-inventory')" id="btn-mobile-inventory" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all flex-1">
-            <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
-            <span class="text-[10px] tracking-tight font-medium" data-i18n="tabInventory">Inventory</span>
+            <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <span class="text-[10px] tracking-tight font-medium" data-i18n="tabBrowse">Browse</span>
         </button>
         <button onclick="switchTab('tab-classes')" id="btn-mobile-classes" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all flex-1">
             <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>

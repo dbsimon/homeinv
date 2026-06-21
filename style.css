@@ -178,6 +178,7 @@ input[type="text"], input[type="date"], input[type="email"],
 input[type="number"], input[type="password"], input[type="search"],
 textarea, select {
     min-height: 44px;
+    font-size: 16px;
 }
 
 /* Active node label more visible */
