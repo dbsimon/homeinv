@@ -1268,6 +1268,7 @@ function createClassificationNode() {
         targetParentMap[nodeName] = {};
         saveStateToLocalStorage();
         syncUIComponents();
+        triggerAutoCloudSyncIfPossible();
         document.getElementById('newCategoryNodeName').value = '';
         resetCategorySelectionContext();
     }
@@ -1291,6 +1292,7 @@ function deleteSelectedCategoryNode() {
         delete targetParentMap[targetNodeKey];
         saveStateToLocalStorage();
         syncUIComponents();
+        triggerAutoCloudSyncIfPossible();
         resetCategorySelectionContext();
     }
 }
@@ -1930,11 +1932,11 @@ async function triggerSynchronousCloudBackupPush() {
         addFormField(form, 'payload', stateJson);
 
         form.submit();
-        alert(t('pushDispatched') + " (" + stateJson.length + " " + t('chars') + "). " + t('pullCloud') + ".");
         document.getElementById('syncStatusBadge').innerText = '📤 ' + t('pushed');
         document.getElementById('syncStatusBadge').className = 'text-[10px] text-blue-600 font-medium';
     } catch (e) {
-        alert("Push failed: " + e.message);
+        document.getElementById('syncStatusBadge').innerText = '❌ ' + t('offline');
+        document.getElementById('syncStatusBadge').className = 'text-[10px] text-red-500 font-medium';
     }
 }
 
@@ -1997,14 +1999,13 @@ async function triggerSynchronousCloudFetchPull() {
             syncUIComponents();
             document.getElementById('syncStatusBadge').innerText = '✅ ' + t('pulled') + ' ' + new Date().toLocaleTimeString();
             document.getElementById('syncStatusBadge').className = 'text-[10px] text-emerald-600 font-medium';
-            alert(t('pullComplete') + ' ' + appState.inventory.length + ' ' + t('itemsLoaded'));
         } else {
-            alert("Failed to parse valid cloud response.");
+            document.getElementById('syncStatusBadge').innerText = '❌ ' + t('offline');
+            document.getElementById('syncStatusBadge').className = 'text-[10px] text-red-500 font-medium';
         }
     } catch (e) {
         document.getElementById('syncStatusBadge').innerText = '❌ Offline';
         document.getElementById('syncStatusBadge').className = 'text-[10px] text-red-500 font-medium';
-        alert("Pull failed: " + e.message);
     }
 }
 
@@ -2024,16 +2025,13 @@ async function verifyCloudSync() {
         if (cloudItems === localItems && cloudSegs === localSegs) {
             document.getElementById('syncStatusBadge').innerText = '✅ ' + t('inSync') + ' (' + localItems + ' ' + t('items') + ')';
             document.getElementById('syncStatusBadge').className = 'text-[10px] text-emerald-600 font-medium';
-            alert('✅ ' + t('inSync') + ': ' + localItems + ' ' + t('items') + ', ' + localSegs + ' ' + t('segments') + ' ' + t('inSync').toLowerCase() + '.');
         } else {
             document.getElementById('syncStatusBadge').innerText = '⚠️ ' + t('cloud') + ':' + cloudItems + ' ' + t('local') + ':' + localItems;
             document.getElementById('syncStatusBadge').className = 'text-[10px] text-amber-600 font-medium';
-            alert('⚠️ ' + t('mismatch') + ' — ' + t('cloud') + ': ' + cloudItems + ' ' + t('items') + ' / ' + cloudSegs + ' ' + t('segments') + ' vs ' + t('local') + ': ' + localItems + ' ' + t('items') + ' / ' + localSegs + ' ' + t('segments') + '.');
         }
     } catch(e) {
         document.getElementById('syncStatusBadge').innerText = '❌ ' + t('offline');
         document.getElementById('syncStatusBadge').className = 'text-[10px] text-red-500 font-medium';
-        alert(t('syncVerifyFailed') + e.message);
     }
 }
 
