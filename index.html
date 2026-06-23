@@ -126,6 +126,10 @@
                               <input type="file" id="layoutBackgroundFileInput" accept="image/*" class="hidden" onchange="handleLayoutBackgroundUpload(event)">
                               <button onclick="document.getElementById('layoutBackgroundFileInput').click()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors" data-i18n="importLayout">Import Layout Image</button>
                               <button onclick="clearLayoutBackground()" id="btnClearLayoutBg" class="text-xs bg-slate-100 hover:bg-red-50 text-slate-500 hover:text-red-600 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors hidden" data-i18n="removeImage">Remove Image</button>
+                              <button onclick="saveLayoutMap()" id="btnSaveLayout" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors inline-flex items-center gap-1">
+                                  <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>
+                                  <span class="btn-label">Save</span>
+                              </button>
                          </div>
                          <div class="relative bg-slate-100 border border-slate-300 rounded-xl overflow-hidden shadow-inner aspect-[4/3] w-full max-w-3xl mx-auto">
                              <div id="spatialMapBgImage" class="absolute inset-0 spatial-bg-image pointer-events-none" style="display:none;"></div>
@@ -160,9 +164,15 @@
                             </div>
                             <p id="categoryDepthWarning" class="text-amber-600 text-xs mt-1.5 hidden font-medium" data-i18n="tierWarning">⚠️ Tier structural threshold reached (Max 4 Levels Allowed).</p>
                         </div>
-                        <div class="pt-2 border-t border-slate-100 flex justify-between">
+                        <div class="pt-2 border-t border-slate-100 flex justify-between items-center">
                             <button onclick="resetCategorySelectionContext()" class="text-xs text-slate-500 hover:text-slate-800 font-medium" data-i18n="resetSelection">Reset Selection to Root</button>
-                            <button onclick="deleteSelectedCategoryNode()" class="text-xs text-red-500 hover:text-red-700 font-medium" data-i18n="deleteBranch">Delete Selection Branch</button>
+                            <div class="flex items-center gap-2">
+                                <button onclick="saveClassification()" id="btnSaveClassification" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors inline-flex items-center gap-1">
+                                    <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>
+                                    <span class="btn-label">Save</span>
+                                </button>
+                                <button onclick="deleteSelectedCategoryNode()" class="text-xs text-red-500 hover:text-red-700 font-medium" data-i18n="deleteBranch">Delete Selection Branch</button>
+                            </div>
                         </div>
                     </div>
                 </div>

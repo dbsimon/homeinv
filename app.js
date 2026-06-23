@@ -26,6 +26,7 @@ const LANG = {
     noneSelected: 'None Selected',
     importLayout: 'Import Layout Image',
     removeImage: 'Remove Image',
+    saveLayout: 'Save Layout',
     assetsIn: 'Assets in',
     items: 'items',
     item: 'item',
@@ -200,6 +201,7 @@ const LANG = {
     noneSelected: '未選擇',
     importLayout: '匯入平面圖',
     removeImage: '移除圖片',
+    saveLayout: '儲存佈局',
     assetsIn: '資產位於',
     items: '件',
     item: '件',
@@ -380,6 +382,8 @@ let appState = {
 // Transient runtime state (not persisted)
 let aiFilteredItemIds = null;
 let editingNode = null; // { type: 'segment'|'container'|'subContainer', segment, container?, subContainer?, oldName }
+let _mapDirty = false;
+let _classesDirty = false;
 
 // Coordinate key helpers
 function buildCoordKey(seg, con, sub) {
@@ -496,6 +500,11 @@ function switchTab(targetTabId) {
 
     const mobileBtn = document.getElementById(`btn-mobile-${targetTabId.replace('tab-', '')}`);
     if (mobileBtn) mobileBtn.classList.add('tab-active-mobile');
+
+    // Reset map view to show all nodes when entering the location tab
+    if (targetTabId === 'tab-spatial') {
+        clearActiveNode();
+    }
 }
 
 function filterBy(field, value) {
@@ -991,6 +1000,54 @@ function clearActiveNode() {
     renderContainerAssetList();
 }
 
+function markMapDirty() {
+    _mapDirty = true;
+    var btn = document.getElementById('btnSaveLayout');
+    if (btn) {
+        btn.classList.remove('bg-slate-100', 'text-slate-600', 'hover:bg-slate-200');
+        btn.classList.add('bg-amber-500', 'text-white', 'hover:bg-amber-600');
+        var label = btn.querySelector('.btn-label');
+        if (label) label.innerText = 'Save *';
+    }
+}
+
+function saveLayoutMap() {
+    saveStateToLocalStorage();
+    triggerAutoCloudSyncIfPossible();
+    _mapDirty = false;
+    var btn = document.getElementById('btnSaveLayout');
+    if (btn) {
+        btn.classList.remove('bg-amber-500', 'text-white', 'hover:bg-amber-600');
+        btn.classList.add('bg-slate-100', 'text-slate-600', 'hover:bg-slate-200');
+        var label = btn.querySelector('.btn-label');
+        if (label) label.innerText = 'Save';
+    }
+}
+
+function markClassesDirty() {
+    _classesDirty = true;
+    var btn = document.getElementById('btnSaveClassification');
+    if (btn) {
+        btn.classList.remove('bg-slate-100', 'text-slate-600', 'hover:bg-slate-200');
+        btn.classList.add('bg-amber-500', 'text-white', 'hover:bg-amber-600');
+        var label = btn.querySelector('.btn-label');
+        if (label) label.innerText = 'Save *';
+    }
+}
+
+function saveClassification() {
+    saveStateToLocalStorage();
+    triggerAutoCloudSyncIfPossible();
+    _classesDirty = false;
+    var btn = document.getElementById('btnSaveClassification');
+    if (btn) {
+        btn.classList.remove('bg-amber-500', 'text-white', 'hover:bg-amber-600');
+        btn.classList.add('bg-slate-100', 'text-slate-600', 'hover:bg-slate-200');
+        var label = btn.querySelector('.btn-label');
+        if (label) label.innerText = 'Save';
+    }
+}
+
 function selectNodeForAssets(seg, con, sub) {
     appState.activeMappingNode = { segment: seg, container: con || null, subContainer: sub || null };
     var label = seg;
@@ -1038,59 +1095,79 @@ function renderSpatialMapGrid() {
         btnClear.classList.add('hidden');
     }
 
-    // Click to place a container that has no coordinates yet
+    // Click to place a container, or clear selection when clicking empty space
     gridMatrix.onclick = function(e) {
         var node = appState.activeMappingNode;
-        if (!node || !node.container || node.subContainer) return;
-        var nodeKey = buildCoordKey(node.segment, node.container, '');
-        if (appState.coordinates[nodeKey]) return;
-        const dimensions = gridMatrix.getBoundingClientRect();
-        const xPercent = Math.round(((e.clientX - dimensions.left) / dimensions.width) * 100);
-        const yPercent = Math.round(((e.clientY - dimensions.top) / dimensions.height) * 100);
-        appState.coordinates[nodeKey] = { x: xPercent, y: yPercent };
-        saveStateToLocalStorage();
-        renderSpatialMapGrid();
-        triggerAutoCloudSyncIfPossible();
+        var placed = false;
+        if (node && node.container && !node.subContainer) {
+            var nodeKey = buildCoordKey(node.segment, node.container, '');
+            if (!appState.coordinates[nodeKey]) {
+                const dimensions = gridMatrix.getBoundingClientRect();
+                const xPercent = Math.round(((e.clientX - dimensions.left) / dimensions.width) * 100);
+                const yPercent = Math.round(((e.clientY - dimensions.top) / dimensions.height) * 100);
+                appState.coordinates[nodeKey] = { x: xPercent, y: yPercent };
+                markMapDirty();
+                renderSpatialMapGrid();
+                placed = true;
+            }
+        }
+        if (!placed) clearActiveNode();
     };
 
-    // Determine which segments/containers to show based on selection
+    // Determine which segments to show based on selection (segment-level filter only)
     var filterSeg = null;
-    var filterCon = null;
     if (appState.activeMappingNode) {
         filterSeg = appState.activeMappingNode.segment;
-        filterCon = appState.activeMappingNode.container;
     }
 
-    // Iterate all segments, containers, render container-level nodes
+    // Build a map of container positions: prefer container-level coords, fallback to first sub-container coord
+    var containerPositions = {}; // key: seg|con -> { x, y }
     Object.keys(appState.segments).forEach(function(seg) {
-        if (filterSeg && seg !== filterSeg) return;
-        var containerMap = appState.segments[seg];
+        var containerMap = appState.segments[seg] || {};
         Object.keys(containerMap).forEach(function(con) {
-            if (filterCon && con !== filterCon) return;
-            var key = buildCoordKey(seg, con, '');
-            var coords = appState.coordinates[key];
-            if (!coords) return;
-
-            var isSelected = appState.activeMappingNode &&
-                appState.activeMappingNode.container === con &&
-                appState.activeMappingNode.segment === seg &&
-                !appState.activeMappingNode.subContainer;
-
-            var marker = document.createElement('div');
-            marker.className = 'absolute transform -translate-x-1/2 -translate-y-1/2 px-2 py-1 rounded text-[10px] font-bold shadow-md cursor-grab active:cursor-grabbing select-none whitespace-nowrap z-10 ' +
-                (isSelected ? 'bg-blue-600 text-white ring-2 ring-offset-1 ring-blue-400' : 'bg-slate-800 text-slate-100');
-            marker.style.left = coords.x + '%';
-            marker.style.top = coords.y + '%';
-            marker.innerText = con;
-            marker.setAttribute('data-seg', seg);
-            marker.setAttribute('data-con', con);
-            marker.addEventListener('mousedown', function(ev) { startMarkerDrag(ev, marker, seg, con); });
-            marker.addEventListener('touchstart', function(ev) { startMarkerDrag(ev, marker, seg, con); }, { passive: false });
-            marker.onclick = (function(segVal, conVal) {
-                return function(ev) { if (window._markerDidDrag) { window._markerDidDrag = false; return; } ev.stopPropagation(); selectNodeForAssets(segVal, conVal); };
-            })(seg, con);
-            gridMatrix.appendChild(marker);
+            var cKey = buildCoordKey(seg, con, '');
+            var cCoord = appState.coordinates[cKey];
+            if (cCoord) {
+                containerPositions[seg + '|' + con] = { seg: seg, con: con, x: cCoord.x, y: cCoord.y };
+            } else {
+                var subList = containerMap[con] || [];
+                for (var i = 0; i < subList.length; i++) {
+                    var sKey = buildCoordKey(seg, con, subList[i]);
+                    var sCoord = appState.coordinates[sKey];
+                    if (sCoord) {
+                        containerPositions[seg + '|' + con] = { seg: seg, con: con, x: sCoord.x, y: sCoord.y };
+                        break;
+                    }
+                }
+            }
         });
+    });
+
+    // Render container markers
+    Object.keys(containerPositions).forEach(function(posKey) {
+        var entry = containerPositions[posKey];
+        var seg = entry.seg, con = entry.con;
+        if (filterSeg && seg !== filterSeg) return;
+
+        var isSelected = appState.activeMappingNode &&
+            appState.activeMappingNode.container === con &&
+            appState.activeMappingNode.segment === seg &&
+            !appState.activeMappingNode.subContainer;
+
+        var marker = document.createElement('div');
+        marker.className = 'absolute transform -translate-x-1/2 -translate-y-1/2 px-2 py-1 rounded text-[10px] font-bold shadow-md cursor-grab active:cursor-grabbing select-none whitespace-nowrap z-10 ' +
+            (isSelected ? 'bg-blue-600 text-white ring-2 ring-offset-1 ring-blue-400' : 'bg-slate-800 text-slate-100');
+        marker.style.left = entry.x + '%';
+        marker.style.top = entry.y + '%';
+        marker.innerText = con;
+        marker.setAttribute('data-seg', seg);
+        marker.setAttribute('data-con', con);
+        marker.addEventListener('mousedown', function(ev) { startMarkerDrag(ev, marker, seg, con); });
+        marker.addEventListener('touchstart', function(ev) { startMarkerDrag(ev, marker, seg, con); }, { passive: false });
+        marker.onclick = (function(segVal, conVal) {
+            return function(ev) { if (window._markerDidDrag) { window._markerDidDrag = false; return; } ev.stopPropagation(); selectNodeForAssets(segVal, conVal); };
+        })(seg, con);
+        gridMatrix.appendChild(marker);
     });
 
     renderContainerAssetList();
@@ -1132,9 +1209,7 @@ function startMarkerDrag(e, marker, seg, con) {
             var topPct = parseFloat(marker.style.top);
             var key = buildCoordKey(seg, con, '');
             appState.coordinates[key] = { x: Math.round(leftPct), y: Math.round(topPct) };
-            saveStateToLocalStorage();
-            renderSpatialMapGrid();
-            triggerAutoCloudSyncIfPossible();
+            markMapDirty();
         }
     }
 
@@ -1150,7 +1225,7 @@ function handleLayoutBackgroundUpload(event) {
 
     compressImageFile(file, 1600, 0.75, function(dataUrl) {
         appState.spatialBackgroundImage = dataUrl;
-        saveStateToLocalStorage();
+        markMapDirty();
         renderSpatialMapGrid();
     });
     event.target.value = '';
@@ -1158,7 +1233,7 @@ function handleLayoutBackgroundUpload(event) {
 
 function clearLayoutBackground() {
     appState.spatialBackgroundImage = null;
-    saveStateToLocalStorage();
+    markMapDirty();
     renderSpatialMapGrid();
 }
 
@@ -1273,9 +1348,8 @@ function createClassificationNode() {
 
     if (targetParentMap && !targetParentMap[nodeName]) {
         targetParentMap[nodeName] = {};
-        saveStateToLocalStorage();
+        markClassesDirty();
         syncUIComponents();
-        triggerAutoCloudSyncIfPossible();
         document.getElementById('newCategoryNodeName').value = '';
         resetCategorySelectionContext();
     }
@@ -1297,9 +1371,8 @@ function deleteSelectedCategoryNode() {
 
     if (targetParentMap && targetParentMap[targetNodeKey]) {
         delete targetParentMap[targetNodeKey];
-        saveStateToLocalStorage();
+        markClassesDirty();
         syncUIComponents();
-        triggerAutoCloudSyncIfPossible();
         resetCategorySelectionContext();
     }
 }
