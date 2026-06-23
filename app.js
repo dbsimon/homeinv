@@ -21,7 +21,7 @@ const LANG = {
     addSubContainer: 'Add Sub-Container',
     structuralIndex: 'Structural Index',
     locationMap: 'Location Map',
-    gridHint: 'Select a sub-container from structural index to map its position by clicking on the grid matrix.',
+    gridHint: 'Select a container from structural index to map its position by clicking on the grid matrix.',
     activeNode: 'Active Node:',
     noneSelected: 'None Selected',
     importLayout: 'Import Layout Image',
@@ -195,7 +195,7 @@ const LANG = {
     addSubContainer: '新增子容器',
     structuralIndex: '結構索引',
     locationMap: '位置地圖',
-    gridHint: '從結構索引中選擇子容器，然後點擊網格矩陣來標記其位置。',
+    gridHint: '從結構索引中選擇容器，然後點擊網格矩陣來標記其位置。',
     activeNode: '當前節點：',
     noneSelected: '未選擇',
     importLayout: '匯入平面圖',
@@ -934,6 +934,10 @@ function populateConfiguratorForEdit(type, seg, con, sub) {
 function deleteSegmentNode(seg) {
     if (!confirm(t('confirmDeleteSeg') + ' "' + seg + '" ' + t('members') + '?')) return;
     delete appState.segments[seg];
+    // Clean up all coordinates under this segment
+    Object.keys(appState.coordinates).forEach(function(k) {
+        if (k.indexOf(seg + '|') === 0) delete appState.coordinates[k];
+    });
     if (appState.activeMappingNode && appState.activeMappingNode.segment === seg) {
         appState.activeMappingNode = null;
         document.getElementById('activeMappingContainerNode').innerText = t('noneSelected');
@@ -946,6 +950,13 @@ function deleteSegmentNode(seg) {
 function deleteContainerNode(seg, con) {
     if (!confirm(t('confirmDeleteCon') + ' "' + seg + ' > ' + con + '"?')) return;
     if (appState.segments[seg]) delete appState.segments[seg][con];
+    // Clean up container-level coordinates
+    var containerKey = buildCoordKey(seg, con, '');
+    delete appState.coordinates[containerKey];
+    // Clean up sub-container coordinates under this container
+    Object.keys(appState.coordinates).forEach(function(k) {
+        if (k.indexOf(seg + '|' + con + '|') === 0) delete appState.coordinates[k];
+    });
     if (appState.activeMappingNode && appState.activeMappingNode.segment === seg && appState.activeMappingNode.container === con) {
         appState.activeMappingNode = null;
         document.getElementById('activeMappingContainerNode').innerText = t('noneSelected');
@@ -1027,11 +1038,11 @@ function renderSpatialMapGrid() {
         btnClear.classList.add('hidden');
     }
 
-    // Click to place a sub-container that has no coordinates yet
+    // Click to place a container that has no coordinates yet
     gridMatrix.onclick = function(e) {
         var node = appState.activeMappingNode;
-        if (!node || !node.subContainer) return;
-        var nodeKey = buildCoordKey(node.segment, node.container, node.subContainer);
+        if (!node || !node.container || node.subContainer) return;
+        var nodeKey = buildCoordKey(node.segment, node.container, '');
         if (appState.coordinates[nodeKey]) return;
         const dimensions = gridMatrix.getBoundingClientRect();
         const xPercent = Math.round(((e.clientX - dimensions.left) / dimensions.width) * 100);
@@ -1050,46 +1061,42 @@ function renderSpatialMapGrid() {
         filterCon = appState.activeMappingNode.container;
     }
 
-    // Iterate all segments, containers, sub-containers, applying filter
+    // Iterate all segments, containers, render container-level nodes
     Object.keys(appState.segments).forEach(function(seg) {
         if (filterSeg && seg !== filterSeg) return;
         var containerMap = appState.segments[seg];
         Object.keys(containerMap).forEach(function(con) {
             if (filterCon && con !== filterCon) return;
-            var subList = containerMap[con] || [];
-            subList.forEach(function(scName) {
-                var key = buildCoordKey(seg, con, scName);
-                var coords = appState.coordinates[key];
-                if (!coords) return;
+            var key = buildCoordKey(seg, con, '');
+            var coords = appState.coordinates[key];
+            if (!coords) return;
 
-                var isSelected = appState.activeMappingNode &&
-                    appState.activeMappingNode.subContainer === scName &&
-                    appState.activeMappingNode.container === con &&
-                    appState.activeMappingNode.segment === seg;
+            var isSelected = appState.activeMappingNode &&
+                appState.activeMappingNode.container === con &&
+                appState.activeMappingNode.segment === seg &&
+                !appState.activeMappingNode.subContainer;
 
-                var marker = document.createElement('div');
-                marker.className = 'absolute transform -translate-x-1/2 -translate-y-1/2 px-2 py-1 rounded text-[10px] font-bold shadow-md cursor-grab active:cursor-grabbing select-none whitespace-nowrap z-10 ' +
-                    (isSelected ? 'bg-blue-600 text-white ring-2 ring-offset-1 ring-blue-400' : 'bg-slate-800 text-slate-100');
-                marker.style.left = coords.x + '%';
-                marker.style.top = coords.y + '%';
-                marker.innerText = scName;
-                marker.setAttribute('data-seg', seg);
-                marker.setAttribute('data-con', con);
-                marker.setAttribute('data-sub', scName);
-                marker.addEventListener('mousedown', function(ev) { startMarkerDrag(ev, marker, seg, con, scName); });
-                marker.addEventListener('touchstart', function(ev) { startMarkerDrag(ev, marker, seg, con, scName); }, { passive: false });
-                marker.onclick = (function(segVal, conVal, subVal) {
-                    return function(ev) { if (window._markerDidDrag) { window._markerDidDrag = false; return; } ev.stopPropagation(); selectSubContainerForMapping(segVal, conVal, subVal); };
-                })(seg, con, scName);
-                gridMatrix.appendChild(marker);
-            });
+            var marker = document.createElement('div');
+            marker.className = 'absolute transform -translate-x-1/2 -translate-y-1/2 px-2 py-1 rounded text-[10px] font-bold shadow-md cursor-grab active:cursor-grabbing select-none whitespace-nowrap z-10 ' +
+                (isSelected ? 'bg-blue-600 text-white ring-2 ring-offset-1 ring-blue-400' : 'bg-slate-800 text-slate-100');
+            marker.style.left = coords.x + '%';
+            marker.style.top = coords.y + '%';
+            marker.innerText = con;
+            marker.setAttribute('data-seg', seg);
+            marker.setAttribute('data-con', con);
+            marker.addEventListener('mousedown', function(ev) { startMarkerDrag(ev, marker, seg, con); });
+            marker.addEventListener('touchstart', function(ev) { startMarkerDrag(ev, marker, seg, con); }, { passive: false });
+            marker.onclick = (function(segVal, conVal) {
+                return function(ev) { if (window._markerDidDrag) { window._markerDidDrag = false; return; } ev.stopPropagation(); selectNodeForAssets(segVal, conVal); };
+            })(seg, con);
+            gridMatrix.appendChild(marker);
         });
     });
 
     renderContainerAssetList();
 }
 
-function startMarkerDrag(e, marker, seg, con, sub) {
+function startMarkerDrag(e, marker, seg, con) {
     e.preventDefault();
     e.stopPropagation();
     window._markerDidDrag = false;
@@ -1123,7 +1130,7 @@ function startMarkerDrag(e, marker, seg, con, sub) {
         if (window._markerDidDrag) {
             var leftPct = parseFloat(marker.style.left);
             var topPct = parseFloat(marker.style.top);
-            var key = buildCoordKey(seg, con, sub);
+            var key = buildCoordKey(seg, con, '');
             appState.coordinates[key] = { x: Math.round(leftPct), y: Math.round(topPct) };
             saveStateToLocalStorage();
             renderSpatialMapGrid();
@@ -1666,6 +1673,15 @@ async function aiAnalyzeImage() {
         var content = '';
         var usedVision = false;
 
+        function extractContent(msg) {
+            if (!msg) return '';
+            if (typeof msg.content === 'string') return msg.content;
+            if (Array.isArray(msg.content)) {
+                return msg.content.map(function(p) { return p.text || ''; }).join(' ');
+            }
+            return '';
+        }
+
         // Vision call
         try {
             var visResp = await fetch('https://api.deepseek.com/v1/chat/completions', {
@@ -1682,8 +1698,8 @@ async function aiAnalyzeImage() {
             });
             var visData = await visResp.json();
             if (!visData.error && visData.choices && visData.choices[0]) {
-                content = visData.choices[0].message.content.trim();
-                usedVision = true;
+                content = extractContent(visData.choices[0].message);
+                if (content) usedVision = true;
             }
         } catch (visErr) { /* fall through to text fallback */ }
 
@@ -1703,8 +1719,10 @@ async function aiAnalyzeImage() {
             });
             var txtData = await txtResp.json();
             if (txtData.error) throw new Error(txtData.error.message);
-            if (txtData.choices && txtData.choices[0]) content = txtData.choices[0].message.content.trim();
+            if (txtData.choices && txtData.choices[0]) content = extractContent(txtData.choices[0].message);
         }
+
+        if (!content) throw new Error('Empty AI response');
 
         // Parse JSON from response
         var jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -1721,8 +1739,9 @@ async function aiAnalyzeImage() {
             }
         }
 
-        // Apply AI metadata
+        // Apply AI metadata — ensure it is always a flat string
         var aiDesc = meta.aiMetadata || meta.description || meta.desc || '';
+        if (typeof aiDesc === 'object') aiDesc = JSON.stringify(aiDesc);
         if (aiDesc) document.getElementById('invItemAiMetadata').value = aiDesc;
 
         // Also suggest item name if empty
@@ -1787,14 +1806,19 @@ function exportLocalDatabasesToExcel() {
     if (appState.spatialBackgroundImage) {
         spatialRows.push({"Type":"LAYOUT_IMAGE","Segment":"","Container":"","Sub-Container":"","Coordinate X (%)":"","Coordinate Y (%)":"","ImageData":appState.spatialBackgroundImage});
     }
+    // Export container-level coordinates
     for (var seg in appState.segments) {
         var containerMap = appState.segments[seg];
         for (var con in containerMap) {
+            var key = buildCoordKey(seg, con, '');
+            var coord = appState.coordinates[key];
+            if (coord) spatialRows.push({"Type":"COORDINATE","Segment":seg,"Container":con,"Sub-Container":"","Coordinate X (%)":coord.x,"Coordinate Y (%)":coord.y,"ImageData":""});
+            // Also export sub-container coordinates
             var subList = containerMap[con] || [];
             subList.forEach(function(sub) {
-                var key = buildCoordKey(seg, con, sub);
-                var coord = appState.coordinates[key];
-                if (coord) spatialRows.push({"Type":"COORDINATE","Segment":seg,"Container":con,"Sub-Container":sub,"Coordinate X (%)":coord.x,"Coordinate Y (%)":coord.y,"ImageData":""});
+                var subKey = buildCoordKey(seg, con, sub);
+                var subCoord = appState.coordinates[subKey];
+                if (subCoord) spatialRows.push({"Type":"COORDINATE","Segment":seg,"Container":con,"Sub-Container":sub,"Coordinate X (%)":subCoord.x,"Coordinate Y (%)":subCoord.y,"ImageData":""});
             });
         }
     }
@@ -1858,11 +1882,15 @@ function importExcelToLocalDatabases(event) {
                     } else if ((r["Type"] === "COORDINATE" || !r["Type"]) && r["Segment"]) {
                         var seg = r["Segment"] || '', con = r["Container"] || '', sub = r["Sub-Container"] || '';
                         var x = parseInt(r["Coordinate X (%)"]) || 0, y = parseInt(r["Coordinate Y (%)"]) || 0;
-                        if (seg && con && sub) {
+                        if (seg && con) {
                             if (!appState.segments[seg]) appState.segments[seg] = {};
                             if (!appState.segments[seg][con]) appState.segments[seg][con] = [];
-                            if (!appState.segments[seg][con].includes(sub)) appState.segments[seg][con].push(sub);
-                            appState.coordinates[buildCoordKey(seg, con, sub)] = { x: x, y: y };
+                            if (sub) {
+                                if (!appState.segments[seg][con].includes(sub)) appState.segments[seg][con].push(sub);
+                                appState.coordinates[buildCoordKey(seg, con, sub)] = { x: x, y: y };
+                            } else {
+                                appState.coordinates[buildCoordKey(seg, con, '')] = { x: x, y: y };
+                            }
                         }
                     }
                 });
@@ -2371,7 +2399,7 @@ function renderSpatialTreeHierarchy() {
                 const subEsc = sub.replace(/'/g, "&#39;");
                 const sItem = document.createElement('div');
                 sItem.className = "flex justify-between items-center cursor-pointer hover:bg-slate-50 rounded px-1 py-0.5";
-                sItem.innerHTML = `<span class="text-[11px] text-slate-500 hover:text-blue-600" onclick="event.stopPropagation(); selectSubContainerForMapping('${segEsc}', '${conEsc}', '${subEsc}')">📦 ${sub}</span><span onclick="event.stopPropagation(); deleteSubContainerNode('${segEsc}', '${conEsc}', '${subEsc}')" class="text-slate-300 hover:text-red-500 text-xs font-bold px-1">✕</span>`;
+                sItem.innerHTML = `<span class="text-[11px] text-slate-500 hover:text-blue-600" onclick="event.stopPropagation(); selectNodeForAssets('${segEsc}', '${conEsc}', '${subEsc}')">📦 ${sub}</span><span onclick="event.stopPropagation(); deleteSubContainerNode('${segEsc}', '${conEsc}', '${subEsc}')" class="text-slate-300 hover:text-red-500 text-xs font-bold px-1">✕</span>`;
                 subList.appendChild(sItem);
             });
 
