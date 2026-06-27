@@ -1824,6 +1824,7 @@ function commitItemToInventory() {
     const payloadItem = {
         id: editId ? editId : 'item_' + Date.now(),
         name,
+        brand: document.getElementById('invItemBrand').value.trim(),
         category: categoryStr,
         segment,
         container,
@@ -1833,6 +1834,7 @@ function commitItemToInventory() {
         remarks,
         aiMetadata: document.getElementById('invItemAiMetadata').value.trim(),
         purchaseDate: document.getElementById('invItemPurchaseDate').value,
+        warrantyDate: document.getElementById('invItemWarrantyDate').value,
         expiryDate: document.getElementById('invItemExpiryDate').value,
         timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
     };
@@ -1865,6 +1867,7 @@ function setupItemModificationContext(itemId) {
 
         document.getElementById('editTargetItemId').value = item.id;
         document.getElementById('invItemName').value = item.name;
+        document.getElementById('invItemBrand').value = item.brand || '';
         setCascadingCategorySelects(item.category);
 
         document.getElementById('invItemSegmentSelect').value = item.segment;
@@ -1891,6 +1894,7 @@ function setupItemModificationContext(itemId) {
         document.getElementById('invItemRemarks').value = item.remarks;
         document.getElementById('invItemAiMetadata').value = item.aiMetadata || '';
         document.getElementById('invItemPurchaseDate').value = item.purchaseDate || '';
+        document.getElementById('invItemWarrantyDate').value = item.warrantyDate || '';
         document.getElementById('invItemExpiryDate').value = item.expiryDate || '';
 
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1904,11 +1908,13 @@ function softClearForNextItem() {
     document.getElementById('btnResetFormState').classList.add('hidden');
     document.getElementById('editTargetItemId').value = '';
     document.getElementById('invItemName').value = '';
+    document.getElementById('invItemBrand').value = '';
     resetCascadingCategorySelects();
     document.getElementById('invItemImageUrl').value = '';
     document.getElementById('invItemRemarks').value = '';
     document.getElementById('invItemAiMetadata').value = '';
     document.getElementById('invItemPurchaseDate').value = '';
+    document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
@@ -1921,6 +1927,7 @@ function clearAllInventoryFields() {
     document.getElementById('btnResetFormState').classList.add('hidden');
     document.getElementById('editTargetItemId').value = '';
     document.getElementById('invItemName').value = '';
+    document.getElementById('invItemBrand').value = '';
     document.getElementById('invItemSegmentSelect').value = '';
     resetCascadingCategorySelects();
     document.getElementById('invItemContainerSelect').innerHTML = '<option value="">' + t('chooseContainer') + '</option>';
@@ -1929,6 +1936,7 @@ function clearAllInventoryFields() {
     document.getElementById('invItemRemarks').value = '';
     document.getElementById('invItemAiMetadata').value = '';
     document.getElementById('invItemPurchaseDate').value = '';
+    document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
@@ -1944,6 +1952,7 @@ function clearInventoryFormContext() {
     document.getElementById('btnResetFormState').classList.add('hidden');
     document.getElementById('editTargetItemId').value = '';
     document.getElementById('invItemName').value = '';
+    document.getElementById('invItemBrand').value = '';
     document.getElementById('invItemSegmentSelect').value = '';
     resetCascadingCategorySelects();
     document.getElementById('invItemContainerSelect').innerHTML = '<option value="">' + t('chooseContainer') + '</option>';
@@ -1952,6 +1961,7 @@ function clearInventoryFormContext() {
     document.getElementById('invItemRemarks').value = '';
     document.getElementById('invItemAiMetadata').value = '';
     document.getElementById('invItemPurchaseDate').value = '';
+    document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
@@ -2169,6 +2179,7 @@ function exportLocalDatabasesToExcel() {
         var columns = [
             "System ID",
             "Item Name",
+            "Brand",
             "Classification Route",
             "Segment Zone",
             "Container",
@@ -2176,6 +2187,7 @@ function exportLocalDatabasesToExcel() {
             "Owner",
             "AI Metadata",
             "Purchase Date",
+            "Warranty Date",
             "Expiry Date",
             "Image Link Asset",
             "User Remarks Annotation",
@@ -2186,6 +2198,7 @@ function exportLocalDatabasesToExcel() {
             return {
                 "System ID": safeCell(item.id || ''),
                 "Item Name": safeCell(item.name || ''),
+                "Brand": safeCell(item.brand || ''),
                 "Classification Route": safeCell(item.category || ''),
                 "Segment Zone": safeCell(item.segment || ''),
                 "Container": safeCell(item.container || ''),
@@ -2193,6 +2206,7 @@ function exportLocalDatabasesToExcel() {
                 "Owner": safeCell(item.owner || 'Default'),
                 "AI Metadata": safeCell(item.aiMetadata || ''),
                 "Purchase Date": safeCell(item.purchaseDate || ''),
+                "Warranty Date": safeCell(item.warrantyDate || ''),
                 "Expiry Date": safeCell(item.expiryDate || ''),
                 "Image Link Asset": safeCell(item.imageUrl || ''),
                 "User Remarks Annotation": safeCell(item.remarks || ''),
@@ -2228,7 +2242,7 @@ function exportLocalDatabasesToExcel() {
         var invSheet = XLSX.utils.json_to_sheet(flatRows);
 
         // Set column widths for readability
-        var colWidths = [22, 26, 28, 18, 18, 18, 14, 22, 16, 14, 24, 26, 24];
+        var colWidths = [22, 26, 18, 28, 18, 18, 18, 14, 22, 16, 16, 14, 24, 26, 24];
         invSheet['!cols'] = colWidths.map(function(w) { return { wch: w }; });
 
         var workbook = XLSX.utils.book_new();
@@ -2287,6 +2301,7 @@ function importExcelToLocalDatabases(event) {
                 rows.forEach(function(r) {
                     var id = cleanCell(r["System ID"]) || 'item_' + Math.floor(Math.random() * 1000000) + Date.now();
                     var name = cleanCell(r["Item Name"]) || 'Unnamed Imported Asset';
+                    var brand = cleanCell(r["Brand"]) || '';
                     var category = cleanCell(r["Classification Route"]) || 'Foods';
                     var segment = cleanCell(r["Segment Zone"]) || 'Living Room';
                     var container = cleanCell(r["Container"]) || cleanCell(r["Sub-Container"]) || 'General Area';
@@ -2294,6 +2309,7 @@ function importExcelToLocalDatabases(event) {
                     var owner = cleanCell(r["Owner"]) || 'Default';
                     var aiMd = cleanCell(r["AI Metadata"]) || '';
                     var purDate = cleanCell(r["Purchase Date"]) || '';
+                    var warDate = cleanCell(r["Warranty Date"]) || '';
                     var expDate = cleanCell(r["Expiry Date"]) || '';
                     var img = cleanCell(r["Image Link Asset"]) || 'https://placehold.co/100?text=No+Photo';
                     var rem = cleanCell(r["User Remarks Annotation"]) || '';
@@ -2305,7 +2321,7 @@ function importExcelToLocalDatabases(event) {
                     if (owner && owner !== 'Default' && !appState.users.includes(owner)) appState.users.push(owner);
 
                     var existingIdx = appState.inventory.findIndex(function(i) { return i.id === id; });
-                    var item = { id:id, name:name, category:category, segment:segment, container:container, subContainer:subContainer, owner:owner, aiMetadata:aiMd, purchaseDate:purDate, expiryDate:expDate, imageUrl:img, remarks:rem, timestamp:time };
+                    var item = { id:id, name:name, brand:brand, category:category, segment:segment, container:container, subContainer:subContainer, owner:owner, aiMetadata:aiMd, purchaseDate:purDate, warrantyDate:warDate, expiryDate:expDate, imageUrl:img, remarks:rem, timestamp:time };
                     if (existingIdx !== -1) appState.inventory[existingIdx] = item;
                     else appState.inventory.push(item);
                 });
@@ -2747,6 +2763,14 @@ function migrateLegacyState(state) {
             }
             if (item.expiryDate === undefined) {
                 item.expiryDate = '';
+                migrated = true;
+            }
+            if (item.brand === undefined) {
+                item.brand = '';
+                migrated = true;
+            }
+            if (item.warrantyDate === undefined) {
+                item.warrantyDate = '';
                 migrated = true;
             }
         });
