@@ -6,9 +6,11 @@
     <title>Find My Item — 物件追蹤</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body class="bg-slate-50 text-slate-800 min-h-screen pb-20 md:pb-0">
+    <div id="syncToast" class="info"></div>
 
     <div id="passwordOverlay" class="fixed inset-0 bg-slate-900 z-[9999] flex items-center justify-center p-4">
         <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm border border-slate-100">
@@ -31,6 +33,7 @@
             <div class="flex items-center gap-2">
                 <select id="headerUserSelectMobile" onchange="switchCurrentUser(this.value)" class="text-[11px] border border-slate-200 rounded-md px-2 py-1 focus:ring-2 focus:ring-blue-500 outline-none bg-slate-50 text-slate-700 font-medium max-w-[80px]"></select>
                 <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en')" class="text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md px-2 py-1 text-slate-600 font-medium transition-colors">中</button>
+                <button onclick="syncFromCloudWithToast()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1 text-blue-600 font-medium transition-colors"><span>↻</span></button>
             </div>
         </div>
     </header>
@@ -48,6 +51,7 @@
                 </div>
                 <div class="flex items-center gap-1.5 ml-2 pl-2 border-l border-slate-200">
                     <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en')" class="text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md px-2 py-1 text-slate-600 font-medium transition-colors">中/EN</button>
+                    <button onclick="syncFromCloudWithToast()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1 text-blue-600 font-medium transition-colors"><span>↻</span></button>
                 </div>
             </div>
             <nav class="flex space-x-1" aria-label="Desktop Navigation">
@@ -253,6 +257,7 @@
                         <div class="flex gap-2">
                             <input type="text" id="invItemRemarks" data-i18n-placeholder="remarksPlaceholder" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
                             <button onclick="commitItemToInventory()" id="btnSubmitInventoryForm" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-5 rounded-lg transition-colors tracking-wide whitespace-nowrap" data-i18n="saveAsset">Save Asset</button>
+                            <button onclick="clearAllInventoryFields()" class="text-xs text-slate-500 hover:text-slate-700 border border-slate-300 rounded-lg px-4 py-2 font-medium transition-colors whitespace-nowrap">Clear</button>
                         </div>
                     </div>
                 </div>
@@ -351,7 +356,7 @@
                                 <h3 class="text-sm font-bold text-slate-900 mb-1">Compile Spreadsheet Output</h3>
                                 <p class="text-xs text-slate-500 mb-4">Process current local registers into a cleanly formatted multi-column flattened dynamic `.xlsx` file sheet matrix.</p>
                             </div>
-                            <button onclick="exportLocalDatabasesToExcel()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors w-full sm:w-auto shadow-sm">Generate `.xlsx` Export</button>
+                            <button id="btnExportXlsx" onclick="exportLocalDatabasesToExcel()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors w-full sm:w-auto shadow-sm">Generate .xlsx Export</button>
                         </div>
                         <div class="p-4 border border-slate-200 rounded-xl bg-slate-50 flex flex-col justify-between">
                             <div>
@@ -443,8 +448,17 @@
                 <div class="flex justify-between"><span class="text-slate-400">Category</span><span id="detailItemCategory" class="font-medium text-slate-700"></span></div>
                 <div class="flex justify-between"><span class="text-slate-400">Location</span><span id="detailItemLocation" class="font-medium text-slate-700"></span></div>
                 <div class="flex justify-between"><span class="text-slate-400">Owner</span><span id="detailItemOwner" class="font-medium text-slate-700"></span></div>
+                <div class="flex justify-between"><span class="text-slate-400">Expiry Date</span><span id="detailItemExpiry" class="font-medium text-slate-700"></span></div>
                 <div class="flex justify-between"><span class="text-slate-400">Added</span><span id="detailItemTime" class="font-medium text-slate-700"></span></div>
                 <div class="pt-2 border-t border-slate-100"><span class="text-slate-400 text-xs">Remarks</span><p id="detailItemRemarks" class="text-slate-600 mt-1"></p></div>
+                <div class="pt-2 border-t border-slate-100 mt-3">
+                    <span class="text-slate-400 text-xs">Barcode Label</span>
+                    <div class="bg-white border border-slate-200 rounded-lg p-3 mt-1.5 flex flex-col items-center">
+                        <svg id="detailItemBarcode"></svg>
+                        <span id="detailItemBarcodeLabel" class="text-[10px] text-slate-500 font-mono mt-1"></span>
+                        <button onclick="downloadBarcodeLabel()" class="mt-2 text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-md px-3 py-1 text-slate-600 font-medium transition-colors">Download Label (PNG)</button>
+                    </div>
+                </div>
                 <div class="pt-2"><span class="text-slate-400 text-xs">System ID</span><p id="detailItemId" class="text-[10px] text-slate-400 font-mono mt-0.5"></p></div>
             </div>
         </div>

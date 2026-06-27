@@ -187,3 +187,75 @@ textarea, select {
     background-color: #dbeafe !important;
     border-color: #93c5fd !important;
 }
+
+/* ===== Toast Notification System ===== */
+#syncToast {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-120px);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 24px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08);
+    backdrop-filter: blur(8px);
+    pointer-events: none;
+    transition: transform 0.35s cubic-bezier(0.22, 0.61, 0.36, 1);
+    max-width: 90vw;
+    white-space: nowrap;
+}
+#syncToast.show {
+    transform: translateX(-50%) translateY(0);
+}
+#syncToast.info {
+    background: #eff6ff;
+    color: #1d4ed8;
+    border: 1px solid #bfdbfe;
+}
+#syncToast.success {
+    background: #f0fdf4;
+    color: #15803d;
+    border: 1px solid #bbf7d0;
+}
+#syncToast.error {
+    background: #fef2f2;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+}
+
+/* Toast spinner */
+.toast-spinner {
+    width: 18px;
+    height: 18px;
+    border: 2.5px solid #bfdbfe;
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: toastSpin 0.7s linear infinite;
+}
+@keyframes toastSpin {
+    to { transform: rotate(360deg); }
+}
+
+/* Sync button spin state */
+.btn-syncing {
+    pointer-events: none;
+    opacity: 0.7;
+}
+.btn-syncing span {
+    display: inline-block;
+    animation: syncSpin 0.7s linear infinite;
+}
+@keyframes syncSpin {
+    to { transform: rotate(360deg); }
+}
+
+/* Detail modal barcode */
+#detailItemBarcode {
+    display: block;
+    max-width: 100%;
+}

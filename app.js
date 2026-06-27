@@ -531,11 +531,12 @@ function showItemDetail(itemId) {
     document.getElementById('detailItemCategory').innerText = item.category;
     document.getElementById('detailItemLocation').innerText = (item.segment || '') + ' > ' + (item.container || '') + (item.subContainer ? ' > ' + item.subContainer : '');
     document.getElementById('detailItemOwner').innerText = item.owner || 'Default';
+    document.getElementById('detailItemExpiry').innerText = item.expiryDate || '\u2014';
     document.getElementById('detailItemTime').innerText = item.timestamp;
     document.getElementById('detailItemRemarks').innerText = item.remarks || 'None';
     document.getElementById('detailItemId').innerText = item.id;
     if (item.aiMetadata) {
-        document.getElementById('detailItemRemarks').innerText += '\n\n🤖 AI: ' + item.aiMetadata;
+        document.getElementById('detailItemRemarks').innerText += '\n\n\uD83E\uDD16 AI: ' + item.aiMetadata;
     }
     const img = document.getElementById('detailItemImage');
     if (item.imageUrl && item.imageUrl !== 'https://placehold.co/100?text=No+Photo') {
@@ -545,6 +546,69 @@ function showItemDetail(itemId) {
         img.classList.add('hidden');
     }
     document.getElementById('itemDetailModal').classList.remove('hidden');
+    _currentBarcodeItemId = item.id;
+    _currentBarcodeItemName = item.name;
+
+    // Generate barcode
+    setTimeout(function() {
+        try {
+            JsBarcode('#detailItemBarcode', item.id, {
+                format: 'CODE128',
+                width: 1.5,
+                height: 48,
+                displayValue: false,
+                margin: 4,
+                background: '#ffffff',
+                lineColor: '#1e293b'
+            });
+            document.getElementById('detailItemBarcodeLabel').innerText = item.name;
+        } catch(e) {
+            document.getElementById('detailItemBarcode').style.display = 'none';
+            document.getElementById('detailItemBarcodeLabel').innerText = '';
+        }
+    }, 50);
+}
+
+var _currentBarcodeItemId = null;
+var _currentBarcodeItemName = null;
+
+function downloadBarcodeLabel() {
+    if (!_currentBarcodeItemId) return;
+    var svg = document.getElementById('detailItemBarcode');
+    if (!svg) return;
+
+    var canvas = document.createElement('canvas');
+    var ctx = canvas.getContext('2d');
+    var svgData = new XMLSerializer().serializeToString(svg);
+    var img = new Image();
+
+    img.onload = function() {
+        var labelW = Math.max(img.width + 20, 260);
+        var labelH = img.height + 52;
+        canvas.width = labelW * 2;
+        canvas.height = labelH * 2;
+        ctx.scale(2, 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, labelW, labelH);
+        ctx.drawImage(img, (labelW - img.width) / 2, 6);
+        ctx.fillStyle = '#1e293b';
+        ctx.font = '11px "Inter", "Segoe UI", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(_currentBarcodeItemName || '', labelW / 2, img.height + 22);
+        ctx.font = '9px monospace';
+        ctx.fillStyle = '#64748b';
+        ctx.fillText(_currentBarcodeItemId || '', labelW / 2, img.height + 40);
+
+        var url = canvas.toDataURL('image/png');
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'Label_' + (_currentBarcodeItemName || 'item').replace(/[^a-zA-Z0-9]/g, '_') + '.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    };
+
+    img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
 }
 
 function closeItemDetail() {
@@ -1595,7 +1659,11 @@ function commitItemToInventory() {
     }
 
     saveStateToLocalStorage();
-    clearInventoryFormContext();
+    if (editId) {
+        clearInventoryFormContext();
+    } else {
+        softClearForNextItem();
+    }
     syncUIComponents();
     triggerAutoCloudSyncIfPossible();
 }
@@ -1645,6 +1713,46 @@ function setupItemModificationContext(itemId) {
     }
 }
 
+function softClearForNextItem() {
+    document.getElementById('inventoryFormTitle').innerText = t('inventoryFormTitle');
+    document.getElementById('btnResetFormState').classList.add('hidden');
+    document.getElementById('editTargetItemId').value = '';
+    document.getElementById('invItemName').value = '';
+    resetCascadingCategorySelects();
+    document.getElementById('invItemImageUrl').value = '';
+    document.getElementById('invItemRemarks').value = '';
+    document.getElementById('invItemAiMetadata').value = '';
+    document.getElementById('invItemPurchaseDate').value = '';
+    document.getElementById('invItemExpiryDate').value = '';
+    var preview = document.getElementById('invItemImagePreview');
+    preview.src = '';
+    preview.classList.add('hidden');
+    document.getElementById('btnAIAnalyze').style.display = 'none';
+}
+
+function clearAllInventoryFields() {
+    document.getElementById('inventoryFormTitle').innerText = t('inventoryFormTitle');
+    document.getElementById('btnResetFormState').classList.add('hidden');
+    document.getElementById('editTargetItemId').value = '';
+    document.getElementById('invItemName').value = '';
+    document.getElementById('invItemSegmentSelect').value = '';
+    resetCascadingCategorySelects();
+    document.getElementById('invItemContainerSelect').innerHTML = '<option value="">' + t('chooseContainer') + '</option>';
+    document.getElementById('invItemSubContainerSelect').innerHTML = '<option value="">' + t('chooseSubContainer') + '</option>';
+    document.getElementById('invItemImageUrl').value = '';
+    document.getElementById('invItemRemarks').value = '';
+    document.getElementById('invItemAiMetadata').value = '';
+    document.getElementById('invItemPurchaseDate').value = '';
+    document.getElementById('invItemExpiryDate').value = '';
+    var preview = document.getElementById('invItemImagePreview');
+    preview.src = '';
+    preview.classList.add('hidden');
+    document.getElementById('btnAIAnalyze').style.display = 'none';
+    if (document.getElementById('invItemOwnerSelect')) {
+        document.getElementById('invItemOwnerSelect').value = appState.currentUser || 'Default';
+    }
+}
+
 function clearInventoryFormContext() {
     document.getElementById('inventoryFormTitle').innerText = t('inventoryFormTitle');
     document.getElementById('btnResetFormState').classList.add('hidden');
@@ -1659,7 +1767,7 @@ function clearInventoryFormContext() {
     document.getElementById('invItemAiMetadata').value = '';
     document.getElementById('invItemPurchaseDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
-    const preview = document.getElementById('invItemImagePreview');
+    var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
     preview.classList.add('hidden');
     document.getElementById('btnAIAnalyze').style.display = 'none';
@@ -1852,63 +1960,134 @@ function tryMatchCategoryPath(aiCategory, categoryList) {
    Section 6: Excel Sheet Processor Engine (SheetJS) - Multi-Sheet Support
    ========================================================================== */
 function exportLocalDatabasesToExcel() {
+    var btn = document.querySelector('#btnExportXlsx');
     if (appState.inventory.length === 0) {
         alert(t('noItemsExport'));
         return;
     }
 
-    var flatRows = appState.inventory.map(function(item) {
-        return {
-            "System ID": item.id,
-            "Item Name": item.name,
-            "Classification Route": item.category,
-            "Segment Zone": item.segment,
-            "Container": item.container,
-            "Sub-Container": item.subContainer || '',
-            "Owner": item.owner || 'Default',
-            "AI Metadata": item.aiMetadata || '',
-            "Purchase Date": item.purchaseDate || '',
-            "Expiry Date": item.expiryDate || '',
-            "Image Link Asset": item.imageUrl,
-            "User Remarks Annotation": item.remarks,
-            "Last System Entry Update": item.timestamp
-        };
-    });
-
-    var spatialRows = [];
-    if (appState.spatialBackgroundImage) {
-        spatialRows.push({"Type":"LAYOUT_IMAGE","Segment":"","Container":"","Sub-Container":"","Coordinate X (%)":"","Coordinate Y (%)":"","ImageData":appState.spatialBackgroundImage});
+    if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Generating\u2026';
+        btn.classList.add('opacity-60');
     }
-    // Export container-level coordinates
-    for (var seg in appState.segments) {
-        var containerMap = appState.segments[seg];
-        for (var con in containerMap) {
-            var key = buildCoordKey(seg, con, '');
-            var coord = appState.coordinates[key];
-            if (coord) spatialRows.push({"Type":"COORDINATE","Segment":seg,"Container":con,"Sub-Container":"","Coordinate X (%)":coord.x,"Coordinate Y (%)":coord.y,"ImageData":""});
-            // Also export sub-container coordinates
-            var subList = containerMap[con] || [];
-            subList.forEach(function(sub) {
-                var subKey = buildCoordKey(seg, con, sub);
-                var subCoord = appState.coordinates[subKey];
-                if (subCoord) spatialRows.push({"Type":"COORDINATE","Segment":seg,"Container":con,"Sub-Container":sub,"Coordinate X (%)":subCoord.x,"Coordinate Y (%)":subCoord.y,"ImageData":""});
-            });
+
+    var EXCEL_CELL_MAX = 32700;
+    function safeCell(val) {
+        if (typeof val !== 'string') return val;
+        if (val.length <= EXCEL_CELL_MAX) return val;
+        return '[TRUNCATED] ' + val.substring(0, EXCEL_CELL_MAX - 30) + ' [\u2026orig ' + val.length + ' chars]';
+    }
+
+    try {
+        var columns = [
+            "System ID",
+            "Item Name",
+            "Classification Route",
+            "Segment Zone",
+            "Container",
+            "Sub-Container",
+            "Owner",
+            "AI Metadata",
+            "Purchase Date",
+            "Expiry Date",
+            "Image Link Asset",
+            "User Remarks Annotation",
+            "Last System Entry Update"
+        ];
+
+        var flatRows = appState.inventory.map(function(item) {
+            return {
+                "System ID": safeCell(item.id || ''),
+                "Item Name": safeCell(item.name || ''),
+                "Classification Route": safeCell(item.category || ''),
+                "Segment Zone": safeCell(item.segment || ''),
+                "Container": safeCell(item.container || ''),
+                "Sub-Container": safeCell(item.subContainer || ''),
+                "Owner": safeCell(item.owner || 'Default'),
+                "AI Metadata": safeCell(item.aiMetadata || ''),
+                "Purchase Date": safeCell(item.purchaseDate || ''),
+                "Expiry Date": safeCell(item.expiryDate || ''),
+                "Image Link Asset": safeCell(item.imageUrl || ''),
+                "User Remarks Annotation": safeCell(item.remarks || ''),
+                "Last System Entry Update": safeCell(item.timestamp || '')
+            };
+        });
+
+        var spatialRows = [];
+        if (appState.spatialBackgroundImage) {
+            var imgData = appState.spatialBackgroundImage;
+            if (typeof imgData === 'string' && imgData.length > EXCEL_CELL_MAX) {
+                imgData = '[TRUNCATED] ' + imgData.substring(0, EXCEL_CELL_MAX - 30) + ' [\u2026orig ' + imgData.length + ' chars]';
+            }
+            spatialRows.push({"Type":"LAYOUT_IMAGE","Segment":"","Container":"","Sub-Container":"","Coordinate X (%)":"","Coordinate Y (%)":"","ImageData":imgData});
         }
+        for (var seg in appState.segments) {
+            if (!appState.segments.hasOwnProperty(seg)) continue;
+            var containerMap = appState.segments[seg];
+            for (var con in containerMap) {
+                if (!containerMap.hasOwnProperty(con)) continue;
+                var key = buildCoordKey(seg, con, '');
+                var coord = appState.coordinates[key];
+                if (coord) spatialRows.push({"Type":"COORDINATE","Segment":seg,"Container":con,"Sub-Container":"","Coordinate X (%)":coord.x,"Coordinate Y (%)":coord.y,"ImageData":""});
+                var subList = containerMap[con] || [];
+                subList.forEach(function(sub) {
+                    var subKey = buildCoordKey(seg, con, sub);
+                    var subCoord = appState.coordinates[subKey];
+                    if (subCoord) spatialRows.push({"Type":"COORDINATE","Segment":seg,"Container":con,"Sub-Container":sub,"Coordinate X (%)":subCoord.x,"Coordinate Y (%)":subCoord.y,"ImageData":""});
+                });
+            }
+        }
+
+        var invSheet = XLSX.utils.json_to_sheet(flatRows);
+
+        // Set column widths for readability
+        var colWidths = [22, 26, 28, 18, 18, 18, 14, 22, 16, 14, 24, 26, 24];
+        invSheet['!cols'] = colWidths.map(function(w) { return { wch: w }; });
+
+        var workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, invSheet, "Inventory Ledger");
+        if (spatialRows.length > 0) {
+            var spatialSheet = XLSX.utils.json_to_sheet(spatialRows);
+            spatialSheet['!cols'] = [
+                { wch: 16 }, { wch: 20 }, { wch: 20 }, { wch: 20 },
+                { wch: 18 }, { wch: 18 }, { wch: 24 }
+            ];
+            XLSX.utils.book_append_sheet(workbook, spatialSheet, "Spatial Map");
+        }
+
+        var wbout = XLSX.write(workbook, { bookType:'xlsx', type:'array' });
+        var blob = new Blob([wbout], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'Home_Inventory_Export_' + Math.floor(Date.now()/1000) + '.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+    } catch(err) {
+        alert('Export failed: ' + err.message);
     }
 
-    var invSheet = XLSX.utils.json_to_sheet(flatRows);
-    var workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, invSheet, "Inventory Ledger");
-    if (spatialRows.length > 0) {
-        var spatialSheet = XLSX.utils.json_to_sheet(spatialRows);
-        XLSX.utils.book_append_sheet(workbook, spatialSheet, "Spatial Map");
+    if (btn) {
+        btn.disabled = false;
+        btn.innerText = 'Generate .xlsx Export';
+        btn.classList.remove('opacity-60');
     }
-    XLSX.writeFile(workbook, "Home_Inventory_Export_" + Math.floor(Date.now()/1000) + ".xlsx");
 }
 
 function importExcelToLocalDatabases(event) {
     var file = event.target.files[0];
     if (!file) return;
+
+    function cleanCell(val) {
+        if (typeof val !== 'string') return val;
+        // Strip truncation marker: "[TRUNCATED] ... [...orig N chars]"
+        var m = val.match(/^\[TRUNCATED\]\s([\s\S]*?)\s\[\u2026orig\s\d+\schars\]$/);
+        if (m) return m[1];
+        return val;
+    }
 
     var reader = new FileReader();
     reader.onload = function(e) {
@@ -1920,19 +2099,19 @@ function importExcelToLocalDatabases(event) {
             if (invSheetName && workbook.Sheets[invSheetName]) {
                 var rows = XLSX.utils.sheet_to_json(workbook.Sheets[invSheetName]);
                 rows.forEach(function(r) {
-                    var id = r["System ID"] || 'item_' + Math.floor(Math.random() * 1000000) + Date.now();
-                    var name = r["Item Name"] || 'Unnamed Imported Asset';
-                    var category = r["Classification Route"] || 'Foods';
-                    var segment = r["Segment Zone"] || 'Living Room';
-                    var container = r["Container"] || r["Sub-Container"] || 'General Area';
-                    var subContainer = r["Sub-Container"] || '';
-                    var owner = r["Owner"] || 'Default';
-                    var aiMd = r["AI Metadata"] || '';
-                    var purDate = r["Purchase Date"] || '';
-                    var expDate = r["Expiry Date"] || '';
-                    var img = r["Image Link Asset"] || 'https://placehold.co/100?text=No+Photo';
-                    var rem = r["User Remarks Annotation"] || '';
-                    var time = r["Last System Entry Update"] || new Date().toISOString().replace('T', ' ').substring(0, 16);
+                    var id = cleanCell(r["System ID"]) || 'item_' + Math.floor(Math.random() * 1000000) + Date.now();
+                    var name = cleanCell(r["Item Name"]) || 'Unnamed Imported Asset';
+                    var category = cleanCell(r["Classification Route"]) || 'Foods';
+                    var segment = cleanCell(r["Segment Zone"]) || 'Living Room';
+                    var container = cleanCell(r["Container"]) || cleanCell(r["Sub-Container"]) || 'General Area';
+                    var subContainer = cleanCell(r["Sub-Container"]) || '';
+                    var owner = cleanCell(r["Owner"]) || 'Default';
+                    var aiMd = cleanCell(r["AI Metadata"]) || '';
+                    var purDate = cleanCell(r["Purchase Date"]) || '';
+                    var expDate = cleanCell(r["Expiry Date"]) || '';
+                    var img = cleanCell(r["Image Link Asset"]) || 'https://placehold.co/100?text=No+Photo';
+                    var rem = cleanCell(r["User Remarks Annotation"]) || '';
+                    var time = cleanCell(r["Last System Entry Update"]) || new Date().toISOString().replace('T', ' ').substring(0, 16);
 
                     if (!appState.segments[segment]) appState.segments[segment] = {};
                     if (!appState.segments[segment][container]) appState.segments[segment][container] = [];
@@ -1950,10 +2129,11 @@ function importExcelToLocalDatabases(event) {
             if (spatialSheetName && workbook.Sheets[spatialSheetName]) {
                 var sRows = XLSX.utils.sheet_to_json(workbook.Sheets[spatialSheetName]);
                 sRows.forEach(function(r) {
-                    if (r["Type"] === "LAYOUT_IMAGE" && r["ImageData"] && (r["ImageData"]+'').indexOf('data:image') === 0) {
-                        appState.spatialBackgroundImage = r["ImageData"]+'';
+                    var imgData = cleanCell(r["ImageData"]);
+                    if (r["Type"] === "LAYOUT_IMAGE" && imgData && (imgData+'').indexOf('data:image') === 0) {
+                        appState.spatialBackgroundImage = imgData+'';
                     } else if ((r["Type"] === "COORDINATE" || !r["Type"]) && r["Segment"]) {
-                        var seg = r["Segment"] || '', con = r["Container"] || '', sub = r["Sub-Container"] || '';
+                        var seg = cleanCell(r["Segment"]) || '', con = cleanCell(r["Container"]) || '', sub = cleanCell(r["Sub-Container"]) || '';
                         var x = parseInt(r["Coordinate X (%)"]) || 0, y = parseInt(r["Coordinate Y (%)"]) || 0;
                         if (seg && con) {
                             if (!appState.segments[seg]) appState.segments[seg] = {};
@@ -2085,12 +2265,44 @@ function jsonpFetch(url, callbackName, timeoutMs) {
     });
 }
 
-async function triggerSynchronousCloudFetchPull() {
-    const endpoint = localStorage.getItem('sys_gas_url');
-    const secret = localStorage.getItem('sys_api_pwd');
-    if(!endpoint) { alert("Missing Google Script Deployment endpoint link URL profiles."); return; }
+function showToast(message, type) {
+    var toast = document.getElementById('syncToast');
+    if (!toast) return;
+    var icon = '';
+    if (type === 'info') icon = '<span class="toast-spinner"></span>';
+    else if (type === 'success') icon = '<svg class="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>';
+    else if (type === 'error') icon = '<svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>';
+    toast.className = type;
+    toast.innerHTML = icon + ' <span>' + message + '</span>';
+    toast.classList.add('show');
+    if (type === 'success' || type === 'error') {
+        clearTimeout(toast._timer);
+        toast._timer = setTimeout(function() {
+            toast.classList.remove('show');
+        }, 2500);
+    }
+}
+
+function hideToast() {
+    var toast = document.getElementById('syncToast');
+    if (toast) toast.classList.remove('show');
+}
+
+async function syncFromCloudWithToast() {
+    var btns = document.querySelectorAll('.btn-sync-refresh');
+    btns.forEach(function(b) { b.classList.add('btn-syncing'); });
+
+    showToast('Syncing from Google Sheet\u2026', 'info');
 
     try {
+        const endpoint = localStorage.getItem('sys_gas_url');
+        const secret = localStorage.getItem('sys_api_pwd');
+        if (!endpoint) {
+            showToast('Missing Google Script URL', 'error');
+            btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+            return;
+        }
+
         const url = `${endpoint}?token=${encodeURIComponent(secret)}&action=SYNC_PULL`;
         const json = await jsonpFetch(url, 'hkPullCallback', 15000);
 
@@ -2098,16 +2310,26 @@ async function triggerSynchronousCloudFetchPull() {
             appState = json;
             saveStateToLocalStorage();
             syncUIComponents();
-            document.getElementById('syncStatusBadge').innerText = '✅ ' + t('pulled') + ' ' + new Date().toLocaleTimeString();
+            var count = (json.inventory || []).length;
+            document.getElementById('syncStatusBadge').innerText = '\u2705 ' + t('pulled') + ' ' + new Date().toLocaleTimeString();
             document.getElementById('syncStatusBadge').className = 'text-[10px] text-emerald-600 font-medium';
+            showToast('Sync complete \u2014 ' + count + ' items loaded', 'success');
         } else {
-            document.getElementById('syncStatusBadge').innerText = '❌ ' + t('offline');
+            document.getElementById('syncStatusBadge').innerText = '\u274c ' + t('offline');
             document.getElementById('syncStatusBadge').className = 'text-[10px] text-red-500 font-medium';
+            showToast('Sync failed \u2014 no data received', 'error');
         }
     } catch (e) {
-        document.getElementById('syncStatusBadge').innerText = '❌ Offline';
+        document.getElementById('syncStatusBadge').innerText = '\u274c Offline';
         document.getElementById('syncStatusBadge').className = 'text-[10px] text-red-500 font-medium';
+        showToast('Sync failed \u2014 server unreachable', 'error');
     }
+
+    btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+}
+
+async function triggerSynchronousCloudFetchPull() {
+    syncFromCloudWithToast();
 }
 
 async function verifyCloudSync() {
