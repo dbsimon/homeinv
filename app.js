@@ -2046,9 +2046,24 @@ async function aiAnalyzeImage() {
     try {
         var categories = flattenCategoryTreeToLinearRoutes(appState.categories);
         var categoriesHint = categories.length > 0 ? categories.join(' | ') : 'Uncategorized';
-        var itemName = document.getElementById('invItemName').value.trim() || 'unknown item';
+        var itemName = document.getElementById('invItemName').value.trim() || '';
+        var brand = document.getElementById('invItemBrand').value.trim() || '';
+        var contextParts = [];
+        if (itemName) contextParts.push('Item name: "' + itemName + '"');
+        if (brand) contextParts.push('Brand: "' + brand + '"');
+        contextParts.push('Existing categories: ' + categoriesHint);
+        var contextStr = contextParts.join('. ');
+
+        var systemPrompt = 'You are an inventory classifier. Return ONLY a JSON object with these fields (all optional):\n'
+            + '"category" — best matching full category path from the list, or suggest a new one\n'
+            + '"aiMetadata" — concise visual description (colors, material, type, style, condition), under 200 chars\n'
+            + '"itemName" — suggested item name if none provided\n'
+            + '"brand" — detected or suggested brand name\n'
+            + 'If you cannot determine any field, omit it. Return ONLY the JSON, no other text.';
+
         var content = '';
         var usedVision = false;
+        var visionErrMsg = '';
 
         function extractContent(msg) {
             if (!msg) return '';
@@ -2060,50 +2075,63 @@ async function aiAnalyzeImage() {
         }
 
         // Vision call
-        try {
-            var visResp = await fetch('https://api.deepseek.com/v1/chat/completions', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
-                body: JSON.stringify({
-                    model: 'deepseek-chat',
-                    messages: [
-                        { role: 'system', content: 'You are an inventory classifier. Analyze the image and return ONLY a JSON object with exactly two fields:\n\n"category": Pick the EXACT full path from this list that best matches the item: ' + categoriesHint + '. If nothing matches exactly, pick the closest parent path.\n\n"aiMetadata": Write a concise visual description (colors, material, type, style, brand). Keep under 200 characters.\n\nReturn ONLY {"category":"...","aiMetadata":"..."} with no other text.' },
-                        { role: 'user', content: [{ type: 'text', text: 'Item name: "' + itemName + '". Return JSON.' }, { type: 'image_url', image_url: { url: imageUrl } }] }
-                    ],
-                    temperature: 0.2, max_tokens: 500
-                })
-            });
-            var visData = await visResp.json();
-            if (!visData.error && visData.choices && visData.choices[0]) {
-                content = extractContent(visData.choices[0].message);
-                if (content) usedVision = true;
+        if (imageUrl.indexOf('data:image') === 0 || imageUrl.indexOf('http') === 0) {
+            try {
+                var visResp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+                    body: JSON.stringify({
+                        model: 'deepseek-chat',
+                        messages: [
+                            { role: 'system', content: systemPrompt },
+                            { role: 'user', content: [
+                                { type: 'text', text: contextStr + '. Analyze this image and return JSON.' },
+                                { type: 'image_url', image_url: { url: imageUrl } }
+                            ]}
+                        ],
+                        temperature: 0.2, max_tokens: 600
+                    })
+                });
+                var visData = await visResp.json();
+                if (visData.error) {
+                    visionErrMsg = visData.error.message || JSON.stringify(visData.error);
+                } else if (visData.choices && visData.choices[0]) {
+                    content = extractContent(visData.choices[0].message);
+                    if (content) usedVision = true;
+                }
+                if (!usedVision) visionErrMsg = visionErrMsg || 'Vision model returned empty response';
+            } catch (visErr) {
+                visionErrMsg = visErr.message;
             }
-        } catch (visErr) { /* fall through to text fallback */ }
+        } else {
+            visionErrMsg = 'Image is not a valid URL or data URI';
+        }
 
-        // Text fallback (no vision support)
+        // Text fallback when vision is unavailable
         if (!usedVision) {
+            console.log('Vision mode unavailable (' + visionErrMsg + '), using text-only analysis');
             var txtResp = await fetch('https://api.deepseek.com/v1/chat/completions', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
                 body: JSON.stringify({
                     model: 'deepseek-chat',
                     messages: [
-                        { role: 'system', content: 'Return ONLY a JSON object with "category" and "aiMetadata". Pick category from: ' + categoriesHint + '. Describe colors, materials, type, style, brand. No other text.' },
-                        { role: 'user', content: 'Item: "' + itemName + '". Return JSON.' }
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: contextStr + '. Based on this info, suggest a category and description. Return JSON.' }
                     ],
-                    temperature: 0.2, max_tokens: 400
+                    temperature: 0.3, max_tokens: 500
                 })
             });
             var txtData = await txtResp.json();
-            if (txtData.error) throw new Error(txtData.error.message);
+            if (txtData.error) throw new Error(txtData.error.message || JSON.stringify(txtData.error));
             if (txtData.choices && txtData.choices[0]) content = extractContent(txtData.choices[0].message);
         }
 
         if (!content) throw new Error('Empty AI response');
 
-        // Parse JSON from response
+        // Parse JSON from response — handle markdown fences
         var jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error('No JSON in response');
+        if (!jsonMatch) throw new Error('No JSON in AI response: ' + content.substring(0, 200));
         var meta = JSON.parse(jsonMatch[0]);
 
         // Apply category with fuzzy fallback
@@ -2116,14 +2144,19 @@ async function aiAnalyzeImage() {
             }
         }
 
-        // Apply AI metadata — ensure it is always a flat string
+        // Apply AI metadata
         var aiDesc = meta.aiMetadata || meta.description || meta.desc || '';
         if (typeof aiDesc === 'object') aiDesc = JSON.stringify(aiDesc);
         if (aiDesc) document.getElementById('invItemAiMetadata').value = aiDesc;
 
-        // Also suggest item name if empty
-        if (meta.itemName && !document.getElementById('invItemName').value.trim()) {
+        // Suggest item name if empty
+        if (meta.itemName && !itemName) {
             document.getElementById('invItemName').value = meta.itemName;
+        }
+
+        // Suggest brand if empty
+        if (meta.brand && !brand) {
+            document.getElementById('invItemBrand').value = meta.brand;
         }
 
         btn.innerText = usedVision ? '\u2713 Analyzed' : '\u2713 Text';
