@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body class="bg-slate-50 text-slate-800 min-h-screen pb-20 md:pb-0">
@@ -59,7 +60,12 @@
                 <button onclick="switchTab('tab-register')" id="btn-desktop-register" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabRegister">Register</button>
                 <button onclick="switchTab('tab-inventory')" id="btn-desktop-inventory" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabBrowse">Browse</button>
                 <button onclick="switchTab('tab-classes')" id="btn-desktop-classes" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabClasses">Categories</button>
-                <button onclick="switchTab('tab-cloud')" id="btn-desktop-cloud" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabCloud">Cloud</button>
+                <button onclick="switchTab('tab-scan')" id="btn-desktop-scan" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabScan">Scan</button>
+                <div class="relative ml-1">
+                    <button onclick="toggleOverflowMenu(event)" class="tab-nav px-3 py-2 text-sm font-medium transition-all rounded-md" title="More options">
+                        <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+                    </button>
+                </div>
             </nav>
         </div>
     </header>
@@ -321,7 +327,15 @@
             </div>
         </section>
 
-        <section id="tab-cloud" class="tab-panel hidden-panel">
+        <div id="cloudSettingsModal" class="fixed inset-0 bg-black/50 z-[9997] flex items-start justify-center p-4 pt-12 hidden overflow-y-auto" onclick="closeCloudSettings(event)">
+            <div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl" onclick="event.stopPropagation()">
+                <div class="sticky top-0 bg-white border-b border-slate-100 rounded-t-xl px-5 py-3 flex justify-between items-center z-10">
+                    <h2 class="text-base font-bold text-slate-900">Cloud Engine Settings</h2>
+                    <button onclick="closeCloudSettings()" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
+                </div>
+                <div class="p-5 space-y-6 max-h-[75vh] overflow-y-auto">
+
+        <section id="tab-cloud">
             <div class="max-w-3xl mx-auto space-y-6">
                 <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
                     <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">Pipeline Credentials <span id="syncStatusBadge" class="text-[10px] text-slate-400 font-medium ml-2">⚪ Not synced</span></h2>
@@ -402,6 +416,66 @@
                 </div>
             </div>
         </section>
+                </div>
+            </div>
+        </div>
+
+        <section id="tab-scan" class="tab-panel hidden-panel">
+            <div class="max-w-lg mx-auto space-y-5">
+                <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <h2 class="text-base font-bold text-slate-900 mb-4" data-i18n="scanTitle">Barcode Scanner</h2>
+
+                    <div class="space-y-4">
+                        <div>
+                            <p class="text-xs text-slate-500 mb-2" data-i18n="scanDesc">Scan a barcode label or enter an Item ID to find where the item belongs.</p>
+                            <div id="scanReaderContainer" class="hidden rounded-lg overflow-hidden border border-slate-300"></div>
+                            <div class="flex gap-2 mt-2">
+                                <button id="btnStartScan" onclick="startBarcodeScan()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold py-2.5 px-4 rounded-lg transition-colors shadow-sm flex items-center justify-center gap-2">
+                                    <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                                    <span data-i18n="scanCamera">Scan Barcode</span>
+                                </button>
+                                <button id="btnStopScan" onclick="stopBarcodeScan()" class="hidden bg-red-50 hover:bg-red-100 text-red-600 text-sm font-bold py-2.5 px-4 rounded-lg border border-red-200 transition-colors" data-i18n="scanStop">Stop</button>
+                            </div>
+                        </div>
+
+                        <div class="relative">
+                            <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-slate-200"></div></div>
+                            <div class="relative flex justify-center"><span class="bg-white px-3 text-xs text-slate-400 font-medium" data-i18n="scanManual">or enter Item ID manually</span></div>
+                        </div>
+
+                        <div class="flex gap-2">
+                            <input type="text" id="scanManualIdInput" data-i18n-placeholder="scanPlaceholder" placeholder="Enter System ID..." class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-indigo-500 outline-none font-mono">
+                            <button onclick="lookupItemByManualId()" class="bg-slate-800 hover:bg-slate-900 text-white text-sm font-bold px-5 rounded-lg transition-colors" data-i18n="scanLookup">Look Up</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="scanResultCard" class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm hidden">
+                    <div class="flex justify-between items-start mb-3">
+                        <h3 id="scanResultName" class="text-lg font-bold text-slate-900"></h3>
+                        <span id="scanResultStatus" class="text-[10px] bg-emerald-100 text-emerald-700 font-semibold px-2.5 py-1 rounded-full" data-i18n="scanFound">Item located</span>
+                    </div>
+                    <img id="scanResultImage" src="" class="w-full max-h-48 object-contain rounded-lg border border-slate-200 bg-slate-50 mb-3 hidden">
+                    <div class="space-y-1.5 text-sm">
+                        <div class="flex justify-between"><span class="text-slate-400">Category</span><span id="scanResultCategory" class="font-medium text-slate-700"></span></div>
+                        <div class="flex justify-between"><span class="text-slate-400">Location</span><span id="scanResultLocation" class="font-medium text-slate-700"></span></div>
+                        <div class="flex justify-between"><span class="text-slate-400">Owner</span><span id="scanResultOwner" class="font-medium text-slate-700"></span></div>
+                        <div class="flex justify-between"><span class="text-slate-400">Expiry</span><span id="scanResultExpiry" class="font-medium text-slate-700"></span></div>
+                    </div>
+                    <div class="mt-3 pt-3 border-t border-slate-100">
+                        <p class="text-xs text-slate-400 font-medium">Remarks</p>
+                        <p id="scanResultRemarks" class="text-sm text-slate-600 mt-1"></p>
+                    </div>
+                </div>
+
+                <div id="scanNotFoundCard" class="bg-amber-50 border border-amber-200 rounded-xl p-4 hidden">
+                    <p class="text-sm text-amber-800 font-medium flex items-center gap-2">
+                        <svg class="h-5 w-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        <span data-i18n="scanNotFound">No item found with this ID.</span>
+                    </p>
+                </div>
+            </div>
+        </section>
 
         <div class="text-center py-3 text-[10px] text-slate-400 font-medium">
             Copyright &copy; Westdoor Streetson 2026 &mdash; <span id="versionDisplay">v1.0</span>
@@ -425,10 +499,16 @@
             <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
             <span class="text-[10px] tracking-tight font-medium" data-i18n="tabClasses">Categories</span>
         </button>
-        <button onclick="switchTab('tab-cloud')" id="btn-mobile-cloud" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all flex-1">
-            <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
-            <span class="text-[10px] tracking-tight font-medium" data-i18n="tabCloud">Cloud</span>
+        <button onclick="switchTab('tab-scan')" id="btn-mobile-scan" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all flex-1">
+            <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v1m6 11h2m-6 0h-2.48a2.5 2.5 0 00-4.52 0H4m16 0h-2m-4 4v1M4 8h2m4 0h4m2 0h2M8 8V6a4 4 0 018 0v2"/></svg>
+            <span class="text-[10px] tracking-tight font-medium" data-i18n="tabScan">Scan</span>
         </button>
+        <div class="relative flex-1">
+            <button onclick="toggleOverflowMenu(event)" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all w-full">
+                <svg class="h-5 w-5 mb-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+                <span class="text-[10px] tracking-tight font-medium">More</span>
+            </button>
+        </div>
     </nav>
 
     <script src="app.js"></script>
@@ -462,6 +542,35 @@
                 <div class="pt-2"><span class="text-slate-400 text-xs">System ID</span><p id="detailItemId" class="text-[10px] text-slate-400 font-mono mt-0.5"></p></div>
             </div>
         </div>
+    </div>
+
+    <div id="overflowMenu" class="hidden fixed bg-white border border-slate-200 rounded-xl shadow-xl z-[9999] py-1.5 w-52 overflow-hidden" onclick="event.stopPropagation()">
+        <button onclick="triggerSynchronousCloudBackupPush(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
+            <svg class="h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+            Push to Cloud
+        </button>
+        <button onclick="syncFromCloudWithToast(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
+            <svg class="h-4 w-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/></svg>
+            Pull from Cloud
+        </button>
+        <button onclick="verifyCloudSync(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
+            <svg class="h-4 w-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Verify Sync
+        </button>
+        <div class="border-t border-slate-100 my-1"></div>
+        <button onclick="exportLocalDatabasesToExcel(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
+            <svg class="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            Export Excel
+        </button>
+        <button onclick="document.getElementById('excelFileStreamUploader').click(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
+            <svg class="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+            Import Excel
+        </button>
+        <div class="border-t border-slate-100 my-1"></div>
+        <button onclick="openCloudSettings(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
+            <svg class="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            Settings
+        </button>
     </div>
 </body>
 </html>

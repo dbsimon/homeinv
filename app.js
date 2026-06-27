@@ -15,6 +15,17 @@ const LANG = {
     tabClasses: 'Classifications',
     tabInventory: 'Inventory Database',
     tabCloud: 'Cloud Engine',
+    tabScan: 'Barcode Scan',
+    scanTitle: 'Barcode Scanner',
+    scanDesc: 'Scan a barcode label or enter an Item ID to find where the item belongs.',
+    scanCamera: 'Scan Barcode',
+    scanStop: 'Stop',
+    scanManual: 'or enter Item ID manually',
+    scanPlaceholder: 'Enter System ID...',
+    scanLookup: 'Look Up',
+    scanNotFound: 'No item found with this ID.',
+    scanFound: 'Item located',
+    scanCameraError: 'Camera access denied or not available.',
     configuratorTitle: 'Segment Configurator',
     addSegment: 'Add Segment Zone',
     addContainer: 'Add Container',
@@ -190,6 +201,17 @@ const LANG = {
     tabClasses: '分類',
     tabInventory: '庫存數據庫',
     tabCloud: '雲端引擎',
+    tabScan: '條碼掃描',
+    scanTitle: '條碼掃描器',
+    scanDesc: '掃描條碼標籤或輸入物品 ID 以查找物品應存放的位置。',
+    scanCamera: '掃描條碼',
+    scanStop: '停止',
+    scanManual: '或手動輸入物品 ID',
+    scanPlaceholder: '輸入系統 ID...',
+    scanLookup: '查詢',
+    scanNotFound: '找不到此 ID 的物品。',
+    scanFound: '已找到物品',
+    scanCameraError: '相機存取被拒絕或不可用。',
     configuratorTitle: '空間配置器',
     addSegment: '新增空間區域',
     addContainer: '新增容器',
@@ -481,6 +503,17 @@ function validateSystemAccess() {
    Section 2: Layout / UI / Tab Router Engineering
    ========================================================================== */
 function switchTab(targetTabId) {
+    // Stop barcode scanner when leaving scan tab
+    if (targetTabId !== 'tab-scan' && _html5QrScanner) {
+        stopBarcodeScan();
+    }
+
+    // If cloud tab, open as settings modal instead
+    if (targetTabId === 'tab-cloud') {
+        openCloudSettings();
+        return;
+    }
+
     document.querySelectorAll('.tab-panel').forEach(p => {
         p.classList.add('hidden-panel');
         p.classList.remove('active-panel');
@@ -506,6 +539,55 @@ function switchTab(targetTabId) {
         clearActiveNode();
     }
 }
+
+function toggleOverflowMenu(e) {
+    if (e) e.stopPropagation();
+    var menu = document.getElementById('overflowMenu');
+    if (!menu) return;
+
+    if (!menu.classList.contains('hidden')) {
+        menu.classList.add('hidden');
+        return;
+    }
+
+    // Position menu near the clicked button
+    if (e && e.currentTarget) {
+        var rect = e.currentTarget.getBoundingClientRect();
+        var menuW = 208;
+        var left = Math.min(rect.right - menuW, window.innerWidth - menuW - 8);
+        left = Math.max(8, left);
+        var top = rect.bottom + 4;
+        // On mobile, show above the bottom nav
+        if (window.innerWidth < 768) {
+            top = Math.min(top, window.innerHeight - 80);
+        }
+        menu.style.left = left + 'px';
+        menu.style.top = top + 'px';
+    }
+
+    menu.classList.remove('hidden');
+}
+
+function openCloudSettings() {
+    document.getElementById('cloudSettingsModal').classList.remove('hidden');
+}
+
+function closeCloudSettings(e) {
+    if (e && e.target !== document.getElementById('cloudSettingsModal')) return;
+    document.getElementById('cloudSettingsModal').classList.add('hidden');
+}
+
+// Close overflow menu when clicking outside
+document.addEventListener('click', function(e) {
+    var menu = document.getElementById('overflowMenu');
+    if (menu && !menu.classList.contains('hidden')) {
+        var isMenuClick = menu.contains(e.target);
+        var isTriggerClick = e.target.closest('[onclick*="toggleOverflowMenu"]');
+        if (!isMenuClick && !isTriggerClick) {
+            menu.classList.add('hidden');
+        }
+    }
+});
 
 function filterBy(field, value) {
     switchTab('tab-inventory');
@@ -571,6 +653,110 @@ function showItemDetail(itemId) {
 
 var _currentBarcodeItemId = null;
 var _currentBarcodeItemName = null;
+
+var _html5QrScanner = null;
+
+function startBarcodeScan() {
+    var container = document.getElementById('scanReaderContainer');
+    var btnStart = document.getElementById('btnStartScan');
+    var btnStop = document.getElementById('btnStopScan');
+
+    if (typeof Html5Qrcode === 'undefined') {
+        alert(t('scanCameraError'));
+        return;
+    }
+
+    try {
+        container.classList.remove('hidden');
+        btnStart.classList.add('hidden');
+        btnStop.classList.remove('hidden');
+        document.getElementById('scanNotFoundCard').classList.add('hidden');
+        document.getElementById('scanResultCard').classList.add('hidden');
+
+        _html5QrScanner = new Html5Qrcode('scanReaderContainer');
+        _html5QrScanner.start(
+            { facingMode: 'environment' },
+            { fps: 10, qrbox: { width: 250, height: 150 }, formatsToSupport: [
+                Html5QrcodeSupportedFormats.CODE_128,
+                Html5QrcodeSupportedFormats.CODE_39,
+                Html5QrcodeSupportedFormats.EAN_13,
+                Html5QrcodeSupportedFormats.EAN_8,
+                Html5QrcodeSupportedFormats.UPC_A,
+                Html5QrcodeSupportedFormats.UPC_E,
+                Html5QrcodeSupportedFormats.QR_CODE
+            ]},
+            function onScanSuccess(decodedText) {
+                stopBarcodeScan();
+                displayScanResult(decodedText.trim());
+            },
+            function onScanError() {}
+        ).catch(function(err) {
+            container.classList.add('hidden');
+            btnStart.classList.remove('hidden');
+            btnStop.classList.add('hidden');
+            alert(t('scanCameraError'));
+        });
+    } catch(e) {
+        container.classList.add('hidden');
+        btnStart.classList.remove('hidden');
+        btnStop.classList.add('hidden');
+        alert(t('scanCameraError'));
+    }
+}
+
+function stopBarcodeScan() {
+    if (_html5QrScanner) {
+        try {
+            _html5QrScanner.stop().then(function() {
+                _html5QrScanner.clear();
+            }).catch(function() {});
+        } catch(e) {}
+        _html5QrScanner = null;
+    }
+    var container = document.getElementById('scanReaderContainer');
+    var btnStart = document.getElementById('btnStartScan');
+    var btnStop = document.getElementById('btnStopScan');
+    container.classList.add('hidden');
+    btnStart.classList.remove('hidden');
+    btnStop.classList.add('hidden');
+}
+
+function lookupItemByManualId() {
+    var input = document.getElementById('scanManualIdInput');
+    var id = input.value.trim();
+    if (!id) return;
+    displayScanResult(id);
+}
+
+function displayScanResult(id) {
+    document.getElementById('scanManualIdInput').value = id;
+    document.getElementById('scanNotFoundCard').classList.add('hidden');
+    document.getElementById('scanResultCard').classList.add('hidden');
+
+    var item = appState.inventory.find(function(i) { return i.id === id; });
+    if (!item) {
+        document.getElementById('scanNotFoundCard').classList.remove('hidden');
+        return;
+    }
+
+    document.getElementById('scanResultName').innerText = item.name;
+    document.getElementById('scanResultCategory').innerText = item.category;
+    document.getElementById('scanResultLocation').innerText = (item.segment || '') + ' \u203A ' + (item.container || '') + (item.subContainer ? ' \u203A ' + item.subContainer : '');
+    document.getElementById('scanResultOwner').innerText = item.owner || 'Default';
+    document.getElementById('scanResultExpiry').innerText = item.expiryDate || '\u2014';
+    document.getElementById('scanResultRemarks').innerText = item.remarks || 'None';
+
+    var img = document.getElementById('scanResultImage');
+    if (item.imageUrl && item.imageUrl !== 'https://placehold.co/100?text=No+Photo' && !item.imageUrl.match(/^\[TRUNCATED\]/)) {
+        img.src = item.imageUrl;
+        img.classList.remove('hidden');
+    } else {
+        img.classList.add('hidden');
+    }
+
+    document.getElementById('scanResultCard').classList.remove('hidden');
+    document.getElementById('scanResultCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
 
 function downloadBarcodeLabel() {
     if (!_currentBarcodeItemId) return;

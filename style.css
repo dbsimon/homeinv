@@ -259,3 +259,42 @@ textarea, select {
     display: block;
     max-width: 100%;
 }
+
+/* Barcode scanner viewfinder */
+#scanReaderContainer {
+    width: 100%;
+    max-width: 360px;
+    margin: 0 auto;
+    aspect-ratio: 4/3;
+    background: #0f172a;
+}
+#scanReaderContainer video {
+    border-radius: 0.5rem;
+}
+
+/* Scan result card subtle highlight */
+#scanResultCard {
+    animation: scanResultIn 0.3s ease forwards;
+}
+@keyframes scanResultIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Overflow (three-dot) dropdown menu */
+#overflowMenu {
+    animation: menuIn 0.15s ease forwards;
+}
+@keyframes menuIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Cloud settings modal */
+#cloudSettingsModal {
+    animation: modalFadeIn 0.2s ease forwards;
+}
+@keyframes modalFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
