@@ -17,7 +17,7 @@
         <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm border border-slate-100">
             <h3 class="text-xl font-bold text-slate-900 mb-2" data-i18n="passwordTitle">Access Restrained</h3>
             <p class="text-xs text-slate-500 mb-4" data-i18n="passwordHint">Input Master System Password to decrypt inventory ledger.</p>
-            <input type="password" id="pagePasswordInput" class="w-full border border-slate-300 rounded-lg px-3 py-2.5 mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-center tracking-widest" placeholder="••••">
+            <input type="password" id="pagePasswordInput" onkeydown="if(event.key==='Enter')validateSystemAccess()" class="w-full border border-slate-300 rounded-lg px-3 py-2.5 mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-center tracking-widest" placeholder="••••">
             <p id="passwordError" class="text-red-500 text-xs font-medium mb-3 hidden" data-i18n="incorrectPwd">Incorrect Access Credentials.</p>
             <button onclick="validateSystemAccess()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-lg text-sm transition-colors shadow-sm" data-i18n="authorize">Authorize</button>
         </div>
@@ -252,10 +252,10 @@
                         <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="assetImage">Asset Image (Upload or URL)</label>
                         <div class="flex gap-2 items-start">
                             <div class="flex-1 space-y-2">
-                                <div class="flex gap-2">
+                                <div class="flex flex-wrap gap-2">
                                     <input type="file" id="invItemImageFile" accept="image/*" class="hidden" onchange="handleAssetImageUpload(event)">
                                     <button type="button" onclick="document.getElementById('invItemImageFile').click()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-3 py-2 rounded-lg border border-slate-300 transition-colors whitespace-nowrap" data-i18n="uploadPhoto">Upload Photo</button>
-                                    <input type="text" id="invItemImageUrl" data-i18n-placeholder="imageUrlPlaceholder" oninput="updateImagePreviewFromUrl()" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                                    <input type="text" id="invItemImageUrl" data-i18n-placeholder="imageUrlPlaceholder" oninput="updateImagePreviewFromUrl()" class="flex-1 min-w-[140px] text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
                                     <button type="button" onclick="aiAnalyzeImage()" id="btnAIAnalyze" style="display:none" class="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-medium px-3 py-2 rounded-lg border border-indigo-200 transition-colors whitespace-nowrap">AI Analyze</button>
                                 </div>
                             </div>

@@ -3,7 +3,7 @@
  * Data Model (v2)
  * Copyright (c) Westdoor Streetson 2026
  */
-const APP_VERSION = '1.34';
+const APP_VERSION = '1.35';
 
 // ===== Translation System =====
 const LANG = {
@@ -2004,9 +2004,13 @@ function compressImageFile(file, maxPx, quality, callback) {
     reader.readAsDataURL(file);
 }
 
+var _lastUploadedImageFile = null;
+
 function handleAssetImageUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
+
+    _lastUploadedImageFile = file;
 
     compressImageFile(file, 1024, 0.7, function(dataUrl) {
         document.getElementById('invItemImageUrl').value = dataUrl;
@@ -2033,8 +2037,8 @@ function updateImagePreviewFromUrl() {
 }
 
 async function aiAnalyzeImage() {
-    const imageUrl = document.getElementById('invItemImageUrl').value.trim();
-    if (!imageUrl) { alert('Upload an image first.'); return; }
+    const storedUrl = document.getElementById('invItemImageUrl').value.trim();
+    if (!storedUrl && !_lastUploadedImageFile) { alert('Upload an image first.'); return; }
 
     const apiKey = localStorage.getItem('sys_ds_api_key');
     if (!apiKey) { alert(t('aiNoKey')); return; }
@@ -2044,6 +2048,18 @@ async function aiAnalyzeImage() {
     btn.innerText = 'Analyzing...';
 
     try {
+        // Build imageUrl for API: prefer original file for quality, fallback to stored URL
+        var imageUrl = storedUrl;
+        if (_lastUploadedImageFile) {
+            imageUrl = await new Promise(function(resolve, reject) {
+                var reader = new FileReader();
+                reader.onload = function() { resolve(reader.result); };
+                reader.onerror = function() { reject(new Error('Failed to read image file')); };
+                reader.readAsDataURL(_lastUploadedImageFile);
+            });
+            // Only use the original file once, then clear
+            _lastUploadedImageFile = null;
+        }
         var categories = flattenCategoryTreeToLinearRoutes(appState.categories);
         var categoriesHint = categories.length > 0 ? categories.join(' | ') : 'Uncategorized';
         var itemName = document.getElementById('invItemName').value.trim() || '';
@@ -2054,12 +2070,20 @@ async function aiAnalyzeImage() {
         contextParts.push('Existing categories: ' + categoriesHint);
         var contextStr = contextParts.join('. ');
 
-        var systemPrompt = 'You are an inventory classifier. Return ONLY a JSON object with these fields (all optional):\n'
-            + '"category" — best matching full category path from the list, or suggest a new one\n'
-            + '"aiMetadata" — concise visual description (colors, material, type, style, condition), under 200 chars\n'
-            + '"itemName" — suggested item name if none provided\n'
-            + '"brand" — detected or suggested brand name\n'
-            + 'If you cannot determine any field, omit it. Return ONLY the JSON, no other text.';
+        var systemPrompt = 'You are a precise home inventory vision classifier. Analyze the provided image of a household item and extract its exact metadata into a strict JSON format.\n\n'
+            + 'CRITICAL RULE: Rely ONLY on the visual evidence in the image. Do not generalize or assume items are clothing unless clearly shown.\n\n'
+            + 'RETURN ONLY A RAW JSON OBJECT. Do not include markdown code blocks (e.g., ```json), intro text, or explanations.\n\n'
+            + 'JSON Structure and Constraints:\n'
+            + '{\n'
+            + '  "category": "String. The best matching full hierarchical category path (e.g., Home Automation/Sensors).",\n'
+            + '  "aiMetadata": "String. Concise visual attributes (color, material, approximate size, item type, condition). STRICTLY under 200 characters.",\n'
+            + '  "itemName": "String. A descriptive name for the specific item seen.",\n'
+            + '  "brand": "String. The visible brand name. If no brand is visible, return unbranded."\n'
+            + '}\n\n'
+            + 'Rules:\n'
+            + '1. Break down the visual details objectively. Look for logos, text, textures, or specific hardware shapes before deciding on the name and category.\n'
+            + '2. Omit any key if its value cannot be confidently determined from the image. Do not fabricate or guess data.\n'
+            + '3. Ensure all JSON strings are properly escaped to prevent parsing errors.';
 
         var content = '';
         var usedVision = false;
@@ -2085,7 +2109,7 @@ async function aiAnalyzeImage() {
                         messages: [
                             { role: 'system', content: systemPrompt },
                             { role: 'user', content: [
-                                { type: 'text', text: contextStr + '. Analyze this image and return JSON.' },
+                                { type: 'text', text: contextStr + '. Analyze the image of this household item and return the strict JSON with category, aiMetadata, itemName, brand fields.' },
                                 { type: 'image_url', image_url: { url: imageUrl } }
                             ]}
                         ],
@@ -2117,7 +2141,7 @@ async function aiAnalyzeImage() {
                     model: 'deepseek-chat',
                     messages: [
                         { role: 'system', content: systemPrompt },
-                        { role: 'user', content: contextStr + '. Based on this info, suggest a category and description. Return JSON.' }
+                        { role: 'user', content: contextStr + '. Based on the item name and brand provided, suggest a matching category and description. Return the strict JSON.' }
                     ],
                     temperature: 0.3, max_tokens: 500
                 })
