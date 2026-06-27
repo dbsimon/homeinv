@@ -691,15 +691,27 @@ function startBarcodeScan() {
         _html5QrScanner = new Html5Qrcode('scanReaderContainer');
         _html5QrScanner.start(
             { facingMode: 'environment' },
-            { fps: 10, qrbox: { width: 250, height: 150 }, formatsToSupport: [
-                Html5QrcodeSupportedFormats.CODE_128,
-                Html5QrcodeSupportedFormats.CODE_39,
-                Html5QrcodeSupportedFormats.EAN_13,
-                Html5QrcodeSupportedFormats.EAN_8,
-                Html5QrcodeSupportedFormats.UPC_A,
-                Html5QrcodeSupportedFormats.UPC_E,
-                Html5QrcodeSupportedFormats.QR_CODE
-            ]},
+            {
+                fps: 15,
+                qrbox: function(viewfinderWidth, viewfinderHeight) {
+                    var minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+                    var boxSize = Math.floor(minEdge * 0.75);
+                    return { width: boxSize, height: Math.floor(boxSize * 0.45) };
+                },
+                aspectRatio: 1.333,
+                disableFlip: false,
+                formatsToSupport: [
+                    Html5QrcodeSupportedFormats.CODE_128,
+                    Html5QrcodeSupportedFormats.CODE_39,
+                    Html5QrcodeSupportedFormats.EAN_13,
+                    Html5QrcodeSupportedFormats.EAN_8,
+                    Html5QrcodeSupportedFormats.UPC_A,
+                    Html5QrcodeSupportedFormats.UPC_E,
+                    Html5QrcodeSupportedFormats.ITF,
+                    Html5QrcodeSupportedFormats.CODABAR,
+                    Html5QrcodeSupportedFormats.QR_CODE
+                ]
+            },
             function onScanSuccess(decodedText) {
                 stopBarcodeScan();
                 displayScanResult(decodedText.trim());
