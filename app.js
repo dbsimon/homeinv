@@ -553,16 +553,31 @@ function toggleOverflowMenu(e) {
     // Position menu near the clicked button
     if (e && e.currentTarget) {
         var rect = e.currentTarget.getBoundingClientRect();
-        var menuW = 208;
-        var left = Math.min(rect.right - menuW, window.innerWidth - menuW - 8);
-        left = Math.max(8, left);
-        var top = rect.bottom + 4;
-        // On mobile, show above the bottom nav
-        if (window.innerWidth < 768) {
-            top = Math.min(top, window.innerHeight - 80);
+        var isMobile = window.innerWidth < 768;
+        if (isMobile) {
+            // Bottom sheet style: full-width, anchored above the nav bar
+            menu.style.left = '8px';
+            menu.style.right = '8px';
+            menu.style.width = 'auto';
+            menu.style.bottom = (window.innerHeight - rect.top + 8) + 'px';
+            menu.style.top = 'auto';
+            menu.style.borderRadius = '16px 16px 0 0';
+            menu.style.maxHeight = (rect.top - 16) + 'px';
+            menu.style.overflowY = 'auto';
+        } else {
+            // Desktop dropdown below the button
+            var menuW = 208;
+            var left = Math.min(rect.right - menuW, window.innerWidth - menuW - 8);
+            left = Math.max(8, left);
+            menu.style.left = left + 'px';
+            menu.style.right = 'auto';
+            menu.style.width = menuW + 'px';
+            menu.style.bottom = 'auto';
+            menu.style.top = (rect.bottom + 4) + 'px';
+            menu.style.borderRadius = '12px';
+            menu.style.maxHeight = 'none';
+            menu.style.overflowY = 'visible';
         }
-        menu.style.left = left + 'px';
-        menu.style.top = top + 'px';
     }
 
     menu.classList.remove('hidden');
