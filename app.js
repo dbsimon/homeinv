@@ -3,7 +3,7 @@
  * Data Model (v2)
  * Copyright (c) Westdoor Streetson 2026
  */
-const APP_VERSION = '1.35';
+const APP_VERSION = '1.36';
 
 // ===== Translation System =====
 const LANG = {
@@ -629,6 +629,13 @@ function showItemDetail(itemId) {
     document.getElementById('detailItemLocation').innerText = (item.segment || '') + ' > ' + (item.container || '') + (item.subContainer ? ' > ' + item.subContainer : '');
     document.getElementById('detailItemOwner').innerText = item.owner || 'Default';
     document.getElementById('detailItemExpiry').innerText = item.expiryDate || '\u2014';
+    if (item.itemType === 'stock') {
+        var qtyWarn = item.quantity <= item.minQuantity && item.minQuantity > 0 ? ' \u26A0\uFE0F Low stock' : '';
+        document.getElementById('detailItemStockRow').classList.remove('hidden');
+        document.getElementById('detailItemStock').innerText = (item.quantity || 0) + ' ' + (item.uom || 'pcs') + '  /  min ' + (item.minQuantity || 0) + qtyWarn;
+    } else {
+        document.getElementById('detailItemStockRow').classList.add('hidden');
+    }
     document.getElementById('detailItemTime').innerText = item.timestamp;
     document.getElementById('detailItemRemarks').innerText = item.remarks || 'None';
     document.getElementById('detailItemId').innerText = item.id;
@@ -688,29 +695,16 @@ function startBarcodeScan() {
         document.getElementById('scanNotFoundCard').classList.add('hidden');
         document.getElementById('scanResultCard').classList.add('hidden');
 
-        _html5QrScanner = new Html5Qrcode('scanReaderContainer');
+        _html5QrScanner = new Html5Qrcode('scanReaderContainer', { verbose: false });
         _html5QrScanner.start(
             { facingMode: 'environment' },
             {
                 fps: 15,
-                qrbox: function(viewfinderWidth, viewfinderHeight) {
-                    var minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-                    var boxSize = Math.floor(minEdge * 0.75);
-                    return { width: boxSize, height: Math.floor(boxSize * 0.45) };
-                },
-                aspectRatio: 1.333,
+                aspectRatio: 1.777,
                 disableFlip: false,
-                formatsToSupport: [
-                    Html5QrcodeSupportedFormats.CODE_128,
-                    Html5QrcodeSupportedFormats.CODE_39,
-                    Html5QrcodeSupportedFormats.EAN_13,
-                    Html5QrcodeSupportedFormats.EAN_8,
-                    Html5QrcodeSupportedFormats.UPC_A,
-                    Html5QrcodeSupportedFormats.UPC_E,
-                    Html5QrcodeSupportedFormats.ITF,
-                    Html5QrcodeSupportedFormats.CODABAR,
-                    Html5QrcodeSupportedFormats.QR_CODE
-                ]
+                experimentalFeatures: {
+                    useBarCodeDetectorIfSupported: true
+                }
             },
             function onScanSuccess(decodedText) {
                 stopBarcodeScan();
@@ -755,6 +749,63 @@ function lookupItemByManualId() {
     displayScanResult(id);
 }
 
+var _stockScanCallback = null;
+
+function scanExistingStockBarcode() {
+    if (typeof Html5Qrcode === 'undefined') {
+        alert(t('scanCameraError'));
+        return;
+    }
+
+    // Create a temporary scanner overlay in the register page
+    var overlay = document.getElementById('stockScanOverlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'stockScanOverlay';
+        overlay.className = 'fixed inset-0 bg-black/80 z-[9996] flex flex-col items-center justify-center p-4';
+        overlay.innerHTML = '<div id="stockScanReader" class="w-full max-w-sm rounded-xl overflow-hidden bg-slate-900"></div>'
+            + '<button id="btnCancelStockScan" class="mt-3 bg-white/20 hover:bg-white/30 text-white text-sm font-medium px-5 py-2 rounded-lg border border-white/20 transition-colors">Cancel</button>';
+        document.body.appendChild(overlay);
+        document.getElementById('btnCancelStockScan').addEventListener('click', cancelStockBarcodeScan);
+    }
+    overlay.classList.remove('hidden');
+
+    try {
+        _html5QrScanner = new Html5Qrcode('stockScanReader', { verbose: false });
+        _html5QrScanner.start(
+            { facingMode: 'environment' },
+            { fps: 15, aspectRatio: 1.777, disableFlip: false, experimentalFeatures: { useBarCodeDetectorIfSupported: true } },
+            function onScanSuccess(decodedText) {
+                cancelStockBarcodeScan();
+                var id = decodedText.trim();
+                var item = appState.inventory.find(function(i) { return i.id === id; });
+                if (item) {
+                    setupItemModificationContext(item.id);
+                    showToast('Found: ' + item.name, 'success');
+                } else {
+                    showToast('No item found with this barcode', 'error');
+                }
+            },
+            function onScanError() {}
+        ).catch(function() {
+            cancelStockBarcodeScan();
+            alert(t('scanCameraError'));
+        });
+    } catch(e) {
+        cancelStockBarcodeScan();
+        alert(t('scanCameraError'));
+    }
+}
+
+function cancelStockBarcodeScan() {
+    if (_html5QrScanner) {
+        try { _html5QrScanner.stop().then(function() { _html5QrScanner.clear(); }).catch(function() {}); } catch(e) {}
+        _html5QrScanner = null;
+    }
+    var overlay = document.getElementById('stockScanOverlay');
+    if (overlay) overlay.classList.add('hidden');
+}
+
 function displayScanResult(id) {
     document.getElementById('scanManualIdInput').value = id;
     document.getElementById('scanNotFoundCard').classList.add('hidden');
@@ -766,12 +817,31 @@ function displayScanResult(id) {
         return;
     }
 
+    _currentScanItemId = item.id;
+    var isStock = item.itemType === 'stock';
+
     document.getElementById('scanResultName').innerText = item.name;
     document.getElementById('scanResultCategory').innerText = item.category;
     document.getElementById('scanResultLocation').innerText = (item.segment || '') + ' \u203A ' + (item.container || '') + (item.subContainer ? ' \u203A ' + item.subContainer : '');
     document.getElementById('scanResultOwner').innerText = item.owner || 'Default';
     document.getElementById('scanResultExpiry').innerText = item.expiryDate || '\u2014';
     document.getElementById('scanResultRemarks').innerText = item.remarks || 'None';
+
+    var stockInfo = document.getElementById('scanResultStockInfo');
+    var stockText = document.getElementById('scanResultStockText');
+    if (isStock) {
+        stockInfo.classList.remove('hidden');
+        stockText.innerText = (item.quantity || 0) + ' ' + (item.uom || 'pcs') + (item.quantity <= item.minQuantity && item.minQuantity > 0 ? ' \u26A0\uFE0F Below min (' + item.minQuantity + ')' : '');
+    } else {
+        stockInfo.classList.add('hidden');
+    }
+
+    document.getElementById('btnScanDrop').classList.toggle('hidden', isStock);
+    document.getElementById('btnScanDrop').classList.toggle('flex', !isStock);
+    document.getElementById('btnScanOut').classList.toggle('hidden', !isStock);
+    document.getElementById('btnScanOut').classList.toggle('flex', isStock);
+    document.getElementById('btnScanIn').classList.toggle('hidden', !isStock);
+    document.getElementById('btnScanIn').classList.toggle('flex', isStock);
 
     var img = document.getElementById('scanResultImage');
     if (item.imageUrl && item.imageUrl !== 'https://placehold.co/100?text=No+Photo' && !item.imageUrl.match(/^\[TRUNCATED\]/)) {
@@ -783,6 +853,61 @@ function displayScanResult(id) {
 
     document.getElementById('scanResultCard').classList.remove('hidden');
     document.getElementById('scanResultCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+var _currentScanItemId = null;
+
+function scanEditItem() {
+    if (!_currentScanItemId) return;
+    setupItemModificationContext(_currentScanItemId);
+    switchTab('tab-register');
+}
+
+function scanDropItem() {
+    if (!_currentScanItemId) return;
+    var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId; });
+    if (!item) return;
+    if (!confirm('Drop "' + item.name + '"? This cannot be undone.')) return;
+    removeItemFromInventory(_currentScanItemId);
+    document.getElementById('scanResultCard').classList.add('hidden');
+    document.getElementById('scanNotFoundCard').classList.remove('hidden');
+    document.getElementById('scanNotFoundCard').querySelector('span').innerText = '"' + item.name + '" removed.';
+    syncUIComponents();
+}
+
+function scanStockOut() {
+    if (!_currentScanItemId) return;
+    var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId; });
+    if (!item || item.itemType !== 'stock') return;
+    var currentQty = item.quantity || 0;
+    var uom = item.uom || 'pcs';
+    var input = prompt('Deduct quantity from "' + item.name + '"?\nCurrent: ' + currentQty + ' ' + uom + '\nEnter amount to remove:', '');
+    if (input === null) return;
+    var amount = parseInt(input);
+    if (isNaN(amount) || amount <= 0) { alert('Please enter a positive number.'); return; }
+    if (amount > currentQty) { alert('Cannot remove more than current stock (' + currentQty + ').'); return; }
+    item.quantity = currentQty - amount;
+    saveStateToLocalStorage();
+    syncUIComponents();
+    displayScanResult(_currentScanItemId);
+    showToast('Removed ' + amount + ' ' + uom + ' — now ' + item.quantity, 'success');
+}
+
+function scanStockIn() {
+    if (!_currentScanItemId) return;
+    var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId; });
+    if (!item || item.itemType !== 'stock') return;
+    var currentQty = item.quantity || 0;
+    var uom = item.uom || 'pcs';
+    var input = prompt('Add quantity to "' + item.name + '"?\nCurrent: ' + currentQty + ' ' + uom + '\nEnter amount to add:', '');
+    if (input === null) return;
+    var amount = parseInt(input);
+    if (isNaN(amount) || amount <= 0) { alert('Please enter a positive number.'); return; }
+    item.quantity = currentQty + amount;
+    saveStateToLocalStorage();
+    syncUIComponents();
+    displayScanResult(_currentScanItemId);
+    showToast('Added ' + amount + ' ' + uom + ' — now ' + item.quantity, 'success');
 }
 
 function downloadBarcodeLabel() {
@@ -1833,6 +1958,27 @@ function syncFilterContainersDropdown() {
     }
 }
 
+function switchItemType(type) {
+    var btnUnique = document.getElementById('btnItemTypeUnique');
+    var btnStock = document.getElementById('btnItemTypeStock');
+    var stockFields = document.getElementById('stockFieldsContainer');
+    var scanBtn = document.getElementById('btnScanExistingBarcode');
+    if (type === 'stock') {
+        btnUnique.className = 'flex-1 text-xs font-medium py-2 px-3 bg-white text-slate-500 transition-colors';
+        btnStock.className = 'flex-1 text-xs font-medium py-2 px-3 bg-amber-600 text-white transition-colors';
+        stockFields.classList.remove('hidden');
+        scanBtn.classList.remove('hidden');
+    } else {
+        btnUnique.className = 'flex-1 text-xs font-medium py-2 px-3 bg-blue-600 text-white transition-colors';
+        btnStock.className = 'flex-1 text-xs font-medium py-2 px-3 bg-white text-slate-500 transition-colors';
+        stockFields.classList.add('hidden');
+        scanBtn.classList.add('hidden');
+        document.getElementById('invItemUom').value = '';
+        document.getElementById('invItemQuantity').value = '';
+        document.getElementById('invItemMinQuantity').value = '';
+    }
+}
+
 function commitItemToInventory() {
     const name = document.getElementById('invItemName').value.trim();
     const categoryStr = buildCategoryPathFromSelects();
@@ -1863,6 +2009,10 @@ function commitItemToInventory() {
         purchaseDate: document.getElementById('invItemPurchaseDate').value,
         warrantyDate: document.getElementById('invItemWarrantyDate').value,
         expiryDate: document.getElementById('invItemExpiryDate').value,
+        itemType: document.getElementById('stockFieldsContainer').classList.contains('hidden') ? 'unique' : 'stock',
+        uom: document.getElementById('stockFieldsContainer').classList.contains('hidden') ? '' : document.getElementById('invItemUom').value.trim(),
+        quantity: document.getElementById('stockFieldsContainer').classList.contains('hidden') ? 0 : (parseInt(document.getElementById('invItemQuantity').value) || 0),
+        minQuantity: document.getElementById('stockFieldsContainer').classList.contains('hidden') ? 0 : (parseInt(document.getElementById('invItemMinQuantity').value) || 0),
         timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
     };
 
@@ -1895,6 +2045,14 @@ function setupItemModificationContext(itemId) {
         document.getElementById('editTargetItemId').value = item.id;
         document.getElementById('invItemName').value = item.name;
         document.getElementById('invItemBrand').value = item.brand || '';
+        if (item.itemType === 'stock') {
+            switchItemType('stock');
+            document.getElementById('invItemUom').value = item.uom || '';
+            document.getElementById('invItemQuantity').value = item.quantity || 0;
+            document.getElementById('invItemMinQuantity').value = item.minQuantity || 0;
+        } else {
+            switchItemType('unique');
+        }
         setCascadingCategorySelects(item.category);
 
         document.getElementById('invItemSegmentSelect').value = item.segment;
@@ -1943,6 +2101,7 @@ function softClearForNextItem() {
     document.getElementById('invItemPurchaseDate').value = '';
     document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
+    switchItemType('unique');
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
     preview.classList.add('hidden');
@@ -1965,6 +2124,7 @@ function clearAllInventoryFields() {
     document.getElementById('invItemPurchaseDate').value = '';
     document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
+    switchItemType('unique');
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
     preview.classList.add('hidden');
@@ -1990,6 +2150,7 @@ function clearInventoryFormContext() {
     document.getElementById('invItemPurchaseDate').value = '';
     document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
+    switchItemType('unique');
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
     preview.classList.add('hidden');
@@ -2264,6 +2425,7 @@ function exportLocalDatabasesToExcel() {
             "System ID",
             "Item Name",
             "Brand",
+            "Item Type",
             "Classification Route",
             "Segment Zone",
             "Container",
@@ -2273,6 +2435,9 @@ function exportLocalDatabasesToExcel() {
             "Purchase Date",
             "Warranty Date",
             "Expiry Date",
+            "UOM",
+            "Quantity",
+            "Min Quantity",
             "Image Link Asset",
             "User Remarks Annotation",
             "Last System Entry Update"
@@ -2283,6 +2448,7 @@ function exportLocalDatabasesToExcel() {
                 "System ID": safeCell(item.id || ''),
                 "Item Name": safeCell(item.name || ''),
                 "Brand": safeCell(item.brand || ''),
+                "Item Type": item.itemType === 'stock' ? 'stock' : 'unique',
                 "Classification Route": safeCell(item.category || ''),
                 "Segment Zone": safeCell(item.segment || ''),
                 "Container": safeCell(item.container || ''),
@@ -2292,6 +2458,9 @@ function exportLocalDatabasesToExcel() {
                 "Purchase Date": safeCell(item.purchaseDate || ''),
                 "Warranty Date": safeCell(item.warrantyDate || ''),
                 "Expiry Date": safeCell(item.expiryDate || ''),
+                "UOM": item.itemType === 'stock' ? safeCell(item.uom || '') : '',
+                "Quantity": item.itemType === 'stock' ? (item.quantity || 0) : '',
+                "Min Quantity": item.itemType === 'stock' ? (item.minQuantity || 0) : '',
                 "Image Link Asset": safeCell(item.imageUrl || ''),
                 "User Remarks Annotation": safeCell(item.remarks || ''),
                 "Last System Entry Update": safeCell(item.timestamp || '')
@@ -2326,7 +2495,7 @@ function exportLocalDatabasesToExcel() {
         var invSheet = XLSX.utils.json_to_sheet(flatRows);
 
         // Set column widths for readability
-        var colWidths = [22, 26, 18, 28, 18, 18, 18, 14, 22, 16, 16, 14, 24, 26, 24];
+        var colWidths = [22, 26, 18, 12, 28, 18, 18, 18, 14, 22, 16, 16, 14, 10, 12, 14, 24, 26, 24];
         invSheet['!cols'] = colWidths.map(function(w) { return { wch: w }; });
 
         var workbook = XLSX.utils.book_new();
@@ -2395,6 +2564,10 @@ function importExcelToLocalDatabases(event) {
                     var purDate = cleanCell(r["Purchase Date"]) || '';
                     var warDate = cleanCell(r["Warranty Date"]) || '';
                     var expDate = cleanCell(r["Expiry Date"]) || '';
+                    var itemType = cleanCell(r["Item Type"]) || 'unique';
+                    var uom = cleanCell(r["UOM"]) || '';
+                    var quantity = parseInt(cleanCell(r["Quantity"])) || 0;
+                    var minQuantity = parseInt(cleanCell(r["Min Quantity"])) || 0;
                     var img = cleanCell(r["Image Link Asset"]) || 'https://placehold.co/100?text=No+Photo';
                     var rem = cleanCell(r["User Remarks Annotation"]) || '';
                     var time = cleanCell(r["Last System Entry Update"]) || new Date().toISOString().replace('T', ' ').substring(0, 16);
@@ -2405,7 +2578,7 @@ function importExcelToLocalDatabases(event) {
                     if (owner && owner !== 'Default' && !appState.users.includes(owner)) appState.users.push(owner);
 
                     var existingIdx = appState.inventory.findIndex(function(i) { return i.id === id; });
-                    var item = { id:id, name:name, brand:brand, category:category, segment:segment, container:container, subContainer:subContainer, owner:owner, aiMetadata:aiMd, purchaseDate:purDate, warrantyDate:warDate, expiryDate:expDate, imageUrl:img, remarks:rem, timestamp:time };
+                    var item = { id:id, name:name, brand:brand, category:category, segment:segment, container:container, subContainer:subContainer, owner:owner, aiMetadata:aiMd, purchaseDate:purDate, warrantyDate:warDate, expiryDate:expDate, itemType:itemType, uom:uom, quantity:quantity, minQuantity:minQuantity, imageUrl:img, remarks:rem, timestamp:time };
                     if (existingIdx !== -1) appState.inventory[existingIdx] = item;
                     else appState.inventory.push(item);
                 });
@@ -2771,9 +2944,25 @@ async function performAISearch() {
 
 function resetAISearchFilter() {
     aiFilteredItemIds = null;
-    document.getElementById('aiSearchDescription').value = '';
-    document.getElementById('aiSearchStatus').classList.add('hidden');
     document.getElementById('btnResetAISearch').classList.add('hidden');
+    document.getElementById('aiSearchStatus').classList.add('hidden');
+    document.getElementById('aiSearchDescription').value = '';
+    document.getElementById('aiSearchPanel').classList.add('hidden');
+    document.getElementById('btnToggleAILabel').textContent = 'AI Deep Search';
+    document.getElementById('aiToggleArrow').innerHTML = '&#9650;';
+    renderFilteredInventoryTable();
+}
+
+var _currentItemTypeFilter = 'all';
+
+function setItemTypeFilter(filter) {
+    _currentItemTypeFilter = filter;
+    var btnAll = document.getElementById('btnFilterAll');
+    var btnUnique = document.getElementById('btnFilterUnique');
+    var btnStock = document.getElementById('btnFilterStock');
+    btnAll.className = filter === 'all' ? 'text-[10px] font-medium px-2.5 py-1.5 bg-slate-800 text-white transition-colors' : 'text-[10px] font-medium px-2.5 py-1.5 bg-white text-slate-500 transition-colors';
+    btnUnique.className = filter === 'unique' ? 'text-[10px] font-medium px-2.5 py-1.5 bg-blue-600 text-white transition-colors' : 'text-[10px] font-medium px-2.5 py-1.5 bg-white text-slate-500 transition-colors';
+    btnStock.className = filter === 'stock' ? 'text-[10px] font-medium px-2.5 py-1.5 bg-amber-600 text-white transition-colors' : 'text-[10px] font-medium px-2.5 py-1.5 bg-white text-slate-500 transition-colors';
     renderFilteredInventoryTable();
 }
 
@@ -2855,6 +3044,22 @@ function migrateLegacyState(state) {
             }
             if (item.warrantyDate === undefined) {
                 item.warrantyDate = '';
+                migrated = true;
+            }
+            if (item.itemType === undefined) {
+                item.itemType = 'unique';
+                migrated = true;
+            }
+            if (item.uom === undefined) {
+                item.uom = '';
+                migrated = true;
+            }
+            if (item.quantity === undefined) {
+                item.quantity = 0;
+                migrated = true;
+            }
+            if (item.minQuantity === undefined) {
+                item.minQuantity = 0;
                 migrated = true;
             }
         });
@@ -3051,6 +3256,8 @@ function renderFilteredInventoryTable() {
 
     const targets = appState.inventory.filter(item => {
         if (aiFilteredItemIds && !aiFilteredItemIds.includes(item.id)) return false;
+        if (_currentItemTypeFilter === 'unique' && item.itemType !== 'unique') return false;
+        if (_currentItemTypeFilter === 'stock' && item.itemType !== 'stock') return false;
         const matchQuery = item.name.toLowerCase().includes(query) || item.remarks.toLowerCase().includes(query);
         const matchSeg = !segFilter || item.segment === segFilter;
         const matchCon = !conFilter || item.container === conFilter;
@@ -3076,6 +3283,7 @@ function renderFilteredInventoryTable() {
             <td class="px-4 py-3 cursor-pointer hover:bg-blue-50/50" onclick="showItemDetail('${item.id}')">
                 <div class="font-bold text-slate-900 hover:text-blue-600">${item.name}</div>
                 <div class="text-[10px] text-slate-400 font-mono mt-0.5">ID: ${item.id}</div>
+                ${item.itemType === 'stock' ? '<div class="text-[10px] text-amber-600 font-medium mt-0.5">\uD83D\uDCE6 ' + (item.quantity||0) + ' ' + (item.uom||'pcs') + (item.quantity <= item.minQuantity && item.minQuantity > 0 ? ' \u26A0\uFE0F Low' : '') + '</div>' : ''}
             </td>
             <td class="px-4 py-3">
                 <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded border border-slate-200 font-medium cursor-pointer hover:bg-blue-50 hover:text-blue-600" onclick="event.stopPropagation(); filterBy('category','${item.category.replace(/'/g, "&#39;")}')">${item.category}</span>
