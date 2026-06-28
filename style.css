@@ -267,11 +267,13 @@ textarea, select {
     margin: 0 auto;
     background: #0f172a;
     min-height: 300px;
+    overflow: hidden;
 }
 #scanReaderContainer video {
     border-radius: 0.5rem;
     width: 100% !important;
     height: auto !important;
+    object-fit: contain !important;
 }
 
 /* Stock fields transition */
