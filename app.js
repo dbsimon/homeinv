@@ -695,17 +695,24 @@ function startBarcodeScan() {
         document.getElementById('scanNotFoundCard').classList.add('hidden');
         document.getElementById('scanResultCard').classList.add('hidden');
 
-        _html5QrScanner = new Html5Qrcode('scanReaderContainer', { verbose: false });
+        _html5QrScanner = new Html5Qrcode('scanReaderContainer', {
+            fps: 15,
+            formatsToSupport: [
+                Html5QrcodeSupportedFormats.CODE_128,
+                Html5QrcodeSupportedFormats.CODE_39,
+                Html5QrcodeSupportedFormats.EAN_13,
+                Html5QrcodeSupportedFormats.EAN_8,
+                Html5QrcodeSupportedFormats.UPC_A,
+                Html5QrcodeSupportedFormats.UPC_E,
+                Html5QrcodeSupportedFormats.ITF,
+                Html5QrcodeSupportedFormats.CODABAR,
+                Html5QrcodeSupportedFormats.QR_CODE
+            ],
+            useBarCodeDetectorIfSupported: true
+        });
         _html5QrScanner.start(
             { facingMode: 'environment' },
-            {
-                fps: 15,
-                aspectRatio: 1.777,
-                disableFlip: false,
-                experimentalFeatures: {
-                    useBarCodeDetectorIfSupported: true
-                }
-            },
+            { fps: 15, aspectRatio: 1.777 },
             function onScanSuccess(decodedText) {
                 stopBarcodeScan();
                 displayScanResult(decodedText.trim());
@@ -771,10 +778,24 @@ function scanExistingStockBarcode() {
     overlay.classList.remove('hidden');
 
     try {
-        _html5QrScanner = new Html5Qrcode('stockScanReader', { verbose: false });
+        _html5QrScanner = new Html5Qrcode('stockScanReader', {
+            fps: 15,
+            formatsToSupport: [
+                Html5QrcodeSupportedFormats.CODE_128,
+                Html5QrcodeSupportedFormats.CODE_39,
+                Html5QrcodeSupportedFormats.EAN_13,
+                Html5QrcodeSupportedFormats.EAN_8,
+                Html5QrcodeSupportedFormats.UPC_A,
+                Html5QrcodeSupportedFormats.UPC_E,
+                Html5QrcodeSupportedFormats.ITF,
+                Html5QrcodeSupportedFormats.CODABAR,
+                Html5QrcodeSupportedFormats.QR_CODE
+            ],
+            useBarCodeDetectorIfSupported: true
+        });
         _html5QrScanner.start(
             { facingMode: 'environment' },
-            { fps: 15, aspectRatio: 1.777, disableFlip: false, experimentalFeatures: { useBarCodeDetectorIfSupported: true } },
+            { fps: 15, aspectRatio: 1.777 },
             function onScanSuccess(decodedText) {
                 cancelStockBarcodeScan();
                 var id = decodedText.trim();
