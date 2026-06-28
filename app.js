@@ -3,7 +3,7 @@
  * Data Model (v2)
  * Copyright (c) Westdoor Streetson 2026
  */
-const APP_VERSION = '1.39';
+const APP_VERSION = '1.41';
 
 // ===== Translation System =====
 const LANG = {
@@ -59,11 +59,16 @@ const LANG = {
     categoryRoute: 'Category Route Allocation',
     chooseCategory: '-- Choose Category Route --',
     targetSegment: 'Target Home Segment',
-    chooseSegment: '-- Choose Segment --',
     containerAssign: 'Container Assignment',
-    chooseContainer: '-- Choose Container --',
     subContainerAssign: 'Sub-Container Assignment',
-    chooseSubContainer: '-- Choose Sub-Container --',
+    brand: 'Brand',
+    itemType: 'Item Type',
+    uom: 'UOM',
+    quantity: 'Quantity',
+    minLevel: 'Min Level',
+    purchaseDate: 'Purchase Date',
+    warrantyDate: 'Warranty Date',
+    expiryDate: 'Expiry Date',
     owner: 'Owner',
     selectUser: '-- Select User --',
     assetImage: 'Asset Image (Upload or URL)',
@@ -250,6 +255,14 @@ const LANG = {
     chooseContainer: '-- 選擇容器 --',
     subContainerAssign: '子容器分配',
     chooseSubContainer: '-- 選擇子容器 --',
+    brand: '品牌',
+    itemType: '物品類型',
+    uom: '單位',
+    quantity: '數量',
+    minLevel: '最低存量',
+    purchaseDate: '購買日期',
+    warrantyDate: '保養日期',
+    expiryDate: '到期日期',
     owner: '擁有者',
     selectUser: '-- 選擇用戶 --',
     assetImage: '資產圖片（上傳或URL）',
@@ -396,6 +409,7 @@ let appState = {
     userEmails: {},
     reminderDays: 30,
     language: 'en',
+    nextItemId: 1,
     selectedCategoryNodePath: null,
     activeMappingNode: null,
     spatialBackgroundImage: null
@@ -674,10 +688,10 @@ function showItemDetail(itemId) {
         try {
             JsBarcode('#detailItemBarcode', item.id, {
                 format: 'CODE128',
-                width: 1.5,
-                height: 48,
+                width: 2.5,
+                height: 64,
                 displayValue: false,
-                margin: 4,
+                margin: 10,
                 background: '#ffffff',
                 lineColor: '#1e293b'
             });
@@ -979,21 +993,21 @@ function downloadBarcodeLabel() {
     var img = new Image();
 
     img.onload = function() {
-        var labelW = Math.max(img.width + 20, 260);
-        var labelH = img.height + 52;
-        canvas.width = labelW * 2;
-        canvas.height = labelH * 2;
-        ctx.scale(2, 2);
+        var labelW = Math.max(img.width + 30, 300);
+        var labelH = img.height + 60;
+        canvas.width = labelW * 3;
+        canvas.height = labelH * 3;
+        ctx.scale(3, 3);
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, labelW, labelH);
-        ctx.drawImage(img, (labelW - img.width) / 2, 6);
+        ctx.drawImage(img, (labelW - img.width) / 2, 8);
         ctx.fillStyle = '#1e293b';
         ctx.font = '11px "Inter", "Segoe UI", sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(_currentBarcodeItemName || '', labelW / 2, img.height + 22);
+        ctx.fillText(_currentBarcodeItemName || '', labelW / 2, img.height + 24);
         ctx.font = '9px monospace';
         ctx.fillStyle = '#64748b';
-        ctx.fillText(_currentBarcodeItemId || '', labelW / 2, img.height + 40);
+        ctx.fillText(_currentBarcodeItemId || '', labelW / 2, img.height + 44);
 
         var url = canvas.toDataURL('image/png');
         var a = document.createElement('a');
@@ -2053,7 +2067,7 @@ function commitItemToInventory() {
     }
 
     const payloadItem = {
-        id: editId ? editId : 'item_' + Date.now(),
+        id: editId ? editId : String(appState.nextItemId++).padStart(5, '0'),
         name,
         brand: document.getElementById('invItemBrand').value.trim(),
         category: categoryStr,
@@ -2216,6 +2230,17 @@ function clearInventoryFormContext() {
     if (document.getElementById('invItemOwnerSelect')) {
         document.getElementById('invItemOwnerSelect').value = appState.currentUser || 'Default';
     }
+}
+
+function copyItemToNew(itemId) {
+    var item = appState.inventory.find(i => i.id === itemId);
+    if (!item) return;
+    setupItemModificationContext(itemId);
+    // Overwrite the edit target ID to force a new item on save
+    document.getElementById('editTargetItemId').value = '';
+    document.getElementById('inventoryFormTitle').innerText = t('inventoryFormTitle');
+    document.getElementById('btnResetFormState').classList.add('hidden');
+    showToast('Copied "' + item.name + '" — edit and save as new item', 'info');
 }
 
 function removeItemFromInventory(itemId) {
@@ -2610,7 +2635,7 @@ function importExcelToLocalDatabases(event) {
             if (invSheetName && workbook.Sheets[invSheetName]) {
                 var rows = XLSX.utils.sheet_to_json(workbook.Sheets[invSheetName]);
                 rows.forEach(function(r) {
-                    var id = cleanCell(r["System ID"]) || 'item_' + Math.floor(Math.random() * 1000000) + Date.now();
+                    var id = cleanCell(r["System ID"]) || String(appState.nextItemId++).padStart(5, '0');
                     var name = cleanCell(r["Item Name"]) || 'Unnamed Imported Asset';
                     var brand = cleanCell(r["Brand"]) || '';
                     var category = cleanCell(r["Classification Route"]) || 'Foods';
@@ -2792,7 +2817,7 @@ function showToast(message, type) {
     toast.className = type;
     toast.innerHTML = icon + ' <span>' + message + '</span>';
     toast.classList.add('show');
-    if (type === 'success' || type === 'error') {
+    if (type === 'success' || type === 'error' || type === 'info') {
         clearTimeout(toast._timer);
         toast._timer = setTimeout(function() {
             toast.classList.remove('show');
@@ -3024,6 +3049,17 @@ function setItemTypeFilter(filter) {
     renderFilteredInventoryTable();
 }
 
+function clearAllBrowseFilters() {
+    document.getElementById('filterSearchQuery').value = '';
+    document.getElementById('filterSegmentSelect').value = '';
+    document.getElementById('filterCategorySelect').value = '';
+    document.getElementById('filterContainerSelect').value = '';
+    document.getElementById('filterOwnerSelect').value = '';
+    setItemTypeFilter('all');
+    syncFilterContainersDropdown();
+    renderFilteredInventoryTable();
+}
+
 function toggleAIPanel() {
     var panel = document.getElementById('aiSearchPanel');
     var arrow = document.getElementById('aiToggleArrow');
@@ -3121,6 +3157,17 @@ function migrateLegacyState(state) {
                 migrated = true;
             }
         });
+    }
+
+    // Ensure nextItemId counter exists, seeded from highest existing numeric ID
+    if (state.nextItemId === undefined) {
+        var maxId = 0;
+        (state.inventory || []).forEach(function(item) {
+            var num = parseInt(item.id);
+            if (!isNaN(num) && num > maxId) maxId = num;
+        });
+        state.nextItemId = maxId + 1;
+        migrated = true;
     }
 
     // Ensure users array and currentUser exist
@@ -3310,6 +3357,11 @@ function renderFilteredInventoryTable() {
     const conFilter = document.getElementById('filterContainerSelect').value;
     const ownerFilter = document.getElementById('filterOwnerSelect').value;
 
+    // Show clear filters button when any filter is active
+    var hasFilters = query || segFilter || catFilter || conFilter || ownerFilter || _currentItemTypeFilter !== 'all';
+    var clearBtn = document.getElementById('btnClearAllFilters');
+    if (clearBtn) clearBtn.classList.toggle('hidden', !hasFilters);
+
     tableBody.innerHTML = '';
 
     const targets = appState.inventory.filter(item => {
@@ -3359,9 +3411,11 @@ function renderFilteredInventoryTable() {
                 ${item.aiMetadata ? '<div class="text-[10px] text-indigo-400 mt-0.5">🤖 AI described</div>' : ''}
                 <div class="text-[10px] text-slate-400 mt-1">🕒 ${item.timestamp}</div>
             </td>
-            <td class="px-4 py-3 text-center space-x-1 whitespace-nowrap">
-                <button onclick="event.stopPropagation(); setupItemModificationContext('${item.id}')" class="text-xs bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-600 font-semibold px-2 py-1 rounded transition-colors border border-slate-200">Edit</button>
-                <button onclick="event.stopPropagation(); removeItemFromInventory('${item.id}')" class="text-xs bg-red-50 hover:bg-red-100 text-red-600 font-semibold px-2 py-1 rounded transition-colors border border-red-100">Drop</button>
+            <td class="px-4 py-3 text-center align-middle">
+                <div class="flex flex-col gap-1 items-center">
+                <button onclick="event.stopPropagation(); setupItemModificationContext('${item.id}')" class="w-full text-[10px] bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-600 font-semibold px-2 py-0.5 rounded transition-colors border border-slate-200">Edit</button>
+                <button onclick="event.stopPropagation(); copyItemToNew('${item.id}')" class="w-full text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-600 font-semibold px-2 py-0.5 rounded transition-colors border border-emerald-200">Copy</button>
+                </div>
             </td>
         `;
         tableBody.appendChild(tr);

@@ -325,3 +325,9 @@ textarea, select {
     from { opacity: 0; }
     to { opacity: 1; }
 }
+
+/* Sticky inventory table header */
+thead.sticky th {
+    background: #f8fafc;
+    box-shadow: 0 1px 0 0 #e2e8f0;
+}
