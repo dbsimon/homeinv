@@ -3,7 +3,7 @@
  * Data Model (v2)
  * Copyright (c) Westdoor Streetson 2026
  */
-const APP_VERSION = '1.38';
+const APP_VERSION = '1.39';
 
 // ===== Translation System =====
 const LANG = {
@@ -624,7 +624,14 @@ function filterBy(field, value) {
 function showItemDetail(itemId) {
     const item = appState.inventory.find(i => i.id === itemId);
     if (!item) return;
-    document.getElementById('detailItemName').innerText = item.name + (item.brand ? '  \u2014  ' + item.brand : '');
+    document.getElementById('detailItemName').innerText = item.name;
+    var brandEl = document.getElementById('detailItemBrand');
+    if (item.brand) {
+        brandEl.innerText = item.brand;
+        brandEl.classList.remove('hidden');
+    } else {
+        brandEl.classList.add('hidden');
+    }
     document.getElementById('detailItemCategory').innerText = item.category;
     document.getElementById('detailItemLocation').innerText = (item.segment || '') + ' > ' + (item.container || '') + (item.subContainer ? ' > ' + item.subContainer : '');
     document.getElementById('detailItemOwner').innerText = item.owner || 'Default';
