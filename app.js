@@ -3,7 +3,7 @@
  * Data Model (v2)
  * Copyright (c) Westdoor Streetson 2026
  */
-const APP_VERSION = '1.36';
+const APP_VERSION = '1.37';
 
 // ===== Translation System =====
 const LANG = {
@@ -696,7 +696,6 @@ function startBarcodeScan() {
         document.getElementById('scanResultCard').classList.add('hidden');
 
         _html5QrScanner = new Html5Qrcode('scanReaderContainer', {
-            fps: 15,
             formatsToSupport: [
                 Html5QrcodeSupportedFormats.CODE_128,
                 Html5QrcodeSupportedFormats.CODE_39,
@@ -710,20 +709,22 @@ function startBarcodeScan() {
             ],
             useBarCodeDetectorIfSupported: true
         });
-        _html5QrScanner.start(
-            { facingMode: 'environment' },
-            { fps: 15, aspectRatio: 1.777 },
-            function onScanSuccess(decodedText) {
-                stopBarcodeScan();
-                displayScanResult(decodedText.trim());
-            },
-            function onScanError() {}
-        ).catch(function(err) {
-            container.classList.add('hidden');
-            btnStart.classList.remove('hidden');
-            btnStop.classList.add('hidden');
-            alert(t('scanCameraError'));
-        });
+        setTimeout(function() {
+            _html5QrScanner.start(
+                { facingMode: 'environment' },
+                { fps: 15 },
+                function onScanSuccess(decodedText) {
+                    stopBarcodeScan();
+                    displayScanResult(decodedText.trim());
+                },
+                function onScanError() {}
+            ).catch(function(err) {
+                container.classList.add('hidden');
+                btnStart.classList.remove('hidden');
+                btnStop.classList.add('hidden');
+                alert(t('scanCameraError'));
+            });
+        }, 100);
     } catch(e) {
         container.classList.add('hidden');
         btnStart.classList.remove('hidden');
@@ -779,7 +780,6 @@ function scanExistingStockBarcode() {
 
     try {
         _html5QrScanner = new Html5Qrcode('stockScanReader', {
-            fps: 15,
             formatsToSupport: [
                 Html5QrcodeSupportedFormats.CODE_128,
                 Html5QrcodeSupportedFormats.CODE_39,
@@ -793,25 +793,27 @@ function scanExistingStockBarcode() {
             ],
             useBarCodeDetectorIfSupported: true
         });
-        _html5QrScanner.start(
-            { facingMode: 'environment' },
-            { fps: 15, aspectRatio: 1.777 },
-            function onScanSuccess(decodedText) {
+        setTimeout(function() {
+            _html5QrScanner.start(
+                { facingMode: 'environment' },
+                { fps: 15 },
+                function onScanSuccess(decodedText) {
+                    cancelStockBarcodeScan();
+                    var id = decodedText.trim();
+                    var item = appState.inventory.find(function(i) { return i.id === id; });
+                    if (item) {
+                        setupItemModificationContext(item.id);
+                        showToast('Found: ' + item.name, 'success');
+                    } else {
+                        showToast('No item found with this barcode', 'error');
+                    }
+                },
+                function onScanError() {}
+            ).catch(function() {
                 cancelStockBarcodeScan();
-                var id = decodedText.trim();
-                var item = appState.inventory.find(function(i) { return i.id === id; });
-                if (item) {
-                    setupItemModificationContext(item.id);
-                    showToast('Found: ' + item.name, 'success');
-                } else {
-                    showToast('No item found with this barcode', 'error');
-                }
-            },
-            function onScanError() {}
-        ).catch(function() {
-            cancelStockBarcodeScan();
-            alert(t('scanCameraError'));
-        });
+                alert(t('scanCameraError'));
+            });
+        }, 100);
     } catch(e) {
         cancelStockBarcodeScan();
         alert(t('scanCameraError'));
