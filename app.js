@@ -624,7 +624,7 @@ function filterBy(field, value) {
 function showItemDetail(itemId) {
     const item = appState.inventory.find(i => i.id === itemId);
     if (!item) return;
-    document.getElementById('detailItemName').innerText = item.name;
+    document.getElementById('detailItemName').innerText = item.name + (item.brand ? '  \u2014  ' + item.brand : '');
     document.getElementById('detailItemCategory').innerText = item.category;
     document.getElementById('detailItemLocation').innerText = (item.segment || '') + ' > ' + (item.container || '') + (item.subContainer ? ' > ' + item.subContainer : '');
     document.getElementById('detailItemOwner').innerText = item.owner || 'Default';
@@ -652,6 +652,15 @@ function showItemDetail(itemId) {
     document.getElementById('itemDetailModal').classList.remove('hidden');
     _currentBarcodeItemId = item.id;
     _currentBarcodeItemName = item.name;
+    _currentScanItemId = item.id;
+
+    var isStock = item.itemType === 'stock';
+    document.getElementById('btnDetailDrop').classList.toggle('hidden', isStock);
+    document.getElementById('btnDetailDrop').classList.toggle('flex', !isStock);
+    document.getElementById('btnDetailOut').classList.toggle('hidden', !isStock);
+    document.getElementById('btnDetailOut').classList.toggle('flex', isStock);
+    document.getElementById('btnDetailIn').classList.toggle('hidden', !isStock);
+    document.getElementById('btnDetailIn').classList.toggle('flex', isStock);
 
     // Generate barcode
     setTimeout(function() {
@@ -841,7 +850,7 @@ function displayScanResult(id) {
     _currentScanItemId = item.id;
     var isStock = item.itemType === 'stock';
 
-    document.getElementById('scanResultName').innerText = item.name;
+    document.getElementById('scanResultName').innerText = item.name + (item.brand ? '  \u2014  ' + item.brand : '');
     document.getElementById('scanResultCategory').innerText = item.category;
     document.getElementById('scanResultLocation').innerText = (item.segment || '') + ' \u203A ' + (item.container || '') + (item.subContainer ? ' \u203A ' + item.subContainer : '');
     document.getElementById('scanResultOwner').innerText = item.owner || 'Default';
@@ -880,6 +889,7 @@ var _currentScanItemId = null;
 
 function scanEditItem() {
     if (!_currentScanItemId) return;
+    closeItemDetail();
     setupItemModificationContext(_currentScanItemId);
     switchTab('tab-register');
 }
@@ -890,6 +900,7 @@ function scanDropItem() {
     if (!item) return;
     if (!confirm('Drop "' + item.name + '"? This cannot be undone.')) return;
     removeItemFromInventory(_currentScanItemId);
+    closeItemDetail();
     document.getElementById('scanResultCard').classList.add('hidden');
     document.getElementById('scanNotFoundCard').classList.remove('hidden');
     document.getElementById('scanNotFoundCard').querySelector('span').innerText = '"' + item.name + '" removed.';
@@ -910,8 +921,27 @@ function scanStockOut() {
     item.quantity = currentQty - amount;
     saveStateToLocalStorage();
     syncUIComponents();
+    showItemDetail(_currentScanItemId);
     displayScanResult(_currentScanItemId);
-    showToast('Removed ' + amount + ' ' + uom + ' — now ' + item.quantity, 'success');
+    showToast('Removed ' + amount + ' ' + uom + ' \u2014 now ' + item.quantity, 'success');
+}
+
+function scanStockIn() {
+    if (!_currentScanItemId) return;
+    var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId; });
+    if (!item || item.itemType !== 'stock') return;
+    var currentQty = item.quantity || 0;
+    var uom = item.uom || 'pcs';
+    var input = prompt('Add quantity to "' + item.name + '"?\nCurrent: ' + currentQty + ' ' + uom + '\nEnter amount to add:', '');
+    if (input === null) return;
+    var amount = parseInt(input);
+    if (isNaN(amount) || amount <= 0) { alert('Please enter a positive number.'); return; }
+    item.quantity = currentQty + amount;
+    saveStateToLocalStorage();
+    syncUIComponents();
+    showItemDetail(_currentScanItemId);
+    displayScanResult(_currentScanItemId);
+    showToast('Added ' + amount + ' ' + uom + ' \u2014 now ' + item.quantity, 'success');
 }
 
 function scanStockIn() {
@@ -3303,6 +3333,7 @@ function renderFilteredInventoryTable() {
             </td>
             <td class="px-4 py-3 cursor-pointer hover:bg-blue-50/50" onclick="showItemDetail('${item.id}')">
                 <div class="font-bold text-slate-900 hover:text-blue-600">${item.name}</div>
+                ${item.brand ? '<div class="text-[10px] text-slate-400 mt-0.5">' + item.brand + '</div>' : ''}
                 <div class="text-[10px] text-slate-400 font-mono mt-0.5">ID: ${item.id}</div>
                 ${item.itemType === 'stock' ? '<div class="text-[10px] text-amber-600 font-medium mt-0.5">\uD83D\uDCE6 ' + (item.quantity||0) + ' ' + (item.uom||'pcs') + (item.quantity <= item.minQuantity && item.minQuantity > 0 ? ' \u26A0\uFE0F Low' : '') + '</div>' : ''}
             </td>

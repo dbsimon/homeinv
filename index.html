@@ -606,6 +606,24 @@
                         <button onclick="downloadBarcodeLabel()" class="mt-2 text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-md px-3 py-1 text-slate-600 font-medium transition-colors">Download Label (PNG)</button>
                     </div>
                 </div>
+                <div class="mt-4 pt-3 border-t border-slate-100 flex flex-wrap gap-2">
+                    <button onclick="scanEditItem()" class="flex-1 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg transition-colors flex items-center justify-center gap-1.5">
+                        <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                        Edit
+                    </button>
+                    <button id="btnDetailDrop" onclick="scanDropItem(); closeItemDetail()" class="flex-1 text-xs font-bold bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 py-2 px-3 rounded-lg transition-colors hidden flex items-center justify-center gap-1.5">
+                        <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                        Drop
+                    </button>
+                    <button id="btnDetailOut" onclick="scanStockOut()" class="flex-1 text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 py-2 px-3 rounded-lg transition-colors hidden flex items-center justify-center gap-1.5">
+                        <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+                        Out
+                    </button>
+                    <button id="btnDetailIn" onclick="scanStockIn()" class="flex-1 text-xs font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 py-2 px-3 rounded-lg transition-colors hidden flex items-center justify-center gap-1.5">
+                        <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 17h8m0 0v-8m0 8l-8-8-4 4-6-6"/></svg>
+                        In
+                    </button>
+                </div>
                 <div class="pt-2"><span class="text-slate-400 text-xs">System ID</span><p id="detailItemId" class="text-[10px] text-slate-400 font-mono mt-0.5"></p></div>
             </div>
         </div>
