@@ -398,8 +398,55 @@ function t(key) {
     return (LANG[appState.language] && LANG[appState.language][key]) || (LANG['en'][key] || key);
 }
 
-// Global Structural States
+// Device identity (persisted per-browser)
+function getDeviceId() {
+    var id = localStorage.getItem('hk_device_id');
+    if (!id) {
+        id = 'dev_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
+        localStorage.setItem('hk_device_id', id);
+    }
+    return id;
+}
+
+function generateItemId() {
+    var d = new Date();
+    return 'itm_' + d.getTime().toString(36) + '_' + Math.random().toString(36).substr(2, 6);
+}
+
+function generateBarcodeId() {
+    var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    var result = '';
+    for (var i = 0; i < 8; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+}
+function getItemLookupMatch(rawCode) {
+    if (!rawCode) return null;
+    var code = rawCode.trim();
+    var byBarcode = appState.inventory.find(function(i) { return !i.deletedAt && i.barcodeId === code; });
+    if (byBarcode) return byBarcode;
+    var byId = appState.inventory.find(function(i) { return !i.deletedAt && i.id === code; });
+    return byId || null;
+}
+
+function ensureInventoryBarcodeIds() {
+    var changed = false;
+    appState.inventory.forEach(function(item) {
+        if (!item.barcodeId) {
+            item.barcodeId = generateBarcodeId();
+            changed = true;
+        }
+    });
+    if (changed) saveStateToLocalStorage();
+}
 let appState = {
+    meta: {
+        deviceId: getDeviceId(),
+        lastSyncedAt: null,
+        lastServerRevision: null
+    },
+    syncQueue: [],
     segments: {},
     coordinates: {},
     categories: {},
@@ -409,7 +456,6 @@ let appState = {
     userEmails: {},
     reminderDays: 30,
     language: 'en',
-    nextItemId: 1,
     selectedCategoryNodePath: null,
     activeMappingNode: null,
     spatialBackgroundImage: null
@@ -420,6 +466,7 @@ let aiFilteredItemIds = null;
 let editingNode = null; // { type: 'segment'|'container'|'subContainer', segment, container?, subContainer?, oldName }
 let _mapDirty = false;
 let _classesDirty = false;
+let _formDirty = false;
 
 // Coordinate key helpers
 function buildCoordKey(seg, con, sub) {
@@ -430,12 +477,274 @@ function parseCoordKey(key) {
     return { segment: parts[0], container: parts[1], subContainer: parts[2] || '' };
 }
 
+// ===== Unified Mutation Entry Point =====
+// All state changes MUST flow through mutateState().
+// It handles: state update -> localStorage persist -> sync queue -> sync UI badge
+function mutateState(actionType, metadata) {
+    saveStateToLocalStorage();
+    enqueueSyncAction(actionType, metadata);
+    updateSyncStatusBadge();
+}
+
+function enqueueSyncAction(actionType, metadata) {
+    if (!appState.syncQueue) appState.syncQueue = [];
+    appState.syncQueue.push({
+        op: actionType,
+        meta: metadata || {},
+        timestamp: new Date().toISOString(),
+        id: 'q_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 5)
+    });
+}
+
+function updateSyncStatusBadge() {
+    var badge = document.getElementById('syncStatusBadge');
+    if (!badge) return;
+    var pending = (appState.syncQueue && appState.syncQueue.length) || 0;
+    if (_syncInProgress) {
+        badge.innerText = '\u{1F504} Syncing\u2026';
+        badge.className = 'text-[10px] text-blue-600 font-medium ml-2';
+    } else if (_syncLastFailed) {
+        badge.innerText = '\u274C Sync failed';
+        badge.className = 'text-[10px] text-red-500 font-medium ml-2';
+    } else if (_syncConflict) {
+        badge.innerText = '\u26A0\uFE0F Conflict detected';
+        badge.className = 'text-[10px] text-amber-600 font-medium ml-2';
+    } else if (pending > 0) {
+        badge.innerText = '\u{1F4E4} Pending sync (' + pending + ')';
+        badge.className = 'text-[10px] text-slate-500 font-medium ml-2';
+    } else if (appState.meta.lastSyncedAt) {
+        badge.innerText = '\u2705 Synced ' + formatRelativeTime(appState.meta.lastSyncedAt);
+        badge.className = 'text-[10px] text-emerald-600 font-medium ml-2';
+    } else {
+        badge.innerText = '\u26AA Saved locally';
+        badge.className = 'text-[10px] text-slate-400 font-medium ml-2';
+    }
+    updateSyncBanner();
+    updateSyncAlertRow();
+    updateLoginSyncStatus();
+    updateSyncCallToActionState();
+}
+
+function updateSyncAlertRow() {
+    var row = document.getElementById('syncAlertRow');
+    if (!row) return;
+    if (_syncLastFailed) {
+        row.className = 'rounded-lg p-3 mb-4 text-xs font-medium bg-red-50 text-red-700 border border-red-200';
+        row.innerText = '\u274C Sync failed. Check your connection and endpoint URL, then try again.';
+        row.classList.remove('hidden');
+    } else if (_syncConflict) {
+        row.className = 'rounded-lg p-3 mb-4 text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200';
+        row.innerText = '\u26A0\uFE0F Data conflict detected. Pull from cloud or push again to resolve.';
+        row.classList.remove('hidden');
+    } else if (appState.meta.lastSyncedAt) {
+        row.className = 'rounded-lg p-3 mb-4 text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200';
+        row.innerText = '\u2705 Last synced: ' + new Date(appState.meta.lastSyncedAt).toLocaleString();
+        row.classList.remove('hidden');
+    } else {
+        row.classList.add('hidden');
+    }
+}
+
+function updateSyncBanner() {
+    var pending = (appState.syncQueue && appState.syncQueue.length) || 0;
+    var dotClass, text, textMobile;
+    if (_syncInProgress) {
+        dotClass = 'sync-dot-blue';
+        text = 'Syncing\u2026';
+        textMobile = 'Syncing\u2026';
+    } else if (_syncLastFailed) {
+        dotClass = 'sync-dot-red';
+        text = 'Sync failed';
+        textMobile = 'Failed';
+    } else if (_syncConflict) {
+        dotClass = 'sync-dot-amber';
+        text = 'Conflict detected';
+        textMobile = 'Conflict';
+    } else if (pending > 0) {
+        dotClass = 'sync-dot-gray';
+        text = 'Pending sync (' + pending + ')';
+        textMobile = pending + ' pending';
+    } else if (appState.meta.lastSyncedAt) {
+        dotClass = 'sync-dot-green';
+        text = 'Synced ' + formatRelativeTime(appState.meta.lastSyncedAt);
+        textMobile = 'Synced';
+    } else {
+        dotClass = 'sync-dot-gray';
+        text = 'Saved locally';
+        textMobile = 'Saved locally';
+    }
+    var htmlMobile = '<span class="sync-dot ' + dotClass + '"></span>' + textMobile;
+    var htmlDesktop = '<span class="sync-dot ' + dotClass + '"></span>' + text;
+    var elMobile = document.getElementById('syncBannerMobile');
+    var elDesktop = document.getElementById('syncBannerDesktop');
+    if (elMobile) elMobile.innerHTML = htmlMobile;
+    if (elDesktop) elDesktop.innerHTML = htmlDesktop;
+}
+
+var _syncInProgress = false;
+var _syncLastFailed = false;
+var _syncConflict = false;
+var _syncPendingCount = 0;
+
+function formatRelativeTime(isoStr) {
+    if (!isoStr) return '';
+    var now = new Date();
+    var then = new Date(isoStr);
+    var diffSec = Math.floor((now - then) / 1000);
+    if (diffSec < 60) return 'just now';
+    if (diffSec < 3600) return Math.floor(diffSec / 60) + 'm ago';
+    if (diffSec < 86400) return Math.floor(diffSec / 3600) + 'h ago';
+    return Math.floor(diffSec / 86400) + 'd ago';
+}
+
+function emptyStateHTML(icon, title, desc, btnLabel, btnOnclick) {
+    var html = '<div class="empty-state">';
+    if (icon) html += '<div class="empty-state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + icon + '</svg></div>';
+    if (title) html += '<div class="empty-state-title">' + title + '</div>';
+    if (desc) html += '<div class="empty-state-desc">' + desc + '</div>';
+    if (btnLabel && btnOnclick) html += '<button class="empty-state-btn" onclick="' + btnOnclick + '">' + btnLabel + '</button>';
+    html += '</div>';
+    return html;
+}
+
+// ===== Modal System (replaces browser alert/confirm/prompt) =====
+var _modalResolve = null;
+var _focusTrigger = null;
+
+function saveFocusTrigger() {
+    _focusTrigger = document.activeElement;
+}
+
+function restoreFocusTrigger() {
+    if (_focusTrigger && typeof _focusTrigger.focus === 'function') {
+        try { _focusTrigger.focus(); } catch(e) {}
+    }
+    _focusTrigger = null;
+}
+
+function trapFocus(container) {
+    var focusable = container.querySelectorAll(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    );
+    if (focusable.length === 0) return;
+    var first = focusable[0];
+    var last = focusable[focusable.length - 1];
+
+    container.addEventListener('keydown', function(e) {
+        if (e.key !== 'Tab') return;
+        if (e.shiftKey) {
+            if (document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            }
+        } else {
+            if (document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        }
+    });
+}
+
+function showAppConfirm(message, confirmLabel) {
+    var overlay = document.getElementById('appModalOverlay');
+    var msg = document.getElementById('appModalMessage');
+    var cancelBtn = document.getElementById('appModalCancel');
+    var confirmBtn = document.getElementById('appModalConfirm');
+    saveFocusTrigger();
+    msg.innerText = message;
+    confirmBtn.innerText = confirmLabel || 'OK';
+    confirmBtn.className = 'text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-colors';
+    overlay.classList.remove('hidden');
+    setTimeout(function() { confirmBtn.focus(); }, 50);
+    return new Promise(function(resolve) {
+        _modalResolve = resolve;
+        confirmBtn.onclick = function() {
+            overlay.classList.add('hidden');
+            _modalResolve = null;
+            restoreFocusTrigger();
+            resolve(true);
+        };
+        cancelBtn.onclick = function() {
+            overlay.classList.add('hidden');
+            _modalResolve = null;
+            restoreFocusTrigger();
+            resolve(false);
+        };
+    });
+}
+
+function showAppAlert(message) {
+    var overlay = document.getElementById('appModalOverlay');
+    var msg = document.getElementById('appModalMessage');
+    var cancelBtn = document.getElementById('appModalCancel');
+    var confirmBtn = document.getElementById('appModalConfirm');
+    saveFocusTrigger();
+    msg.innerText = message;
+    cancelBtn.classList.add('hidden');
+    confirmBtn.innerText = 'OK';
+    confirmBtn.className = 'text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-colors';
+    overlay.classList.remove('hidden');
+    setTimeout(function() { confirmBtn.focus(); }, 50);
+    return new Promise(function(resolve) {
+        confirmBtn.onclick = function() {
+            overlay.classList.add('hidden');
+            cancelBtn.classList.remove('hidden');
+            restoreFocusTrigger();
+            resolve();
+        };
+    });
+}
+
+function closeAppModal() {
+    document.getElementById('appModalOverlay').classList.add('hidden');
+    var cancelBtn = document.getElementById('appModalCancel');
+    cancelBtn.classList.remove('hidden');
+    if (_modalResolve) { _modalResolve(false); _modalResolve = null; }
+    restoreFocusTrigger();
+}
+
+function showAppPrompt(message, info, defaultValue) {
+    var overlay = document.getElementById('appPromptOverlay');
+    var msg = document.getElementById('appPromptMessage');
+    var infoEl = document.getElementById('appPromptInfo');
+    var input = document.getElementById('appPromptInput');
+    var confirmBtn = document.getElementById('appPromptConfirm');
+    saveFocusTrigger();
+    msg.innerText = message;
+    infoEl.innerText = info || '';
+    input.value = defaultValue || '';
+    overlay.classList.remove('hidden');
+    setTimeout(function() { input.focus(); input.select(); }, 100);
+    return new Promise(function(resolve) {
+        _modalResolve = resolve;
+        confirmBtn.onclick = function() {
+            var val = input.value.trim();
+            overlay.classList.add('hidden');
+            _modalResolve = null;
+            restoreFocusTrigger();
+            resolve(val);
+        };
+        input.onkeydown = function(e) {
+            if (e.key === 'Enter') confirmBtn.click();
+            if (e.key === 'Escape') { overlay.classList.add('hidden'); _modalResolve = null; restoreFocusTrigger(); resolve(null); }
+        };
+    });
+}
+
+function closeAppPrompt() {
+    document.getElementById('appPromptOverlay').classList.add('hidden');
+    if (_modalResolve) { _modalResolve(null); _modalResolve = null; }
+    restoreFocusTrigger();
+}
+
 // Application Init Hooks
 window.addEventListener('DOMContentLoaded', () => {
     try {
         document.getElementById('versionDisplay').innerText = 'v' + APP_VERSION;
         initializeLocalSecuritySchema();
         restoreStateFromLocalStorage();
+        ensureInventoryBarcodeIds();
         initializeDefaultTiersIfEmpty();
         applyLanguageToDOM();
         syncUIComponents();
@@ -443,14 +752,46 @@ window.addEventListener('DOMContentLoaded', () => {
         clearActiveNode();
         installIOSZoomFix();
         autoPullFromCloudIfPossible();
+        installFormDirtyListener();
+        installFocusTraps();
+        updateLoginSyncStatus();
     } catch (e) {
         alert('Init error: ' + e.message + ' (line ' + e.lineNumber + ')');
         console.error(e);
     }
 });
 
+window.addEventListener('beforeunload', function(e) {
+    var hasPendingSync = appState.syncQueue && appState.syncQueue.length > 0;
+    if (_formDirty || hasPendingSync) {
+        e.preventDefault();
+        e.returnValue = '';
+    }
+});
+
 document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') closeItemDetail();
+    if (e.key !== 'Escape') return;
+
+    var promptOverlay = document.getElementById('appPromptOverlay');
+    if (promptOverlay && !promptOverlay.classList.contains('hidden')) {
+        closeAppPrompt();
+        return;
+    }
+
+    var modalOverlay = document.getElementById('appModalOverlay');
+    if (modalOverlay && !modalOverlay.classList.contains('hidden')) {
+        closeAppModal();
+        return;
+    }
+
+    var cloudModal = document.getElementById('cloudSettingsModal');
+    if (cloudModal && !cloudModal.classList.contains('hidden')) {
+        cloudModal.classList.add('hidden');
+        restoreFocusTrigger();
+        return;
+    }
+
+    closeItemDetail();
 });
 
 function installIOSZoomFix() {
@@ -504,12 +845,84 @@ function validateSystemAccess() {
         if (input === 'RESET' || input === activePhrase) {
             const overlay = document.getElementById('passwordOverlay');
             overlay.style.display = 'none';
+            updateLoginSyncStatus();
         } else {
             const errElement = document.getElementById('passwordError');
             errElement.classList.remove('hidden');
         }
     } catch (e) {
-        alert('Login error: ' + e.message);
+        showToast('Login error: ' + e.message, 'error');
+    }
+}
+
+function getSyncStateSnapshot() {
+    var pending = (appState.syncQueue && appState.syncQueue.length) || 0;
+    if (_syncInProgress) return { state: 'syncing', pending: pending };
+    if (_syncLastFailed) return { state: 'failed', pending: pending };
+    if (_syncConflict) return { state: 'conflict', pending: pending };
+    if (pending > 0) return { state: 'pending', pending: pending };
+    if (appState.meta.lastSyncedAt) return { state: 'synced', syncedAt: appState.meta.lastSyncedAt };
+    return { state: 'local', pending: 0 };
+}
+
+function updateLoginSyncStatus() {
+    var card = document.getElementById('loginSyncStatusCard');
+    var text = document.getElementById('loginSyncStatusText');
+    if (!card || !text) return;
+
+    var snap = getSyncStateSnapshot();
+    var msg = '';
+    card.className = 'bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-3 text-center';
+
+    switch (snap.state) {
+        case 'syncing':
+            card.className = 'bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3 text-center';
+            msg = 'Syncing\u2026';
+            break;
+        case 'failed':
+            card.className = 'bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3 text-center';
+            msg = 'Sync failed';
+            break;
+        case 'conflict':
+            card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center';
+            msg = 'Conflict detected';
+            break;
+        case 'pending':
+            card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center';
+            msg = 'Pending sync (' + snap.pending + ')';
+            break;
+        case 'synced':
+            card.className = 'bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mb-3 text-center';
+            msg = 'Synced ' + formatRelativeTime(snap.syncedAt);
+            break;
+        default:
+            msg = 'Saved locally';
+            break;
+    }
+    text.innerText = msg;
+}
+
+function updateSyncCallToActionState() {
+    var pending = (appState.syncQueue && appState.syncQueue.length) || 0;
+
+    var btn = document.getElementById('btnHeaderSyncNow');
+    if (btn) {
+        btn.classList.remove('sync-cta-pending', 'sync-cta-syncing');
+        if (_syncInProgress) {
+            btn.classList.add('sync-cta-syncing');
+        } else if (pending > 0) {
+            btn.classList.add('sync-cta-pending');
+        }
+    }
+
+    var mobile = document.getElementById('syncBannerMobile');
+    if (mobile) {
+        mobile.classList.remove('sync-cta-mobile-pending', 'sync-cta-mobile-syncing');
+        if (_syncInProgress) {
+            mobile.classList.add('sync-cta-mobile-syncing');
+        } else if (pending > 0) {
+            mobile.classList.add('sync-cta-mobile-pending');
+        }
     }
 }
 
@@ -552,6 +965,87 @@ function switchTab(targetTabId) {
     if (targetTabId === 'tab-spatial') {
         clearActiveNode();
     }
+}
+
+function markFormDirty() {
+    _formDirty = true;
+}
+
+function resetFormDirty() {
+    _formDirty = false;
+}
+
+function toggleAiMetadata() {
+    var content = document.getElementById('aiMetadataContent');
+    var icon = document.getElementById('aiMetadataToggleIcon');
+    if (!content || !icon) return;
+    var collapsed = content.classList.toggle('collapsed');
+    icon.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
+    icon.textContent = collapsed ? '\u25B6' : '\u25BC';
+}
+
+function expandAiMetadata() {
+    var content = document.getElementById('aiMetadataContent');
+    var icon = document.getElementById('aiMetadataToggleIcon');
+    if (!content) return;
+    content.classList.remove('collapsed');
+    if (icon) { icon.style.transform = 'rotate(0deg)'; icon.textContent = '\u25BC'; }
+}
+
+function collapseAiMetadata() {
+    var content = document.getElementById('aiMetadataContent');
+    var icon = document.getElementById('aiMetadataToggleIcon');
+    if (!content) return;
+    content.classList.add('collapsed');
+    if (icon) { icon.style.transform = 'rotate(-90deg)'; icon.textContent = '\u25B6'; }
+}
+
+var _originalSwitchTab = switchTab;
+switchTab = function(targetTabId) {
+    if (_formDirty && targetTabId !== 'tab-register') {
+        showAppConfirm('You have unsaved changes. Discard them?', 'Discard').then(function(ok) {
+            if (ok) {
+                resetFormDirty();
+                _originalSwitchTab(targetTabId);
+            }
+        });
+        return;
+    }
+    _originalSwitchTab(targetTabId);
+};
+
+function installFormDirtyListener() {
+    var tab = document.getElementById('tab-register');
+    if (!tab) return;
+    tab.addEventListener('input', function(e) {
+        var t = e.target;
+        if (t.id && (
+            t.id.indexOf('invItem') === 0 ||
+            t.id.indexOf('invCat') === 0
+        )) {
+            markFormDirty();
+        }
+    });
+    tab.addEventListener('change', function(e) {
+        var t = e.target;
+        if (t.id && (
+            t.id.indexOf('invItem') === 0 ||
+            t.id.indexOf('invCat') === 0
+        )) {
+            markFormDirty();
+        }
+    });
+}
+
+function installFocusTraps() {
+    var appModal = document.getElementById('appModalOverlay');
+    if (appModal) trapFocus(appModal);
+
+    var promptModal = document.getElementById('appPromptOverlay');
+    if (promptModal) trapFocus(promptModal);
+
+    var cloudModal = document.getElementById('cloudSettingsModal');
+    if (cloudModal) trapFocus(cloudModal);
 }
 
 function toggleOverflowMenu(e) {
@@ -598,12 +1092,18 @@ function toggleOverflowMenu(e) {
 }
 
 function openCloudSettings() {
+    saveFocusTrigger();
     document.getElementById('cloudSettingsModal').classList.remove('hidden');
+    setTimeout(function() {
+        var closeBtn = document.querySelector('#cloudSettingsModal button');
+        if (closeBtn) closeBtn.focus();
+    }, 50);
 }
 
 function closeCloudSettings(e) {
     if (e && e.target !== document.getElementById('cloudSettingsModal')) return;
     document.getElementById('cloudSettingsModal').classList.add('hidden');
+    restoreFocusTrigger();
 }
 
 // Close overflow menu when clicking outside
@@ -636,7 +1136,7 @@ function filterBy(field, value) {
 }
 
 function showItemDetail(itemId) {
-    const item = appState.inventory.find(i => i.id === itemId);
+    const item = appState.inventory.find(i => i.id === itemId && !i.deletedAt);
     if (!item) return;
     document.getElementById('detailItemName').innerText = item.name;
     var brandEl = document.getElementById('detailItemBrand');
@@ -659,9 +1159,15 @@ function showItemDetail(itemId) {
     }
     document.getElementById('detailItemTime').innerText = item.timestamp;
     document.getElementById('detailItemRemarks').innerText = item.remarks || 'None';
+    document.getElementById('detailItemBarcodeId').innerText = item.barcodeId || '\u2014';
     document.getElementById('detailItemId').innerText = item.id;
+    var aiRow = document.getElementById('detailItemAiMetadataRow');
+    var aiEl = document.getElementById('detailItemAiMetadata');
     if (item.aiMetadata) {
-        document.getElementById('detailItemRemarks').innerText += '\n\n\uD83E\uDD16 AI: ' + item.aiMetadata;
+        aiEl.innerText = item.aiMetadata;
+        aiRow.classList.remove('hidden');
+    } else {
+        aiRow.classList.add('hidden');
     }
     const img = document.getElementById('detailItemImage');
     if (item.imageUrl && item.imageUrl !== 'https://placehold.co/100?text=No+Photo') {
@@ -686,7 +1192,8 @@ function showItemDetail(itemId) {
     // Generate barcode
     setTimeout(function() {
         try {
-            JsBarcode('#detailItemBarcode', item.id, {
+            var barcodeText = item.barcodeId || item.id;
+            JsBarcode('#detailItemBarcode', barcodeText, {
                 format: 'CODE128',
                 width: 2.5,
                 height: 64,
@@ -714,7 +1221,7 @@ function startBarcodeScan() {
     var btnStop = document.getElementById('btnStopScan');
 
     if (typeof Html5Qrcode === 'undefined') {
-        alert(t('scanCameraError'));
+        showToast(t('scanCameraError'), 'error');
         return;
     }
 
@@ -751,14 +1258,14 @@ function startBarcodeScan() {
                 container.classList.add('hidden');
                 btnStart.classList.remove('hidden');
                 btnStop.classList.add('hidden');
-                alert(t('scanCameraError'));
+                showToast(t('scanCameraError'), 'error');
             });
         }, 100);
     } catch(e) {
         container.classList.add('hidden');
         btnStart.classList.remove('hidden');
         btnStop.classList.add('hidden');
-        alert(t('scanCameraError'));
+        showToast(t('scanCameraError'), 'error');
     }
 }
 
@@ -790,7 +1297,7 @@ var _stockScanCallback = null;
 
 function scanExistingStockBarcode() {
     if (typeof Html5Qrcode === 'undefined') {
-        alert(t('scanCameraError'));
+        showToast(t('scanCameraError'), 'error');
         return;
     }
 
@@ -828,7 +1335,7 @@ function scanExistingStockBarcode() {
                 function onScanSuccess(decodedText) {
                     cancelStockBarcodeScan();
                     var id = decodedText.trim();
-                    var item = appState.inventory.find(function(i) { return i.id === id; });
+    var item = appState.inventory.find(function(i) { return i.id === id && !i.deletedAt; });
                     if (item) {
                         setupItemModificationContext(item.id);
                         showToast('Found: ' + item.name, 'success');
@@ -839,12 +1346,12 @@ function scanExistingStockBarcode() {
                 function onScanError() {}
             ).catch(function() {
                 cancelStockBarcodeScan();
-                alert(t('scanCameraError'));
+                showToast(t('scanCameraError'), 'error');
             });
         }, 100);
     } catch(e) {
         cancelStockBarcodeScan();
-        alert(t('scanCameraError'));
+        showToast(t('scanCameraError'), 'error');
     }
 }
 
@@ -857,16 +1364,57 @@ function cancelStockBarcodeScan() {
     if (overlay) overlay.classList.add('hidden');
 }
 
+var _currentScanItemId = null;
+var _recentScans = [];
+
+function scanEditItem() {
+    if (!_currentScanItemId) return;
+    closeItemDetail();
+    setupItemModificationContext(_currentScanItemId);
+    switchTab('tab-register');
+}
+
+function addToRecentScans(item) {
+    _recentScans = _recentScans.filter(function(r) { return r.id !== item.id; });
+    _recentScans.unshift({ id: item.id, name: item.name, segment: item.segment, container: item.container, subContainer: item.subContainer || '', time: new Date().toISOString() });
+    if (_recentScans.length > 5) _recentScans = _recentScans.slice(0, 5);
+}
+
+function renderRecentScans() {
+    var card = document.getElementById('recentScansCard');
+    var list = document.getElementById('recentScansList');
+    if (!card || !list) return;
+    if (_recentScans.length === 0) { card.classList.add('hidden'); return; }
+    card.classList.remove('hidden');
+    list.innerHTML = _recentScans.map(function(r) {
+        var loc = [r.segment, r.container];
+        if (r.subContainer) loc.push(r.subContainer);
+        var shortName = r.name.length > 30 ? r.name.substring(0, 28) + '\u2026' : r.name;
+        return '<div class="flex items-center gap-3 py-1.5 px-2 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors" onclick="displayScanResult(\'' + r.id + '\')">'
+            + '<div class="flex-1 min-w-0"><div class="text-xs font-semibold text-slate-800 truncate">' + shortName + '</div><div class="text-[10px] text-slate-400"><span class="font-mono">' + r.id + '</span> \u00B7 ' + loc.join(' / ') + '</div></div>'
+            + '<div class="text-[10px] text-slate-400 flex-shrink-0">' + formatRelativeTime(r.time) + '</div></div>';
+    }).join('');
+}
+
+function removeFromRecentScans(itemId) {
+    _recentScans = _recentScans.filter(function(r) { return r.id !== itemId; });
+}
+
 function displayScanResult(id) {
     document.getElementById('scanManualIdInput').value = id;
     document.getElementById('scanNotFoundCard').classList.add('hidden');
     document.getElementById('scanResultCard').classList.add('hidden');
 
-    var item = appState.inventory.find(function(i) { return i.id === id; });
+    var item = getItemLookupMatch(id);
     if (!item) {
         document.getElementById('scanNotFoundCard').classList.remove('hidden');
+        removeFromRecentScans(id);
+        renderRecentScans();
         return;
     }
+
+    addToRecentScans(item);
+    renderRecentScans();
 
     _currentScanItemId = item.id;
     var isStock = item.itemType === 'stock';
@@ -877,6 +1425,13 @@ function displayScanResult(id) {
     document.getElementById('scanResultOwner').innerText = item.owner || 'Default';
     document.getElementById('scanResultExpiry').innerText = item.expiryDate || '\u2014';
     document.getElementById('scanResultRemarks').innerText = item.remarks || 'None';
+
+    var lowBadge = document.getElementById('scanResultLowStockBadge');
+    if (isStock && item.quantity <= item.minQuantity && item.minQuantity > 0) {
+        lowBadge.classList.remove('hidden');
+    } else {
+        lowBadge.classList.add('hidden');
+    }
 
     var stockInfo = document.getElementById('scanResultStockInfo');
     var stockText = document.getElementById('scanResultStockText');
@@ -906,80 +1461,87 @@ function displayScanResult(id) {
     document.getElementById('scanResultCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-var _currentScanItemId = null;
-
-function scanEditItem() {
+async function scanDropItem() {
     if (!_currentScanItemId) return;
-    closeItemDetail();
-    setupItemModificationContext(_currentScanItemId);
-    switchTab('tab-register');
-}
-
-function scanDropItem() {
-    if (!_currentScanItemId) return;
-    var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId; });
+    var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId && !i.deletedAt; });
     if (!item) return;
-    if (!confirm('Drop "' + item.name + '"? This cannot be undone.')) return;
+    var ok = await showAppConfirm('Drop "' + item.name + '"? This cannot be undone.', 'Drop');
+    if (!ok) return;
     removeItemFromInventory(_currentScanItemId);
+    removeFromRecentScans(_currentScanItemId);
+    renderRecentScans();
     closeItemDetail();
     document.getElementById('scanResultCard').classList.add('hidden');
     document.getElementById('scanNotFoundCard').classList.remove('hidden');
-    document.getElementById('scanNotFoundCard').querySelector('span').innerText = '"' + item.name + '" removed.';
+    document.getElementById('scanNotFoundReason').innerText = '"' + item.name + '" removed.';
     syncUIComponents();
 }
 
-function scanStockOut() {
+async function scanStockOut() {
     if (!_currentScanItemId) return;
-    var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId; });
+    var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId && !i.deletedAt; });
     if (!item || item.itemType !== 'stock') return;
     var currentQty = item.quantity || 0;
     var uom = item.uom || 'pcs';
-    var input = prompt('Deduct quantity from "' + item.name + '"?\nCurrent: ' + currentQty + ' ' + uom + '\nEnter amount to remove:', '');
-    if (input === null) return;
+    var input = await showAppPrompt(
+        'Remove stock from "' + item.name + '"?',
+        'Current: ' + currentQty + ' ' + uom,
+        ''
+    );
+    if (!input) return;
     var amount = parseInt(input);
-    if (isNaN(amount) || amount <= 0) { alert('Please enter a positive number.'); return; }
-    if (amount > currentQty) { alert('Cannot remove more than current stock (' + currentQty + ').'); return; }
-    item.quantity = currentQty - amount;
-    saveStateToLocalStorage();
+    if (isNaN(amount) || amount <= 0) { showToast('Please enter a positive number.', 'error'); return; }
+    if (amount > currentQty) { showToast('Cannot remove more than current stock (' + currentQty + ').', 'error'); return; }
+    var newQty = currentQty - amount;
+    item.quantity = newQty;
+    item.updatedAt = new Date().toISOString();
+    item.version = (item.version || 1) + 1;
+    item.lastModifiedBy = appState.meta.deviceId;
+    mutateState('STOCK_OUT', { itemId: item.id, amount: amount });
+    if (newQty === 0) {
+        item.deletedAt = new Date().toISOString();
+        item.version = (item.version || 1) + 1;
+        mutateState('REMOVE_ITEM', { itemId: item.id, reason: 'stock-zero' });
+        removeFromRecentScans(item.id);
+        renderRecentScans();
+    }
     syncUIComponents();
-    showItemDetail(_currentScanItemId);
-    displayScanResult(_currentScanItemId);
-    showToast('Removed ' + amount + ' ' + uom + ' \u2014 now ' + item.quantity, 'success');
+    if (newQty === 0) {
+        closeItemDetail();
+        document.getElementById('scanResultCard').classList.add('hidden');
+        document.getElementById('scanNotFoundCard').classList.remove('hidden');
+        document.getElementById('scanNotFoundReason').innerText = '"' + item.name + '" depleted & removed.';
+        showToast('Stock reached 0 \u2014 item removed', 'success');
+    } else {
+        showItemDetail(_currentScanItemId);
+        displayScanResult(_currentScanItemId);
+        showToast('Removed ' + amount + ' ' + uom + ' \u2014 now ' + newQty, 'success');
+    }
 }
 
-function scanStockIn() {
+async function scanStockIn() {
     if (!_currentScanItemId) return;
-    var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId; });
+    var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId && !i.deletedAt; });
     if (!item || item.itemType !== 'stock') return;
     var currentQty = item.quantity || 0;
     var uom = item.uom || 'pcs';
-    var input = prompt('Add quantity to "' + item.name + '"?\nCurrent: ' + currentQty + ' ' + uom + '\nEnter amount to add:', '');
-    if (input === null) return;
+    var input = await showAppPrompt(
+        'Add stock to "' + item.name + '"?',
+        'Current: ' + currentQty + ' ' + uom,
+        ''
+    );
+    if (!input) return;
     var amount = parseInt(input);
-    if (isNaN(amount) || amount <= 0) { alert('Please enter a positive number.'); return; }
+    if (isNaN(amount) || amount <= 0) { showToast('Please enter a positive number.', 'error'); return; }
     item.quantity = currentQty + amount;
-    saveStateToLocalStorage();
+    item.updatedAt = new Date().toISOString();
+    item.version = (item.version || 1) + 1;
+    item.lastModifiedBy = appState.meta.deviceId;
+    mutateState('STOCK_IN', { itemId: item.id, amount: amount });
     syncUIComponents();
     showItemDetail(_currentScanItemId);
     displayScanResult(_currentScanItemId);
     showToast('Added ' + amount + ' ' + uom + ' \u2014 now ' + item.quantity, 'success');
-}
-
-function scanStockIn() {
-    if (!_currentScanItemId) return;
-    var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId; });
-    if (!item || item.itemType !== 'stock') return;
-    var currentQty = item.quantity || 0;
-    var uom = item.uom || 'pcs';
-    var input = prompt('Add quantity to "' + item.name + '"?\nCurrent: ' + currentQty + ' ' + uom + '\nEnter amount to add:', '');
-    if (input === null) return;
-    var amount = parseInt(input);
-    if (isNaN(amount) || amount <= 0) { alert('Please enter a positive number.'); return; }
-    item.quantity = currentQty + amount;
-    saveStateToLocalStorage();
-    syncUIComponents();
-    displayScanResult(_currentScanItemId);
-    showToast('Added ' + amount + ' ' + uom + ' — now ' + item.quantity, 'success');
 }
 
 function downloadBarcodeLabel() {
@@ -1030,17 +1592,16 @@ function closeItemDetail() {
    ========================================================================== */
 function switchCurrentUser(username) {
     appState.currentUser = username;
-    saveStateToLocalStorage();
+    mutateState('SWITCH_USER', { username: username });
     syncUserInterface();
     renderFilteredInventoryTable();
 }
 
 function switchLanguage(lang) {
     appState.language = lang;
-    saveStateToLocalStorage();
+    mutateState('SWITCH_LANGUAGE', { language: lang });
     applyLanguageToDOM();
     syncUIComponents();
-    // Re-apply dynamic form title
     var editId = document.getElementById('editTargetItemId').value;
     if (editId) {
         document.getElementById('inventoryFormTitle').innerText = t('modifyFormTitle');
@@ -1077,21 +1638,22 @@ function addUser() {
         if (emailInput.value.trim()) {
             appState.userEmails[name] = emailInput.value.trim();
         }
-        saveStateToLocalStorage();
+        mutateState('ADD_USER', { username: name });
         syncUserInterface();
         input.value = '';
         emailInput.value = '';
     }
 }
 
-function removeUser(username) {
-    if (!confirm(t('confirmRemoveUser') + ' "' + username + '"?')) return;
-    if (username === 'Default') { alert(t('cannotRemoveDefault')); return; }
+async function removeUser(username) {
+    var ok = await showAppConfirm(t('confirmRemoveUser') + ' "' + username + '"?', 'Remove');
+    if (!ok) return;
+    if (username === 'Default') { showToast(t('cannotRemoveDefault'), 'error'); return; }
     appState.users = appState.users.filter(u => u !== username);
     if (appState.currentUser === username) {
         appState.currentUser = 'Default';
     }
-    saveStateToLocalStorage();
+    mutateState('REMOVE_USER', { username: username });
     syncUserInterface();
 }
 
@@ -1157,8 +1719,8 @@ function syncUserInterface() {
 function commitReminderSettings() {
     var val = parseInt(document.getElementById('settingReminderDays').value) || 30;
     appState.reminderDays = Math.max(1, Math.min(365, val));
-    saveStateToLocalStorage();
-    alert('Reminder set to ' + appState.reminderDays + ' days before expiry.');
+    mutateState('SET_REMINDER', { reminderDays: appState.reminderDays });
+    showToast('Reminder set to ' + appState.reminderDays + ' days before expiry.', 'success');
 }
 
 /* ==========================================================================
@@ -1166,7 +1728,7 @@ function commitReminderSettings() {
    ========================================================================== */
 function addSegmentNode() {
     const sName = document.getElementById('newSegmentName').value.trim();
-    if (!sName) { alert('No name entered'); return; }
+    if (!sName) { showToast('No name entered', 'error'); return; }
 
     // Rename mode
     if (editingNode && editingNode.type === 'segment') {
@@ -1187,13 +1749,13 @@ function addSegmentNode() {
             if (appState.activeMappingNode && appState.activeMappingNode.segment === oldName) {
                 appState.activeMappingNode.segment = sName;
             }
-            saveStateToLocalStorage();
+            mutateState('RENAME_SEGMENT', { oldName: oldName, newName: sName });
             syncUIComponents();
             var count = 0;
             appState.inventory.forEach(function(it) { if (it.segment === sName) count++; });
-            alert('Renamed: ' + oldName + ' -> ' + sName + ' (' + count + ' items updated)');
+            showToast('Renamed: ' + oldName + ' -> ' + sName + ' (' + count + ' items updated)', 'success');
         } else {
-            alert('Cannot rename: oldName=' + oldName + ' sName=' + sName + ' exists=' + (appState.segments[sName] ? 'yes' : 'no'));
+            showToast('Cannot rename: ' + sName + ' already exists', 'error');
         }
         clearEditingState();
         return;
@@ -1201,7 +1763,7 @@ function addSegmentNode() {
 
     if (!appState.segments[sName]) {
         appState.segments[sName] = {};
-        saveStateToLocalStorage();
+        mutateState('ADD_SEGMENT', { name: sName });
         syncUIComponents();
         document.getElementById('newSegmentName').value = '';
     }
@@ -1218,13 +1780,13 @@ function addContainerNode() {
         var oldName = editingNode.oldName;
         var newSeg = segment;
         var newName = cName;
-        if (!newSeg) { alert('Select a target segment.'); return; }
+        if (!newSeg) { showToast('Select a target segment.', 'error'); return; }
 
         var isMove = (oldSeg !== newSeg);
         var isRename = (oldName !== newName);
         if (!isMove && !isRename) { clearEditingState(); return; }
         if (appState.segments[newSeg] && appState.segments[newSeg][newName] && (newSeg !== oldSeg || newName !== oldName)) {
-            alert('Container "' + newName + '" already exists in ' + newSeg + '.');
+            showToast('Container "' + newName + '" already exists in ' + newSeg + '.', 'error');
             clearEditingState(); return;
         }
 
@@ -1251,9 +1813,9 @@ function addContainerNode() {
             appState.activeMappingNode.container = newName;
             document.getElementById('activeMappingContainerNode').innerText = newSeg + ' > ' + newName;
         }
-        saveStateToLocalStorage();
+        mutateState('RENAME_CONTAINER', { oldSeg: oldSeg, oldName: oldName, newSeg: newSeg, newName: newName });
         syncUIComponents();
-        alert('Updated: ' + oldSeg + ' > ' + oldName + ' → ' + newSeg + ' > ' + newName);
+        showToast('Updated: ' + oldSeg + ' > ' + oldName + ' → ' + newSeg + ' > ' + newName, 'success');
         clearEditingState();
         return;
     }
@@ -1261,7 +1823,7 @@ function addContainerNode() {
     if (!appState.segments[segment]) appState.segments[segment] = {};
     if (!appState.segments[segment][cName]) {
         appState.segments[segment][cName] = [];
-        saveStateToLocalStorage();
+        mutateState('ADD_CONTAINER', { segment: segment, name: cName });
         syncUIComponents();
         document.getElementById('newContainerName').value = '';
     }
@@ -1281,13 +1843,13 @@ function addSubContainerNode() {
         var newSeg = segment;
         var newCon = container;
         var newName = scName;
-        if (!newSeg || !newCon) { alert('Select target segment and container.'); return; }
+        if (!newSeg || !newCon) { showToast('Select target segment and container.', 'error'); return; }
 
         var isMove = (oldSeg !== newSeg || oldCon !== newCon);
         var isRename = (oldName !== newName);
         if (!isMove && !isRename) { clearEditingState(); return; }
         if ((isMove || isRename) && appState.segments[newSeg] && appState.segments[newSeg][newCon] && appState.segments[newSeg][newCon].includes(newName) && (newSeg !== oldSeg || newCon !== oldCon || newName !== oldName)) {
-            alert('Sub-container "' + newName + '" already exists in ' + newSeg + ' > ' + newCon + '.');
+            showToast('Sub-container "' + newName + '" already exists in ' + newSeg + ' > ' + newCon + '.', 'error');
             clearEditingState(); return;
         }
 
@@ -1320,9 +1882,9 @@ function addSubContainerNode() {
             appState.activeMappingNode.subContainer = newName;
             document.getElementById('activeMappingContainerNode').innerText = newSeg + ' > ' + newCon + ' > ' + newName;
         }
-        saveStateToLocalStorage();
+        mutateState('RENAME_SUB_CONTAINER', { oldSeg: oldSeg, oldCon: oldCon, oldName: oldName, newSeg: newSeg, newCon: newCon, newName: newName });
         syncUIComponents();
-        alert('Updated: ' + oldSeg + ' > ' + oldCon + ' > ' + oldName + ' → ' + newSeg + ' > ' + newCon + ' > ' + newName);
+        showToast('Updated: ' + oldSeg + ' > ' + oldCon + ' > ' + oldName + ' → ' + newSeg + ' > ' + newCon + ' > ' + newName, 'success');
         clearEditingState();
         return;
     }
@@ -1331,7 +1893,7 @@ function addSubContainerNode() {
     if (!appState.segments[segment][container]) appState.segments[segment][container] = [];
     if (!appState.segments[segment][container].includes(scName)) {
         appState.segments[segment][container].push(scName);
-        saveStateToLocalStorage();
+        mutateState('ADD_SUB_CONTAINER', { segment: segment, container: container, name: scName });
         syncUIComponents();
         document.getElementById('newSubContainerName').value = '';
     }
@@ -1414,10 +1976,10 @@ function populateConfiguratorForEdit(type, seg, con, sub) {
     }
 }
 
-function deleteSegmentNode(seg) {
-    if (!confirm(t('confirmDeleteSeg') + ' "' + seg + '" ' + t('members') + '?')) return;
+async function deleteSegmentNode(seg) {
+    var ok = await showAppConfirm(t('confirmDeleteSeg') + ' "' + seg + '" ' + t('members') + '?', 'Delete');
+    if (!ok) return;
     delete appState.segments[seg];
-    // Clean up all coordinates under this segment
     Object.keys(appState.coordinates).forEach(function(k) {
         if (k.indexOf(seg + '|') === 0) delete appState.coordinates[k];
     });
@@ -1426,17 +1988,16 @@ function deleteSegmentNode(seg) {
         document.getElementById('activeMappingContainerNode').innerText = t('noneSelected');
         document.getElementById('btnClearActiveNode').classList.add('hidden');
     }
-    saveStateToLocalStorage();
+    mutateState('DELETE_SEGMENT', { name: seg });
     syncUIComponents();
 }
 
-function deleteContainerNode(seg, con) {
-    if (!confirm(t('confirmDeleteCon') + ' "' + seg + ' > ' + con + '"?')) return;
+async function deleteContainerNode(seg, con) {
+    var ok = await showAppConfirm(t('confirmDeleteCon') + ' "' + seg + ' > ' + con + '"?', 'Delete');
+    if (!ok) return;
     if (appState.segments[seg]) delete appState.segments[seg][con];
-    // Clean up container-level coordinates
     var containerKey = buildCoordKey(seg, con, '');
     delete appState.coordinates[containerKey];
-    // Clean up sub-container coordinates under this container
     Object.keys(appState.coordinates).forEach(function(k) {
         if (k.indexOf(seg + '|' + con + '|') === 0) delete appState.coordinates[k];
     });
@@ -1445,12 +2006,13 @@ function deleteContainerNode(seg, con) {
         document.getElementById('activeMappingContainerNode').innerText = t('noneSelected');
         document.getElementById('btnClearActiveNode').classList.add('hidden');
     }
-    saveStateToLocalStorage();
+    mutateState('DELETE_CONTAINER', { segment: seg, name: con });
     syncUIComponents();
 }
 
-function deleteSubContainerNode(seg, con, sub) {
-    if (!confirm(t('confirmDeleteSub') + ' "' + seg + ' > ' + con + ' > ' + sub + '"?')) return;
+async function deleteSubContainerNode(seg, con, sub) {
+    var ok = await showAppConfirm(t('confirmDeleteSub') + ' "' + seg + ' > ' + con + ' > ' + sub + '"?', 'Delete');
+    if (!ok) return;
     if (appState.segments[seg] && appState.segments[seg][con]) {
         appState.segments[seg][con] = appState.segments[seg][con].filter(s => s !== sub);
     }
@@ -1461,7 +2023,7 @@ function deleteSubContainerNode(seg, con, sub) {
         document.getElementById('activeMappingContainerNode').innerText = t('noneSelected');
         document.getElementById('btnClearActiveNode').classList.add('hidden');
     }
-    saveStateToLocalStorage();
+    mutateState('DELETE_SUB_CONTAINER', { segment: seg, container: con, name: sub });
     syncUIComponents();
 }
 
@@ -1470,53 +2032,81 @@ function clearActiveNode() {
     document.getElementById('activeMappingContainerNode').innerText = t('noneSelected');
     document.getElementById('btnClearActiveNode').classList.add('hidden');
     clearEditingState();
+    updateSpatialActionHint(null);
     renderSpatialMapGrid();
     renderContainerAssetList();
+}
+
+function updateSpatialActionHint(node) {
+    var hint = document.getElementById('spatialActionHint');
+    if (!hint) return;
+    if (!node) {
+        hint.className = 'text-xs font-medium text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 mt-2 inline-block';
+        hint.innerText = 'Select a node from the index to begin';
+    } else if (node.subContainer) {
+        hint.className = 'text-xs font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 mt-2 inline-block';
+        hint.innerText = 'Viewing assets in this location. Sub-containers cannot be placed on the map.';
+    } else if (node.container) {
+        var key = buildCoordKey(node.segment, node.container, '');
+        if (appState.coordinates[key]) {
+            hint.className = 'text-xs font-medium text-blue-600 bg-blue-50 border border-blue-100 rounded-lg px-3 py-1.5 mt-2 inline-block';
+            hint.innerText = 'Drag the marker to reposition, or select another node';
+        } else {
+            hint.className = 'text-xs font-medium text-blue-600 bg-blue-50 border border-blue-100 rounded-lg px-3 py-1.5 mt-2 inline-block';
+            hint.innerText = 'Click anywhere on the map to place this container';
+        }
+    } else {
+        hint.className = 'text-xs font-medium text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 mt-2 inline-block';
+        hint.innerText = 'Expand a segment and select a container to place it';
+    }
 }
 
 function markMapDirty() {
     _mapDirty = true;
     var btn = document.getElementById('btnSaveLayout');
     if (btn) {
-        btn.classList.remove('bg-slate-100', 'text-slate-600', 'hover:bg-slate-200');
-        btn.classList.add('bg-amber-500', 'text-white', 'hover:bg-amber-600');
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-warning');
         var label = btn.querySelector('.btn-label');
         if (label) label.innerText = 'Save *';
     }
+    var badge = document.getElementById('mapUnsavedBadge');
+    if (badge) badge.classList.remove('hidden');
 }
 
 function saveLayoutMap() {
-    saveStateToLocalStorage();
-    triggerAutoCloudSyncIfPossible();
+    mutateState('SAVE_LAYOUT', {});
     _mapDirty = false;
     var btn = document.getElementById('btnSaveLayout');
     if (btn) {
-        btn.classList.remove('bg-amber-500', 'text-white', 'hover:bg-amber-600');
-        btn.classList.add('bg-slate-100', 'text-slate-600', 'hover:bg-slate-200');
+        btn.classList.remove('btn-warning');
+        btn.classList.add('btn-secondary');
         var label = btn.querySelector('.btn-label');
         if (label) label.innerText = 'Save';
     }
+    var badge = document.getElementById('mapUnsavedBadge');
+    if (badge) badge.classList.add('hidden');
+    showToast('Layout saved', 'success');
 }
 
 function markClassesDirty() {
     _classesDirty = true;
     var btn = document.getElementById('btnSaveClassification');
     if (btn) {
-        btn.classList.remove('bg-slate-100', 'text-slate-600', 'hover:bg-slate-200');
-        btn.classList.add('bg-amber-500', 'text-white', 'hover:bg-amber-600');
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-warning');
         var label = btn.querySelector('.btn-label');
         if (label) label.innerText = 'Save *';
     }
 }
 
 function saveClassification() {
-    saveStateToLocalStorage();
-    triggerAutoCloudSyncIfPossible();
+    mutateState('SAVE_CLASSIFICATION', {});
     _classesDirty = false;
     var btn = document.getElementById('btnSaveClassification');
     if (btn) {
-        btn.classList.remove('bg-amber-500', 'text-white', 'hover:bg-amber-600');
-        btn.classList.add('bg-slate-100', 'text-slate-600', 'hover:bg-slate-200');
+        btn.classList.remove('btn-warning');
+        btn.classList.add('btn-secondary');
         var label = btn.querySelector('.btn-label');
         if (label) label.innerText = 'Save';
     }
@@ -1529,10 +2119,10 @@ function selectNodeForAssets(seg, con, sub) {
     if (sub) label += ' > ' + sub;
     document.getElementById('activeMappingContainerNode').innerText = label;
     document.getElementById('btnClearActiveNode').classList.remove('hidden');
-    // Populate configurator for editing but don't auto-expand
     if (sub) populateConfiguratorForEdit('subContainer', seg, con, sub);
     else if (con) populateConfiguratorForEdit('container', seg, con);
     else populateConfiguratorForEdit('segment', seg);
+    updateSpatialActionHint(appState.activeMappingNode);
     renderContainerAssetList();
     renderSpatialMapGrid();
 }
@@ -1542,6 +2132,7 @@ function selectSubContainerForMapping(segment, container, subContainer) {
     document.getElementById('activeMappingContainerNode').innerText = `${segment} > ${container} > ${subContainer}`;
     document.getElementById('btnClearActiveNode').classList.remove('hidden');
     populateConfiguratorForEdit('subContainer', segment, container, subContainer);
+    updateSpatialActionHint(appState.activeMappingNode);
     renderSpatialMapGrid();
     renderContainerAssetList();
 }
@@ -1701,6 +2292,7 @@ function handleLayoutBackgroundUpload(event) {
         appState.spatialBackgroundImage = dataUrl;
         markMapDirty();
         renderSpatialMapGrid();
+        showToast('Layout image imported \u2014 click Save to keep', 'info');
     });
     event.target.value = '';
 }
@@ -1709,6 +2301,7 @@ function clearLayoutBackground() {
     appState.spatialBackgroundImage = null;
     markMapDirty();
     renderSpatialMapGrid();
+    showToast('Layout background image removed', 'info');
 }
 
 function renderContainerAssetList() {
@@ -1724,6 +2317,7 @@ function renderContainerAssetList() {
 
     const { segment, container, subContainer } = appState.activeMappingNode;
     const assets = appState.inventory.filter(item => {
+        if (item.deletedAt) return false;
         if (item.segment !== segment) return false;
         if (container && item.container !== container) return false;
         if (subContainer && item.subContainer !== subContainer) return false;
@@ -1739,7 +2333,12 @@ function renderContainerAssetList() {
     countEl.innerText = `${assets.length} item${assets.length !== 1 ? 's' : ''}`;
 
     if (assets.length === 0) {
-        listEl.innerHTML = '<p class="text-slate-400 italic p-2">No assets registered here.</p>';
+        listEl.innerHTML = emptyStateHTML(
+            '<path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>',
+            'No assets here yet',
+            'Add an item to ' + nodeLabel,
+            '+ Quick Add', 'quickAddAsset()'
+        );
         return;
     }
 
@@ -1829,11 +2428,11 @@ function createClassificationNode() {
     }
 }
 
-function deleteSelectedCategoryNode() {
+async function deleteSelectedCategoryNode() {
     if (!appState.selectedCategoryNodePath || appState.selectedCategoryNodePath.length === 0) return;
 
-    const confirmPurge = confirm("Permanently drop selected classification node path branches?");
-    if (!confirmPurge) return;
+    var ok = await showAppConfirm(t('confirmDropCategory'), 'Delete');
+    if (!ok) return;
 
     const pathToDelete = [...appState.selectedCategoryNodePath];
     const targetNodeKey = pathToDelete.pop();
@@ -2035,14 +2634,15 @@ function switchItemType(type) {
     var btnStock = document.getElementById('btnItemTypeStock');
     var stockFields = document.getElementById('stockFieldsContainer');
     var scanBtn = document.getElementById('btnScanExistingBarcode');
+    markFormDirty();
     if (type === 'stock') {
-        btnUnique.className = 'flex-1 text-xs font-medium py-2 px-3 bg-white text-slate-500 transition-colors';
-        btnStock.className = 'flex-1 text-xs font-medium py-2 px-3 bg-amber-600 text-white transition-colors';
+        btnUnique.className = 'flex-1 btn btn-sm btn-secondary';
+        btnStock.className = 'flex-1 btn btn-sm btn-warning';
         stockFields.classList.remove('hidden');
         scanBtn.classList.remove('hidden');
     } else {
-        btnUnique.className = 'flex-1 text-xs font-medium py-2 px-3 bg-blue-600 text-white transition-colors';
-        btnStock.className = 'flex-1 text-xs font-medium py-2 px-3 bg-white text-slate-500 transition-colors';
+        btnUnique.className = 'flex-1 btn btn-sm btn-primary';
+        btnStock.className = 'flex-1 btn btn-sm btn-secondary';
         stockFields.classList.add('hidden');
         scanBtn.classList.add('hidden');
         document.getElementById('invItemUom').value = '';
@@ -2060,14 +2660,31 @@ function commitItemToInventory() {
     const imageUrl = document.getElementById('invItemImageUrl').value.trim();
     const remarks = document.getElementById('invItemRemarks').value.trim();
     const editId = document.getElementById('editTargetItemId').value;
+    const now = new Date().toISOString();
+    const deviceId = appState.meta.deviceId;
 
     if (!name || !categoryStr || !segment || !container) {
-        alert(t('pleaseComplete'));
+        showToast(t('pleaseComplete'), 'error');
         return;
     }
 
+    var itemId, createdAt, version, barcodeId;
+    if (editId) {
+        itemId = editId;
+        var existing = appState.inventory.find(function(i) { return i.id === editId; });
+        createdAt = existing ? (existing.createdAt || existing.timestamp || now) : now;
+        version = existing ? ((existing.version || 1) + 1) : 1;
+        barcodeId = existing ? (existing.barcodeId || generateBarcodeId()) : generateBarcodeId();
+    } else {
+        itemId = generateItemId();
+        createdAt = now;
+        version = 1;
+        barcodeId = generateBarcodeId();
+    }
+
     const payloadItem = {
-        id: editId ? editId : String(appState.nextItemId++).padStart(5, '0'),
+        id: itemId,
+        barcodeId: barcodeId,
         name,
         brand: document.getElementById('invItemBrand').value.trim(),
         category: categoryStr,
@@ -2085,30 +2702,38 @@ function commitItemToInventory() {
         uom: document.getElementById('stockFieldsContainer').classList.contains('hidden') ? '' : document.getElementById('invItemUom').value.trim(),
         quantity: document.getElementById('stockFieldsContainer').classList.contains('hidden') ? 0 : (parseInt(document.getElementById('invItemQuantity').value) || 0),
         minQuantity: document.getElementById('stockFieldsContainer').classList.contains('hidden') ? 0 : (parseInt(document.getElementById('invItemMinQuantity').value) || 0),
-        timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
+        createdAt: createdAt,
+        updatedAt: now,
+        version: version,
+        deletedAt: null,
+        lastModifiedBy: deviceId,
+        timestamp: now.replace('T', ' ').substring(0, 16)
     };
 
     if (editId) {
         const idx = appState.inventory.findIndex(i => i.id === editId);
         if (idx !== -1) appState.inventory[idx] = payloadItem;
+        mutateState('EDIT_ITEM', { itemId: editId });
     } else {
         appState.inventory.push(payloadItem);
+        mutateState('COMMIT_ITEM', { itemId: itemId });
     }
 
-    saveStateToLocalStorage();
     if (editId) {
         clearInventoryFormContext();
     } else {
         softClearForNextItem();
     }
+    resetFormDirty();
     syncUIComponents();
-    triggerAutoCloudSyncIfPossible();
+    showToast('\u{1F4E4} Pending sync', 'success');
+    triggerBackgroundSync();
 }
 
 function setupItemModificationContext(itemId) {
     try {
-        const item = appState.inventory.find(i => i.id === itemId);
-        if (!item) { alert(t('itemNotFound') + itemId); return; }
+        const item = appState.inventory.find(i => i.id === itemId && !i.deletedAt);
+        if (!item) { showToast(t('itemNotFound') + itemId, 'error'); return; }
 
         switchTab('tab-register');
         document.getElementById('inventoryFormTitle').innerText = t('modifyFormTitle');
@@ -2150,13 +2775,15 @@ function setupItemModificationContext(itemId) {
         }
         document.getElementById('invItemRemarks').value = item.remarks;
         document.getElementById('invItemAiMetadata').value = item.aiMetadata || '';
+        if (item.aiMetadata) { expandAiMetadata(); } else { collapseAiMetadata(); }
         document.getElementById('invItemPurchaseDate').value = item.purchaseDate || '';
         document.getElementById('invItemWarrantyDate').value = item.warrantyDate || '';
         document.getElementById('invItemExpiryDate').value = item.expiryDate || '';
 
         window.scrollTo({ top: 0, behavior: 'smooth' });
+        resetFormDirty();
     } catch (err) {
-        alert(t('editError') + err.message);
+        showToast(t('editError') + err.message, 'error');
     }
 }
 
@@ -2174,6 +2801,7 @@ function softClearForNextItem() {
     document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
     switchItemType('unique');
+    resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
     preview.classList.add('hidden');
@@ -2197,6 +2825,7 @@ function clearAllInventoryFields() {
     document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
     switchItemType('unique');
+    resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
     preview.classList.add('hidden');
@@ -2223,6 +2852,7 @@ function clearInventoryFormContext() {
     document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
     switchItemType('unique');
+    resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
     preview.classList.add('hidden');
@@ -2233,7 +2863,7 @@ function clearInventoryFormContext() {
 }
 
 function copyItemToNew(itemId) {
-    var item = appState.inventory.find(i => i.id === itemId);
+    var item = appState.inventory.find(i => i.id === itemId && !i.deletedAt);
     if (!item) return;
     setupItemModificationContext(itemId);
     // Overwrite the edit target ID to force a new item on save
@@ -2243,12 +2873,18 @@ function copyItemToNew(itemId) {
     showToast('Copied "' + item.name + '" — edit and save as new item', 'info');
 }
 
-function removeItemFromInventory(itemId) {
-    if (!confirm(t('confirmDeleteItem'))) return;
-    appState.inventory = appState.inventory.filter(i => i.id !== itemId);
-    saveStateToLocalStorage();
+async function removeItemFromInventory(itemId) {
+    var ok = await showAppConfirm(t('confirmDeleteItem'), 'Delete');
+    if (!ok) return;
+    var item = appState.inventory.find(function(i) { return i.id === itemId; });
+    if (item) {
+        item.deletedAt = new Date().toISOString();
+        item.updatedAt = new Date().toISOString();
+        item.version = (item.version || 1) + 1;
+        item.lastModifiedBy = appState.meta.deviceId;
+    }
+    mutateState('REMOVE_ITEM', { itemId: itemId });
     syncUIComponents();
-    triggerAutoCloudSyncIfPossible();
 }
 
 function compressImageFile(file, maxPx, quality, callback) {
@@ -2309,10 +2945,10 @@ function updateImagePreviewFromUrl() {
 
 async function aiAnalyzeImage() {
     const storedUrl = document.getElementById('invItemImageUrl').value.trim();
-    if (!storedUrl && !_lastUploadedImageFile) { alert('Upload an image first.'); return; }
+    if (!storedUrl && !_lastUploadedImageFile) { showToast('Upload an image first.', 'error'); return; }
 
     const apiKey = localStorage.getItem('sys_ds_api_key');
-    if (!apiKey) { alert(t('aiNoKey')); return; }
+    if (!apiKey) { showToast(t('aiNoKey'), 'error'); return; }
 
     const btn = document.getElementById('btnAIAnalyze');
     btn.disabled = true;
@@ -2459,7 +3095,7 @@ async function aiAnalyzeImage() {
 
     } catch (err) {
         btn.innerText = 'AI Analyze';
-        alert('AI analysis failed: ' + err.message);
+        showToast('AI analysis failed: ' + err.message, 'error');
     }
     btn.disabled = false;
 }
@@ -2486,7 +3122,7 @@ function tryMatchCategoryPath(aiCategory, categoryList) {
 function exportLocalDatabasesToExcel() {
     var btn = document.querySelector('#btnExportXlsx');
     if (appState.inventory.length === 0) {
-        alert(t('noItemsExport'));
+        showToast(t('noItemsExport'), 'error');
         return;
     }
 
@@ -2506,6 +3142,7 @@ function exportLocalDatabasesToExcel() {
     try {
         var columns = [
             "System ID",
+            "Barcode ID",
             "Item Name",
             "Brand",
             "Item Type",
@@ -2526,9 +3163,10 @@ function exportLocalDatabasesToExcel() {
             "Last System Entry Update"
         ];
 
-        var flatRows = appState.inventory.map(function(item) {
+        var flatRows = appState.inventory.filter(function(item) { return !item.deletedAt; }).map(function(item) {
             return {
                 "System ID": safeCell(item.id || ''),
+                "Barcode ID": safeCell(item.barcodeId || ''),
                 "Item Name": safeCell(item.name || ''),
                 "Brand": safeCell(item.brand || ''),
                 "Item Type": item.itemType === 'stock' ? 'stock' : 'unique',
@@ -2603,7 +3241,7 @@ function exportLocalDatabasesToExcel() {
         document.body.removeChild(a);
         setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
     } catch(err) {
-        alert('Export failed: ' + err.message);
+        showToast('Export failed: ' + err.message, 'error');
     }
 
     if (btn) {
@@ -2635,7 +3273,7 @@ function importExcelToLocalDatabases(event) {
             if (invSheetName && workbook.Sheets[invSheetName]) {
                 var rows = XLSX.utils.sheet_to_json(workbook.Sheets[invSheetName]);
                 rows.forEach(function(r) {
-                    var id = cleanCell(r["System ID"]) || String(appState.nextItemId++).padStart(5, '0');
+                    var id = cleanCell(r["System ID"]) || generateItemId();
                     var name = cleanCell(r["Item Name"]) || 'Unnamed Imported Asset';
                     var brand = cleanCell(r["Brand"]) || '';
                     var category = cleanCell(r["Classification Route"]) || 'Foods';
@@ -2661,7 +3299,18 @@ function importExcelToLocalDatabases(event) {
                     if (owner && owner !== 'Default' && !appState.users.includes(owner)) appState.users.push(owner);
 
                     var existingIdx = appState.inventory.findIndex(function(i) { return i.id === id; });
-                    var item = { id:id, name:name, brand:brand, category:category, segment:segment, container:container, subContainer:subContainer, owner:owner, aiMetadata:aiMd, purchaseDate:purDate, warrantyDate:warDate, expiryDate:expDate, itemType:itemType, uom:uom, quantity:quantity, minQuantity:minQuantity, imageUrl:img, remarks:rem, timestamp:time };
+                    var time = cleanCell(r["Last System Entry Update"]) || new Date().toISOString().replace('T', ' ').substring(0, 16);
+                    var nowIso = new Date().toISOString();
+                    var item = {
+                        id: id, name: name, brand: brand, category: category, segment: segment,
+                        container: container, subContainer: subContainer, owner: owner,
+                        aiMetadata: aiMd, purchaseDate: purDate, warrantyDate: warDate,
+                        expiryDate: expDate, itemType: itemType, uom: uom,
+                        quantity: quantity, minQuantity: minQuantity, imageUrl: img,
+                        remarks: rem, timestamp: time,
+                        createdAt: nowIso, updatedAt: nowIso, deletedAt: null,
+                        version: 1, lastModifiedBy: appState.meta.deviceId
+                    };
                     if (existingIdx !== -1) appState.inventory[existingIdx] = item;
                     else appState.inventory.push(item);
                 });
@@ -2693,9 +3342,9 @@ function importExcelToLocalDatabases(event) {
 
             saveStateToLocalStorage();
             syncUIComponents();
-            alert("Spreadsheet processing successfully parsed.");
+            showToast("Spreadsheet processing successfully parsed.", 'success');
         } catch(err) {
-            alert("Error decoding file contents: " + err.message);
+            showToast("Error decoding file contents: " + err.message, 'error');
         }
     };
     reader.readAsArrayBuffer(file);
@@ -2715,52 +3364,66 @@ function commitCloudSystemCredentials() {
     if(token) localStorage.setItem('sys_api_pwd', token);
     if(dsKey) localStorage.setItem('sys_ds_api_key', dsKey);
 
-    alert("Local infrastructure access profile updated.");
+    showToast('Local infrastructure access profile updated.', 'success');
 }
 
 async function triggerSynchronousCloudBackupPush() {
     const endpoint = localStorage.getItem('sys_gas_url');
     const secret = localStorage.getItem('sys_api_pwd');
-    if(!endpoint) { alert("Missing Google Script Deployment endpoint link URL profiles."); return; }
+    if(!endpoint) { return; }
+
+    _syncInProgress = true;
+    _syncPendingCount = (appState.syncQueue || []).length;
+    updateSyncBanner();
 
     try {
-        const stateJson = buildSyncPayload();
+        var opsToSend = (appState.syncQueue || []).slice();
+        var stateJson = buildSyncPayload();
 
-        // Form POST for push (reaches server, no CORS needed for form submission)
-        var iframe = document.getElementById('syncHiddenFrame');
-        if (!iframe) {
-            iframe = document.createElement('iframe');
-            iframe.id = 'syncHiddenFrame';
-            iframe.name = 'syncHiddenFrame';
-            iframe.style.display = 'none';
-            document.body.appendChild(iframe);
-        }
+        // Use URL-encoded form body for GAS compatibility (no CORS preflight)
+        var params = new URLSearchParams();
+        params.append('token', secret);
+        params.append('action', 'SYNC_PUSH');
+        params.append('payload', stateJson);
+        params.append('operations', JSON.stringify(opsToSend));
+        params.append('clientRevision', appState.meta.lastServerRevision || '');
 
-        var form = document.getElementById('syncHiddenForm');
-        if (!form) {
-            form = document.createElement('form');
-            form.id = 'syncHiddenForm';
-            form.method = 'POST';
-            form.action = endpoint;
-            form.target = 'syncHiddenFrame';
-            form.style.display = 'none';
-            document.body.appendChild(form);
+        var resp = await fetch(endpoint, {
+            method: 'POST',
+            body: params
+        });
+        var text = await resp.text();
+        var result;
+        try { result = JSON.parse(text); } catch(e) { result = null; }
+
+        if (result && result.success) {
+            appState.meta.lastSyncedAt = new Date().toISOString();
+            appState.meta.lastServerRevision = result.revision || null;
+            appState.syncQueue = [];
+            _syncInProgress = false;
+            _syncLastFailed = false;
+            _syncConflict = false;
+            updateSyncStatusBadge();
         } else {
-            form.action = endpoint;
-            form.innerHTML = '';
+            _syncInProgress = false;
+            _syncLastFailed = true;
+            updateSyncStatusBadge();
+            showToast('Push failed: ' + (result && result.error ? result.error : 'unknown'), 'error');
         }
-
-        addFormField(form, 'token', secret);
-        addFormField(form, 'action', 'SYNC_PUSH');
-        addFormField(form, 'payload', stateJson);
-
-        form.submit();
-        document.getElementById('syncStatusBadge').innerText = '📤 ' + t('pushed');
-        document.getElementById('syncStatusBadge').className = 'text-[10px] text-blue-600 font-medium';
     } catch (e) {
-        document.getElementById('syncStatusBadge').innerText = '❌ ' + t('offline');
-        document.getElementById('syncStatusBadge').className = 'text-[10px] text-red-500 font-medium';
+        _syncInProgress = false;
+        _syncLastFailed = true;
+        updateSyncStatusBadge();
+        showToast('Push failed: ' + e.message, 'error');
     }
+}
+
+async function triggerBackgroundSync() {
+    var endpoint = localStorage.getItem('sys_gas_url');
+    if (!endpoint) return;
+    setTimeout(async function() {
+        await triggerSynchronousCloudBackupPush();
+    }, 500);
 }
 
 function buildSyncPayload() {
@@ -2769,42 +3432,6 @@ function buildSyncPayload() {
 
 function getSyncPayloadSize() {
     return buildSyncPayload().length;
-}
-
-function addFormField(form, name, value) {
-    var input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = name;
-    input.value = value;
-    form.appendChild(input);
-}
-
-function jsonpFetch(url, callbackName, timeoutMs) {
-    return new Promise(function(resolve, reject) {
-        var script = document.createElement('script');
-        var timer = setTimeout(function() {
-            cleanup();
-            reject(new Error('JSONP timeout'));
-        }, timeoutMs || 15000);
-
-        function cleanup() {
-            clearTimeout(timer);
-            delete window[callbackName];
-            if (script.parentNode) script.parentNode.removeChild(script);
-        }
-
-        window[callbackName] = function(data) {
-            cleanup();
-            resolve(data);
-        };
-
-        script.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'jsonp=' + callbackName;
-        script.onerror = function() {
-            cleanup();
-            reject(new Error('JSONP script load failed'));
-        };
-        document.head.appendChild(script);
-    });
 }
 
 function showToast(message, type) {
@@ -2834,40 +3461,100 @@ async function syncFromCloudWithToast() {
     var btns = document.querySelectorAll('.btn-sync-refresh');
     btns.forEach(function(b) { b.classList.add('btn-syncing'); });
 
-    showToast('Syncing from Google Sheet\u2026', 'info');
+    showToast('Syncing\u2026', 'info');
 
     try {
-        const endpoint = localStorage.getItem('sys_gas_url');
-        const secret = localStorage.getItem('sys_api_pwd');
+        var endpoint = localStorage.getItem('sys_gas_url');
+        var secret = localStorage.getItem('sys_api_pwd');
         if (!endpoint) {
-            showToast('Missing Google Script URL', 'error');
+            showToast(t('missingEndpointShort'), 'error');
             btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
             return;
         }
 
-        const url = `${endpoint}?token=${encodeURIComponent(secret)}&action=SYNC_PULL`;
-        const json = await jsonpFetch(url, 'hkPullCallback', 15000);
+        _syncInProgress = true;
+        updateSyncStatusBadge();
+
+        // Push pending changes first, then pull
+        var hasPending = (appState.syncQueue && appState.syncQueue.length > 0);
+        if (hasPending) {
+            await triggerSynchronousCloudBackupPush();
+        }
+
+        var params = 'token=' + encodeURIComponent(secret) + '&action=SYNC_PULL';
+        var resp = await fetch(endpoint + '?' + params, { method: 'GET' });
+        var json = await resp.json();
 
         if (json && json.segments) {
-            appState = json;
+            var merged = mergeCloudState(json);
+            // All pending ops are now reconciled with cloud state
+            appState.syncQueue = [];
             saveStateToLocalStorage();
-            syncUIComponents();
-            var count = (json.inventory || []).length;
-            document.getElementById('syncStatusBadge').innerText = '\u2705 ' + t('pulled') + ' ' + new Date().toLocaleTimeString();
-            document.getElementById('syncStatusBadge').className = 'text-[10px] text-emerald-600 font-medium';
-            showToast('Sync complete \u2014 ' + count + ' items loaded', 'success');
+            _syncInProgress = false;
+            _syncLastFailed = false;
+            updateSyncStatusBadge();
+            updateSyncBanner();
+            showToast('Synced \u2014 ' + (json.inventory || []).length + ' items', 'success');
         } else {
-            document.getElementById('syncStatusBadge').innerText = '\u274c ' + t('offline');
-            document.getElementById('syncStatusBadge').className = 'text-[10px] text-red-500 font-medium';
+            _syncInProgress = false;
+            _syncLastFailed = true;
+            updateSyncStatusBadge();
             showToast('Sync failed \u2014 no data received', 'error');
         }
     } catch (e) {
-        document.getElementById('syncStatusBadge').innerText = '\u274c Offline';
-        document.getElementById('syncStatusBadge').className = 'text-[10px] text-red-500 font-medium';
+        _syncInProgress = false;
+        _syncLastFailed = true;
+        updateSyncStatusBadge();
         showToast('Sync failed \u2014 server unreachable', 'error');
     }
 
     btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+}
+
+function mergeCloudState(cloudState) {
+    if (!cloudState || !cloudState.inventory) return appState;
+
+    var localItems = {};
+    appState.inventory.forEach(function(item) {
+        localItems[item.id] = item;
+    });
+
+    var mergedInventory = [];
+    (cloudState.inventory || []).forEach(function(cloudItem) {
+        var localItem = localItems[cloudItem.id];
+        if (!localItem) {
+            mergedInventory.push(cloudItem);
+        } else if (cloudItem.deletedAt) {
+            // Cloud wins — item was deleted remotely
+            mergedInventory.push(cloudItem);
+        } else if (localItem.deletedAt && !cloudItem.deletedAt) {
+            // Local deletion was overridden remotely — keep cloud version
+            mergedInventory.push(cloudItem);
+        } else if ((cloudItem.version || 0) >= (localItem.version || 0)) {
+            // Cloud version is newer or equal — take cloud
+            mergedInventory.push(cloudItem);
+        } else {
+            // Local version is newer — keep local
+            mergedInventory.push(localItem);
+        }
+        delete localItems[cloudItem.id];
+    });
+
+    // Add local-only items that aren't in cloud
+    for (var id in localItems) {
+        mergedInventory.push(localItems[id]);
+    }
+
+    appState.inventory = mergedInventory;
+    appState.segments = cloudState.segments || appState.segments;
+    appState.categories = cloudState.categories || appState.categories;
+    appState.coordinates = cloudState.coordinates || appState.coordinates;
+    appState.meta.lastSyncedAt = new Date().toISOString();
+    appState.meta.lastServerRevision = cloudState.meta ? cloudState.meta.lastServerRevision : null;
+
+    saveStateToLocalStorage();
+    syncUIComponents();
+    return appState;
 }
 
 async function triggerSynchronousCloudFetchPull() {
@@ -2875,33 +3562,69 @@ async function triggerSynchronousCloudFetchPull() {
 }
 
 async function verifyCloudSync() {
-    const endpoint = localStorage.getItem('sys_gas_url');
-    const secret = localStorage.getItem('sys_api_pwd');
-    if(!endpoint) { alert("Missing Google Script URL."); return; }
+    var endpoint = localStorage.getItem('sys_gas_url');
+    var secret = localStorage.getItem('sys_api_pwd');
+    if(!endpoint) { showToast(t('missingEndpointShort'), 'error'); return; }
 
     try {
-        const url = `${endpoint}?token=${encodeURIComponent(secret)}&action=SYNC_PULL`;
-        const cloud = await jsonpFetch(url, 'hkVerifyCallback', 15000);
-        const localItems = appState.inventory.length;
-        const cloudItems = (cloud && cloud.inventory) ? cloud.inventory.length : -1;
-        const localSegs = Object.keys(appState.segments).length;
-        const cloudSegs = (cloud && cloud.segments) ? Object.keys(cloud.segments).length : -1;
+        var params = 'token=' + encodeURIComponent(secret) + '&action=SYNC_PULL';
+        var resp = await fetch(endpoint + '?' + params, { method: 'GET' });
+        var cloud = await resp.json();
 
-        if (cloudItems === localItems && cloudSegs === localSegs) {
-            document.getElementById('syncStatusBadge').innerText = '✅ ' + t('inSync') + ' (' + localItems + ' ' + t('items') + ')';
-            document.getElementById('syncStatusBadge').className = 'text-[10px] text-emerald-600 font-medium';
+        var localIds = new Set(appState.inventory.filter(function(i) { return !i.deletedAt; }).map(function(i) { return i.id; }));
+        var cloudIds = new Set((cloud && cloud.inventory) ? cloud.inventory.map(function(i) { return i.id; }) : []);
+
+        var localIdCount = localIds.size;
+        var cloudIdCount = cloudIds.size;
+
+        var missingInCloud = [...localIds].filter(function(id) { return !cloudIds.has(id); });
+        var missingInLocal = [...cloudIds].filter(function(id) { return !localIds.has(id); });
+
+        var localChecksum = computeStateChecksum();
+        var cloudChecksum = (cloud && cloud.meta) ? cloud.meta.checksum : null;
+
+        var cloudRev = (cloud && cloud.meta) ? cloud.meta.lastServerRevision : null;
+        var localRev = appState.meta.lastServerRevision;
+
+        if (missingInCloud.length === 0 && missingInLocal.length === 0 && cloudRev === localRev) {
+            updateSyncStatusBadge();
+            showToast('\u2705 In sync \u2014 ' + localIdCount + ' items, revision ' + (localRev || '?'), 'success');
         } else {
-            document.getElementById('syncStatusBadge').innerText = '⚠️ ' + t('cloud') + ':' + cloudItems + ' ' + t('local') + ':' + localItems;
-            document.getElementById('syncStatusBadge').className = 'text-[10px] text-amber-600 font-medium';
+            var diffs = [];
+            if (missingInCloud.length > 0) diffs.push(missingInCloud.length + ' only local');
+            if (missingInLocal.length > 0) diffs.push(missingInLocal.length + ' only cloud');
+            if (cloudRev !== localRev) diffs.push('revision mismatch');
+            showToast('\u26A0\uFE0F Out of sync \u2014 ' + diffs.join(', '), 'error');
+            _syncConflict = true;
+            updateSyncStatusBadge();
         }
     } catch(e) {
-        document.getElementById('syncStatusBadge').innerText = '❌ ' + t('offline');
-        document.getElementById('syncStatusBadge').className = 'text-[10px] text-red-500 font-medium';
+        _syncLastFailed = true;
+        updateSyncStatusBadge();
     }
 }
 
+function computeStateChecksum() {
+    var activeItems = appState.inventory.filter(function(i) { return !i.deletedAt; });
+    var ids = activeItems.map(function(i) { return i.id; }).sort().join(',');
+    var segKeys = Object.keys(appState.segments).sort().join(',');
+    var catKeys = Object.keys(appState.categories).sort().join(',');
+    var str = ids + '|' + segKeys + '|' + catKeys;
+    return simpleHash(str);
+}
+
+function simpleHash(str) {
+    var hash = 0;
+    for (var i = 0; i < str.length; i++) {
+        var chr = str.charCodeAt(i);
+        hash = ((hash << 5) - hash) + chr;
+        hash |= 0;
+    }
+    return hash.toString(36);
+}
+
 function triggerAutoCloudSyncIfPossible() {
-    const endpoint = localStorage.getItem('sys_gas_url');
+    var endpoint = localStorage.getItem('sys_gas_url');
     if (endpoint) {
         triggerSynchronousCloudBackupPush().catch(function() {});
         setTimeout(function() {
@@ -2910,22 +3633,19 @@ function triggerAutoCloudSyncIfPossible() {
     }
 }
 
-function autoPullFromCloudIfPossible() {
-    const endpoint = localStorage.getItem('sys_gas_url');
-    const secret = localStorage.getItem('sys_api_pwd');
+async function autoPullFromCloudIfPossible() {
+    var endpoint = localStorage.getItem('sys_gas_url');
+    var secret = localStorage.getItem('sys_api_pwd');
     if (!endpoint) return;
 
     try {
-        var url = endpoint + '?token=' + encodeURIComponent(secret) + '&action=SYNC_PULL';
-        jsonpFetch(url, 'hkAutoPullCb', 12000).then(function(json) {
-            if (json && json.inventory) {
-                var mergedState = migrateLegacyState(json);
-                if (!mergedState.language) mergedState.language = appState.language;
-                appState = mergedState;
-                saveStateToLocalStorage();
-                syncUIComponents();
-            }
-        }).catch(function() {});
+        var params = 'token=' + encodeURIComponent(secret) + '&action=SYNC_PULL';
+        var resp = await fetch(endpoint + '?' + params, { method: 'GET' });
+        var json = await resp.json();
+
+        if (json && json.inventory) {
+            mergeCloudState(json);
+        }
     } catch(e) {}
 }
 
@@ -2938,12 +3658,12 @@ async function performAISearch() {
 
     const apiKey = localStorage.getItem('sys_ds_api_key');
     if (!apiKey) {
-        alert(t('aiNoKey'));
+        showToast(t('aiNoKey'), 'error');
         return;
     }
 
     if (appState.inventory.length === 0) {
-        alert(t('noItems'));
+        showToast(t('noItems'), 'error');
         return;
     }
 
@@ -2956,7 +3676,7 @@ async function performAISearch() {
     statusEl.innerText = t('aiAnalyzing');
 
     try {
-        const inventoryMetadata = appState.inventory.map(item => ({
+        const inventoryMetadata = appState.inventory.filter(function(it) { return !it.deletedAt; }).map(item => ({
             id: item.id,
             name: item.name,
             category: item.category,
@@ -3010,7 +3730,7 @@ async function performAISearch() {
 
         statusEl.innerText = matchedIds.length > 0
             ? t('aiFound') + ' ' + matchedIds.length + ' ' + (matchedIds.length !== 1 ? t('items') : t('item')) + '.'
-            : t('aiNoMatch');
+            : 'No matches — try a different description or clear the filter';
         document.getElementById('btnResetAISearch').classList.remove('hidden');
 
     } catch (err) {
@@ -3043,9 +3763,9 @@ function setItemTypeFilter(filter) {
     var btnAll = document.getElementById('btnFilterAll');
     var btnUnique = document.getElementById('btnFilterUnique');
     var btnStock = document.getElementById('btnFilterStock');
-    btnAll.className = filter === 'all' ? 'text-[10px] font-medium px-2.5 py-1.5 bg-slate-800 text-white transition-colors' : 'text-[10px] font-medium px-2.5 py-1.5 bg-white text-slate-500 transition-colors';
-    btnUnique.className = filter === 'unique' ? 'text-[10px] font-medium px-2.5 py-1.5 bg-blue-600 text-white transition-colors' : 'text-[10px] font-medium px-2.5 py-1.5 bg-white text-slate-500 transition-colors';
-    btnStock.className = filter === 'stock' ? 'text-[10px] font-medium px-2.5 py-1.5 bg-amber-600 text-white transition-colors' : 'text-[10px] font-medium px-2.5 py-1.5 bg-white text-slate-500 transition-colors';
+    btnAll.className = filter === 'all' ? 'btn btn-xs btn-dark rounded-none' : 'btn btn-xs btn-secondary rounded-none';
+    btnUnique.className = filter === 'unique' ? 'btn btn-xs btn-primary rounded-none' : 'btn btn-xs btn-secondary rounded-none';
+    btnStock.className = filter === 'stock' ? 'btn btn-xs btn-dark-amber rounded-none' : 'btn btn-xs btn-secondary rounded-none';
     renderFilteredInventoryTable();
 }
 
@@ -3083,25 +3803,49 @@ function saveStateToLocalStorage() {
 
 function migrateLegacyState(state) {
     if (!state || !state.segments) return state;
-    let migrated = false;
+    var migrated = false;
+
+    // Seed meta
+    if (!state.meta || typeof state.meta !== 'object') {
+        state.meta = { deviceId: getDeviceId(), lastSyncedAt: null, lastServerRevision: null };
+        migrated = true;
+    }
+    if (!state.meta.deviceId) {
+        state.meta.deviceId = getDeviceId();
+        migrated = true;
+    }
+    if (state.meta.lastSyncedAt === undefined) {
+        state.meta.lastSyncedAt = null;
+        migrated = true;
+    }
+    if (state.meta.lastServerRevision === undefined) {
+        state.meta.lastServerRevision = null;
+        migrated = true;
+    }
+
+    // Ensure syncQueue
+    if (!state.syncQueue || !Array.isArray(state.syncQueue)) {
+        state.syncQueue = [];
+        migrated = true;
+    }
 
     // Migrate segments: array of strings -> object of arrays
-    for (let seg in state.segments) {
-        const val = state.segments[seg];
+    for (var seg in state.segments) {
+        var val = state.segments[seg];
         if (Array.isArray(val)) {
-            const newMap = {};
-            val.forEach(cName => { newMap[cName] = []; });
+            var newMap = {};
+            val.forEach(function(cName) { newMap[cName] = []; });
             state.segments[seg] = newMap;
             migrated = true;
         }
     }
 
     // Migrate coordinates: 2-part key -> 3-part key
-    const newCoords = {};
-    for (let key in state.coordinates) {
-        const parts = key.split(':');
+    var newCoords = {};
+    for (var key in state.coordinates) {
+        var parts = key.split(':');
         if (parts.length === 2) {
-            newCoords[`${parts[0]}|${parts[1]}|—`] = state.coordinates[key];
+            newCoords[parts[0] + '|' + parts[1] + '|\u2014'] = state.coordinates[key];
             migrated = true;
         } else {
             newCoords[key] = state.coordinates[key];
@@ -3109,9 +3853,9 @@ function migrateLegacyState(state) {
     }
     if (migrated) state.coordinates = newCoords;
 
-    // Migrate inventory items: add subContainer if missing
+    // Migrate inventory items: add modern fields
     if (state.inventory) {
-        state.inventory.forEach(item => {
+        state.inventory.forEach(function(item) {
             if (item.subContainer === undefined) {
                 item.subContainer = '';
                 migrated = true;
@@ -3156,18 +3900,28 @@ function migrateLegacyState(state) {
                 item.minQuantity = 0;
                 migrated = true;
             }
+            // New sync model fields
+            if (item.createdAt === undefined) {
+                item.createdAt = item.timestamp ? item.timestamp.replace(' ', 'T') + ':00.000Z' : new Date().toISOString();
+                migrated = true;
+            }
+            if (item.updatedAt === undefined) {
+                item.updatedAt = item.timestamp ? item.timestamp.replace(' ', 'T') + ':00.000Z' : new Date().toISOString();
+                migrated = true;
+            }
+            if (item.deletedAt === undefined) {
+                item.deletedAt = null;
+                migrated = true;
+            }
+            if (item.version === undefined) {
+                item.version = 1;
+                migrated = true;
+            }
+            if (item.lastModifiedBy === undefined) {
+                item.lastModifiedBy = state.meta.deviceId;
+                migrated = true;
+            }
         });
-    }
-
-    // Ensure nextItemId counter exists, seeded from highest existing numeric ID
-    if (state.nextItemId === undefined) {
-        var maxId = 0;
-        (state.inventory || []).forEach(function(item) {
-            var num = parseInt(item.id);
-            if (!isNaN(num) && num > maxId) maxId = num;
-        });
-        state.nextItemId = maxId + 1;
-        migrated = true;
     }
 
     // Ensure users array and currentUser exist
@@ -3212,8 +3966,9 @@ function restoreStateFromLocalStorage() {
     }
 }
 
-function purgeSystemStorageCache() {
-    if (confirm(t('confirmPurge'))) {
+async function purgeSystemStorageCache() {
+    var ok = await showAppConfirm(t('confirmPurge'), 'Wipe All Data');
+    if (ok) {
         localStorage.removeItem('hk_inventory_state');
         location.reload();
     }
@@ -3275,7 +4030,18 @@ function renderSpatialTreeHierarchy() {
     const treeBox = document.getElementById('spatialTreeHierarchy');
     treeBox.innerHTML = '';
 
-    Object.keys(appState.segments).forEach(seg => {
+    var segKeys = Object.keys(appState.segments);
+    if (segKeys.length === 0) {
+        treeBox.innerHTML = emptyStateHTML(
+            '<path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>',
+            'No locations yet',
+            'Add a segment to get started',
+            '+ Add segment', 'expandConfigurator(); document.getElementById(\'newSegmentName\').focus()'
+        );
+        return;
+    }
+
+    segKeys.forEach(seg => {
         const segEsc = seg.replace(/'/g, "&#39;");
         const segDiv = document.createElement('div');
         segDiv.className = "mb-2";
@@ -3333,6 +4099,17 @@ function renderClassificationDirectoryTree() {
     const targetContainer = document.getElementById('classificationDirectoryTree');
     targetContainer.innerHTML = '';
 
+    var catKeys = Object.keys(appState.categories);
+    if (catKeys.length === 0) {
+        targetContainer.innerHTML = emptyStateHTML(
+            '<path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 110-10 5 5 0 010 10z"/>',
+            'No categories',
+            'Categories help organize your inventory',
+            null, null
+        );
+        return;
+    }
+
     for (let topKey in appState.categories) {
         const topNodeDiv = document.createElement('div');
         topNodeDiv.className = "mb-2";
@@ -3351,73 +4128,111 @@ function renderClassificationDirectoryTree() {
 
 function renderFilteredInventoryTable() {
     const tableBody = document.getElementById('inventoryTableDataRows');
+    const cardList = document.getElementById('inventoryCardListMobile');
     const query = document.getElementById('filterSearchQuery').value.toLowerCase().trim();
     const segFilter = document.getElementById('filterSegmentSelect').value;
     const catFilter = document.getElementById('filterCategorySelect').value;
     const conFilter = document.getElementById('filterContainerSelect').value;
     const ownerFilter = document.getElementById('filterOwnerSelect').value;
 
-    // Show clear filters button when any filter is active
     var hasFilters = query || segFilter || catFilter || conFilter || ownerFilter || _currentItemTypeFilter !== 'all';
     var clearBtn = document.getElementById('btnClearAllFilters');
     if (clearBtn) clearBtn.classList.toggle('hidden', !hasFilters);
 
-    tableBody.innerHTML = '';
-
-    const targets = appState.inventory.filter(item => {
+    var targets = appState.inventory.filter(function(item) {
+        if (item.deletedAt) return false;
         if (aiFilteredItemIds && !aiFilteredItemIds.includes(item.id)) return false;
         if (_currentItemTypeFilter === 'unique' && item.itemType !== 'unique') return false;
         if (_currentItemTypeFilter === 'stock' && item.itemType !== 'stock') return false;
-        const matchQuery = item.name.toLowerCase().includes(query) || item.remarks.toLowerCase().includes(query);
-        const matchSeg = !segFilter || item.segment === segFilter;
-        const matchCon = !conFilter || item.container === conFilter;
-        const matchCat = !catFilter || item.category === catFilter || item.category.startsWith(catFilter + ' > ');
-        const matchOwner = !ownerFilter || (item.owner || 'Default') === ownerFilter;
+        var matchQuery = item.name.toLowerCase().includes(query) || item.remarks.toLowerCase().includes(query);
+        var matchSeg = !segFilter || item.segment === segFilter;
+        var matchCon = !conFilter || item.container === conFilter;
+        var matchCat = !catFilter || item.category === catFilter || item.category.startsWith(catFilter + ' > ');
+        var matchOwner = !ownerFilter || (item.owner || 'Default') === ownerFilter;
         return matchQuery && matchSeg && matchCon && matchCat && matchOwner;
     });
 
     document.getElementById('inventoryMetricCount').innerText = targets.length;
 
-    if(targets.length === 0) {
-        tableBody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-xs font-medium text-slate-400">No storage dataset elements correspond with current query configurations.</td></tr>`;
+    tableBody.innerHTML = '';
+    if (cardList) cardList.innerHTML = '';
+
+    var emptyHtml = emptyStateHTML(
+        '<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/><circle cx="11" cy="11" r="8"/>',
+        'Nothing here yet',
+        'Try adjusting your filters or add a new item',
+        'Clear filters', 'clearAllBrowseFilters()'
+    );
+
+    if (targets.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="7">' + emptyHtml + '</td></tr>';
+        if (cardList) cardList.innerHTML = emptyHtml;
         return;
     }
 
-    targets.forEach(item => {
-        const tr = document.createElement('tr');
-        tr.className = "hover:bg-slate-50/80 transition-colors";
-        tr.innerHTML = `
-            <td class="px-4 py-3 text-center">
-                <img src="${item.imageUrl}" class="h-10 w-10 object-cover rounded-md border border-slate-200 mx-auto bg-slate-100" onerror="this.src='https://placehold.co/100?text=Error'">
-            </td>
-            <td class="px-4 py-3 cursor-pointer hover:bg-blue-50/50" onclick="showItemDetail('${item.id}')">
-                <div class="font-bold text-slate-900 hover:text-blue-600">${item.name}</div>
-                ${item.brand ? '<div class="text-[10px] text-slate-400 mt-0.5">' + item.brand + '</div>' : ''}
-                <div class="text-[10px] text-slate-400 font-mono mt-0.5">ID: ${item.id}</div>
-                ${item.itemType === 'stock' ? '<div class="text-[10px] text-amber-600 font-medium mt-0.5">\uD83D\uDCE6 ' + (item.quantity||0) + ' ' + (item.uom||'pcs') + (item.quantity <= item.minQuantity && item.minQuantity > 0 ? ' \u26A0\uFE0F Low' : '') + '</div>' : ''}
-            </td>
-            <td class="px-4 py-3">
-                <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded border border-slate-200 font-medium cursor-pointer hover:bg-blue-50 hover:text-blue-600" onclick="event.stopPropagation(); filterBy('category','${item.category.replace(/'/g, "&#39;")}')">${item.category}</span>
-            </td>
-            <td class="px-4 py-3 text-xs">
-                <div class="font-semibold text-slate-700 cursor-pointer hover:text-blue-600" onclick="event.stopPropagation(); filterBy('segment','${item.segment.replace(/'/g, "&#39;")}')">${item.segment}  >  ${item.container}</div>
-                <div class="text-slate-500 mt-0.5">📦 ${item.subContainer || '<span class="text-slate-300 italic">—</span>'}</div>
-            </td>
-            <td class="px-4 py-3 text-center">
-                <span class="text-xs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full border border-indigo-100 font-medium cursor-pointer hover:bg-indigo-100" onclick="event.stopPropagation(); filterBy('owner','${(item.owner || 'Default').replace(/'/g, "&#39;")}')">${item.owner || 'Default'}</span>
-            </td>
-            <td class="px-4 py-3 text-xs text-slate-500 max-w-[140px] truncate">
-                <div>${item.remarks || '<span class="text-slate-300 italic">—</span>'}</div>
-                ${item.aiMetadata ? '<div class="text-[10px] text-indigo-400 mt-0.5">🤖 AI described</div>' : ''}
-                <div class="text-[10px] text-slate-400 mt-1">🕒 ${item.timestamp}</div>
-            </td>
-            <td class="px-4 py-3 text-center align-middle">
-                <div class="flex flex-col gap-1 items-center">
-                <button onclick="event.stopPropagation(); setupItemModificationContext('${item.id}')" class="w-full text-[10px] bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-600 font-semibold px-2 py-0.5 rounded transition-colors border border-slate-200">Edit</button>
-                <button onclick="event.stopPropagation(); copyItemToNew('${item.id}')" class="w-full text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-600 font-semibold px-2 py-0.5 rounded transition-colors border border-emerald-200">Copy</button>
-                </div>
-            </td>
-        `;
+    // Desktop table
+    targets.forEach(function(item) {
+        var tr = document.createElement('tr');
+        tr.className = 'hover:bg-slate-50/80 transition-colors';
+        var syncIndicator = '';
+        var lastSynced = appState.meta.lastSyncedAt;
+        if (!lastSynced || !item.updatedAt || item.updatedAt > lastSynced) {
+            syncIndicator = ' <span class="text-[9px] text-amber-500 font-medium" title="Not yet synced to cloud">\u25CF</span>';
+        }
+        tr.innerHTML = '<td class="px-4 py-3 text-center"><img src="' + item.imageUrl + '" class="h-10 w-10 object-cover rounded-md border border-slate-200 mx-auto bg-slate-100" onerror="this.src=\'https://placehold.co/100?text=Error\'"></td>'
+            + '<td class="px-4 py-3 cursor-pointer hover:bg-blue-50/50" onclick="showItemDetail(\'' + item.id + '\')"><div class="font-bold text-slate-900 hover:text-blue-600">' + item.name + syncIndicator + '</div>'
+            + (item.brand ? '<div class="text-[10px] text-slate-400 mt-0.5">' + item.brand + '</div>' : '')
+            + '<div class="text-[10px] text-slate-400 font-mono mt-0.5">ID: ' + item.id + '</div>'
+            + (item.itemType === 'stock' ? '<div class="text-[10px] text-amber-600 font-medium mt-0.5">\uD83D\uDCE6 ' + (item.quantity || 0) + ' ' + (item.uom || 'pcs') + (item.quantity <= item.minQuantity && item.minQuantity > 0 ? ' \u26A0\uFE0F Low' : '') + '</div>' : '')
+            + '</td>'
+            + '<td class="px-4 py-3"><span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded border border-slate-200 font-medium cursor-pointer hover:bg-blue-50 hover:text-blue-600" onclick="event.stopPropagation(); filterBy(\'category\',\'' + item.category.replace(/'/g, "&#39;") + '\')">' + item.category + '</span></td>'
+            + '<td class="px-4 py-3 text-xs"><div class="font-semibold text-slate-700 cursor-pointer hover:text-blue-600" onclick="event.stopPropagation(); filterBy(\'segment\',\'' + item.segment.replace(/'/g, "&#39;") + '\')">' + item.segment + '  >  ' + item.container + '</div><div class="text-slate-500 mt-0.5">\uD83D\uDCE6 ' + (item.subContainer || '<span class="text-slate-300 italic">\u2014</span>') + '</div></td>'
+            + '<td class="px-4 py-3 text-center"><span class="text-xs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full border border-indigo-100 font-medium cursor-pointer hover:bg-indigo-100" onclick="event.stopPropagation(); filterBy(\'owner\',\'' + (item.owner || 'Default').replace(/'/g, "&#39;") + '\')">' + (item.owner || 'Default') + '</span></td>'
+            + '<td class="px-4 py-3 text-xs text-slate-500 max-w-[140px] truncate"><div>' + (item.remarks || '<span class="text-slate-300 italic">\u2014</span>') + '</div>'
+            + (item.aiMetadata ? '<div class="text-[10px] text-indigo-400 mt-0.5">\uD83E\uDD16 AI described</div>' : '')
+            + '<div class="text-[10px] text-slate-400 mt-1">\uD83D\uDD52 ' + (item.timestamp || '') + '</div></td>'
+            + '<td class="px-4 py-3 text-center align-middle"><div class="flex flex-col gap-1 items-center"><button onclick="event.stopPropagation(); setupItemModificationContext(\'' + item.id + '\')" class="w-full text-[10px] bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-600 font-semibold px-2 py-0.5 rounded transition-colors border border-slate-200">Edit</button><button onclick="event.stopPropagation(); copyItemToNew(\'' + item.id + '\')" class="w-full text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-600 font-semibold px-2 py-0.5 rounded transition-colors border border-emerald-200">Copy</button></div></td>';
         tableBody.appendChild(tr);
     });
+
+    // Mobile cards
+    if (cardList) {
+        targets.forEach(function(item) {
+            var card = document.createElement('div');
+            card.className = 'inv-card';
+            card.setAttribute('onclick', 'showItemDetail(\'' + item.id + '\')');
+
+            var locationParts = [item.segment, item.container];
+            if (item.subContainer) locationParts.push(item.subContainer);
+
+            var stockHtml = '';
+            if (item.itemType === 'stock') {
+                var isLow = item.quantity <= item.minQuantity && item.minQuantity > 0;
+                stockHtml = '<span class="inv-card-stock ' + (isLow ? 'inv-card-stock-low' : 'inv-card-stock-normal') + '">\uD83D\uDCE6 ' + (item.quantity || 0) + ' ' + (item.uom || 'pcs') + (isLow ? ' \u26A0 Low' : '') + '</span>';
+            }
+
+            var expiryHtml = '';
+            if (item.expiryDate) {
+                expiryHtml = '<span class="inv-card-expiry">\u23F3 ' + item.expiryDate + '</span>';
+            }
+
+            card.innerHTML =
+                '<img src="' + item.imageUrl + '" class="inv-card-img" onerror="this.src=\'https://placehold.co/100?text=Error\'">'
+                + '<div class="inv-card-body">'
+                + '<div class="inv-card-name">' + item.name + '</div>'
+                + (item.brand ? '<div class="inv-card-brand">' + item.brand + '</div>' : '')
+                + '<span class="inv-card-category">' + item.category + '</span>'
+                + '<div class="inv-card-location">\uD83D\uDCCD ' + locationParts.join(' / ') + '</div>'
+                + '<div class="inv-card-meta">'
+                + '<span class="inv-card-owner">\uD83D\uDC64 ' + (item.owner || 'Default') + '</span>'
+                + (stockHtml ? stockHtml : '')
+                + (expiryHtml ? expiryHtml : '')
+                + '</div></div>'
+                + '<div class="inv-card-actions">'
+                + '<button class="inv-card-btn inv-card-btn-view" onclick="event.stopPropagation(); showItemDetail(\'' + item.id + '\')">View</button>'
+                + '<button class="inv-card-btn inv-card-btn-edit" onclick="event.stopPropagation(); setupItemModificationContext(\'' + item.id + '\')">Edit</button>'
+                + '</div>';
+            cardList.appendChild(card);
+        });
+    }
 }

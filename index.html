@@ -13,28 +13,54 @@
 <body class="bg-slate-50 text-slate-800 min-h-screen pb-20 md:pb-0">
     <div id="syncToast" class="info"></div>
 
+    <div id="appModalOverlay" class="app-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="appModalMessage" onclick="closeAppModal()">
+        <div class="app-modal" onclick="event.stopPropagation()">
+            <p id="appModalMessage" class="text-sm text-slate-700 mb-4"></p>
+            <div class="flex gap-2 justify-end">
+                <button id="appModalCancel" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium px-4 py-2 rounded-lg transition-colors">Cancel</button>
+                <button id="appModalConfirm" class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-colors">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="appPromptOverlay" class="app-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="appPromptMessage" onclick="closeAppPrompt()">
+        <div class="app-modal" onclick="event.stopPropagation()">
+            <p id="appPromptMessage" class="text-sm text-slate-700 mb-3"></p>
+            <input type="number" id="appPromptInput" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2.5 mb-3 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="0">
+            <p id="appPromptInfo" class="text-xs text-slate-400 mb-3"></p>
+            <div class="flex gap-2 justify-end">
+                <button onclick="closeAppPrompt()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium px-4 py-2 rounded-lg transition-colors">Cancel</button>
+                <button id="appPromptConfirm" class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-colors">OK</button>
+            </div>
+        </div>
+    </div>
+
     <div id="passwordOverlay" class="fixed inset-0 bg-slate-900 z-[9999] flex items-center justify-center p-4">
         <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm border border-slate-100">
             <h3 class="text-xl font-bold text-slate-900 mb-2" data-i18n="passwordTitle">Access Restrained</h3>
             <p class="text-xs text-slate-500 mb-4" data-i18n="passwordHint">Input Master System Password to decrypt inventory ledger.</p>
             <input type="password" id="pagePasswordInput" onkeydown="if(event.key==='Enter')validateSystemAccess()" class="w-full border border-slate-300 rounded-lg px-3 py-2.5 mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-center tracking-widest" placeholder="••••">
             <p id="passwordError" class="text-red-500 text-xs font-medium mb-3 hidden" data-i18n="incorrectPwd">Incorrect Access Credentials.</p>
-            <button onclick="validateSystemAccess()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-lg text-sm transition-colors shadow-sm" data-i18n="authorize">Authorize</button>
+            <div id="loginSyncStatusCard" class="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-3 text-center">
+                <span id="loginSyncStatusText" class="text-[10px] font-medium text-slate-400">Checking cloud...</span>
+            </div>
+            <button onclick="validateSystemAccess()" class="btn btn-md btn-primary w-full shadow-sm" data-i18n="authorize">Authorize</button>
         </div>
     </div>
 
     <header class="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm md:hidden">
-        <div class="px-4 h-12 flex items-center justify-between">
-            <div class="flex items-center space-x-2.5">
-                <div class="h-7 w-7 bg-blue-600 rounded-lg flex items-center justify-center text-white">
+        <div class="px-3 h-12 flex items-center justify-between">
+            <div class="flex items-center gap-2 min-w-0 flex-1">
+                <div class="h-7 w-7 bg-blue-600 rounded-lg flex items-center justify-center text-white flex-shrink-0">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                 </div>
-                <h1 class="text-sm font-bold tracking-tight text-slate-900" data-i18n="appTitle">Find My Item</h1>
+                <h1 class="text-sm font-bold tracking-tight text-slate-900 truncate" data-i18n="appTitle">Find My Item</h1>
             </div>
-            <div class="flex items-center gap-2">
-                <select id="headerUserSelectMobile" onchange="switchCurrentUser(this.value)" class="text-[11px] border border-slate-200 rounded-md px-2 py-1 focus:ring-2 focus:ring-blue-500 outline-none bg-slate-50 text-slate-700 font-medium max-w-[80px]"></select>
-                <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en')" class="text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md px-2 py-1 text-slate-600 font-medium transition-colors">中</button>
-                <button onclick="syncFromCloudWithToast()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1 text-blue-600 font-medium transition-colors"><span>↻</span></button>
+            <div class="flex items-center gap-1.5 flex-shrink-0">
+                <span id="syncBannerMobile" class="text-[10px] font-medium whitespace-nowrap cursor-pointer" onclick="syncFromCloudWithToast()" title="Tap to sync"></span>
+                <button onclick="toggleOverflowMenu(event)" class="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors flex-shrink-0" aria-label="Menu">
+                    <svg class="h-5 w-5 text-slate-600" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+                </button>
             </div>
         </div>
     </header>
@@ -52,7 +78,8 @@
                 </div>
                 <div class="flex items-center gap-1.5 ml-2 pl-2 border-l border-slate-200">
                     <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en')" class="text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md px-2 py-1 text-slate-600 font-medium transition-colors">中/EN</button>
-                    <button onclick="syncFromCloudWithToast()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1 text-blue-600 font-medium transition-colors"><span>↻</span></button>
+                    <button id="btnHeaderSyncNow" onclick="syncFromCloudWithToast()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1 text-blue-600 font-medium transition-colors"><span>↻</span></button>
+                    <span id="syncBannerDesktop" class="text-[10px] text-slate-400 font-medium"></span>
                 </div>
             </div>
             <nav class="flex space-x-1" aria-label="Desktop Navigation">
@@ -124,6 +151,7 @@
                             <div>
                                 <h2 class="text-base font-bold text-slate-900" data-i18n="locationMap">Location Map</h2>
                                 <p class="text-xs text-slate-500" data-i18n="gridHint">Select a container from structural index to map its position by clicking on the grid matrix.</p>
+                                <p id="spatialActionHint" class="text-xs font-medium text-blue-600 bg-blue-50 border border-blue-100 rounded-lg px-3 py-1.5 mt-2 inline-block">Select a node from the index to begin</p>
                             </div>
                             <div class="flex items-center gap-2 w-full sm:w-auto">
                                 <span class="text-xs font-medium text-slate-600 whitespace-nowrap">Active Node:</span>
@@ -136,10 +164,11 @@
                               <input type="file" id="layoutBackgroundFileInput" accept="image/*" class="hidden" onchange="handleLayoutBackgroundUpload(event)">
                               <button onclick="document.getElementById('layoutBackgroundFileInput').click()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors" data-i18n="importLayout">Import Layout Image</button>
                               <button onclick="clearLayoutBackground()" id="btnClearLayoutBg" class="text-xs bg-slate-100 hover:bg-red-50 text-slate-500 hover:text-red-600 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors hidden" data-i18n="removeImage">Remove Image</button>
-                              <button onclick="saveLayoutMap()" id="btnSaveLayout" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors inline-flex items-center gap-1">
+                              <button onclick="saveLayoutMap()" id="btnSaveLayout" class="btn btn-sm btn-secondary inline-flex items-center gap-1">
                                   <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>
                                   <span class="btn-label">Save</span>
                               </button>
+                              <span id="mapUnsavedBadge" class="hidden text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">Unsaved</span>
                          </div>
                          <div class="relative bg-slate-100 border border-slate-300 rounded-xl overflow-hidden shadow-inner aspect-[4/3] w-full max-w-3xl mx-auto">
                              <div id="spatialMapBgImage" class="absolute inset-0 spatial-bg-image pointer-events-none" style="display:none;"></div>
@@ -177,10 +206,10 @@
                         <div class="pt-2 border-t border-slate-100 flex justify-between items-center">
                             <button onclick="resetCategorySelectionContext()" class="text-xs text-slate-500 hover:text-slate-800 font-medium" data-i18n="resetSelection">Reset Selection to Root</button>
                             <div class="flex items-center gap-2">
-                                <button onclick="saveClassification()" id="btnSaveClassification" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors inline-flex items-center gap-1">
-                                    <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>
-                                    <span class="btn-label">Save</span>
-                                </button>
+<button onclick="saveClassification()" id="btnSaveClassification" class="btn btn-sm btn-secondary inline-flex items-center gap-1">
+                                <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>
+                                <span class="btn-label">Save</span>
+                            </button>
                                 <button onclick="deleteSelectedCategoryNode()" class="text-xs text-red-500 hover:text-red-700 font-medium" data-i18n="deleteBranch">Delete Selection Branch</button>
                             </div>
                         </div>
@@ -195,114 +224,140 @@
         </section>
 
         <section id="tab-register" class="tab-panel hidden-panel">
-            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-                <div class="flex justify-between items-center mb-4 border-b border-slate-100 pb-3">
-                    <h2 id="inventoryFormTitle" class="text-base font-bold text-slate-900">Register Inventory Stock Asset</h2>
-                    <button onclick="clearInventoryFormContext()" id="btnResetFormState" class="text-xs text-slate-500 hover:text-slate-800 hidden font-medium">Exit Modification Mode</button>
-                </div>
-                
+            <div class="space-y-4 pb-20">
                 <input type="hidden" id="editTargetItemId">
-                <div id="inventoryFormContent" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="itemName">Item Reference Designation</label>
-                        <input type="text" id="invItemName" data-i18n-placeholder="itemNamePlaceholder" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="brand">Brand</label>
-                        <input type="text" id="invItemBrand" placeholder="e.g., IKEA, Muji" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="itemType">Item Type</label>
-                        <div class="flex items-center gap-2">
-                            <div class="flex flex-1 rounded-lg border border-slate-300 overflow-hidden">
-                                <button type="button" id="btnItemTypeUnique" onclick="switchItemType('unique')" class="flex-1 text-xs font-medium py-2 px-3 bg-blue-600 text-white transition-colors">Unique</button>
-                                <button type="button" id="btnItemTypeStock" onclick="switchItemType('stock')" class="flex-1 text-xs font-medium py-2 px-3 bg-white text-slate-500 transition-colors">Stock</button>
-                            </div>
-                            <button type="button" id="btnScanExistingBarcode" onclick="scanExistingStockBarcode()" title="Scan existing item barcode to restock" class="hidden text-xs bg-amber-50 hover:bg-amber-100 text-amber-600 border border-amber-200 rounded-lg px-3 py-2 font-medium transition-colors whitespace-nowrap flex items-center gap-1">
-                                <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v1m6 11h2m-6 0h-2.48a2.5 2.5 0 00-4.52 0H4m16 0h-2m-4 4v1M4 8h2m4 0h4m2 0h2M8 8V6a4 4 0 018 0v2"/></svg>
-                                Scan
-                            </button>
+
+                <!-- Section 1: Basic Info -->
+                <div class="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Basic Information</h3>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="itemName">Item Reference Designation</label>
+                            <input type="text" id="invItemName" data-i18n-placeholder="itemNamePlaceholder" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
                         </div>
-                    </div>
-                    <div id="stockFieldsContainer" class="hidden sm:col-span-2 lg:col-span-4">
-                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 p-3 rounded-lg border border-slate-200 bg-slate-50">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="uom">UOM</label>
-                                <input type="text" id="invItemUom" placeholder="e.g., pcs, kg, box, liter" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="quantity">Quantity</label>
-                                <input type="number" id="invItemQuantity" min="0" step="1" placeholder="0" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="minLevel">Min Level</label>
-                                <input type="number" id="invItemMinQuantity" min="0" step="1" placeholder="0" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="brand">Brand</label>
+                            <input type="text" id="invItemBrand" placeholder="e.g., IKEA, Muji" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                        <div class="sm:col-span-2">
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="itemType">Item Type</label>
+                            <div class="flex items-center gap-2">
+                                <div class="flex flex-1 max-w-xs rounded-lg border border-slate-300 overflow-hidden">
+                                    <button type="button" id="btnItemTypeUnique" onclick="switchItemType('unique')" class="flex-1 text-xs font-medium py-2 px-3 bg-blue-600 text-white transition-colors">Unique</button>
+                                    <button type="button" id="btnItemTypeStock" onclick="switchItemType('stock')" class="flex-1 text-xs font-medium py-2 px-3 bg-white text-slate-500 transition-colors">Stock</button>
+                                </div>
+                                <button type="button" id="btnScanExistingBarcode" onclick="scanExistingStockBarcode()" title="Scan existing item barcode to restock" class="hidden text-xs bg-amber-50 hover:bg-amber-100 text-amber-600 border border-amber-200 rounded-lg px-3 py-2 font-medium transition-colors whitespace-nowrap flex items-center gap-1">
+                                    <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v1m6 11h2m-6 0h-2.48a2.5 2.5 0 00-4.52 0H4m16 0h-2m-4 4v1M4 8h2m4 0h4m2 0h2M8 8V6a4 4 0 018 0v2"/></svg>
+                                    Scan
+                                </button>
                             </div>
                         </div>
-                    </div>
-                    <div class="sm:col-span-2">
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="categoryRoute">Category Route Allocation</label>
-                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-                            <select id="invCatL1" onchange="syncCategoryLevel2()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 1</option></select>
-                            <select id="invCatL2" onchange="syncCategoryLevel3()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 2</option></select>
-                            <select id="invCatL3" onchange="syncCategoryLevel4()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 3</option></select>
-                            <select id="invCatL4" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 4</option></select>
-                        </div>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="targetSegment">Target Home Segment</label>
-                        <select id="invItemSegmentSelect" onchange="syncInventoryFormContainersDropdown()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="chooseSegment">-- Choose Segment --</option></select>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="containerAssign">Container Assignment</label>
-                        <select id="invItemContainerSelect" onchange="syncInventoryFormSubContainersDropdown()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="chooseContainer">-- Choose Container --</option></select>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="subContainerAssign">Sub-Container Assignment</label>
-                        <select id="invItemSubContainerSelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="chooseSubContainer">-- Choose Sub-Container --</option></select>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="owner">Owner</label>
-                        <select id="invItemOwnerSelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="selectUser">-- Select User --</option></select>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="purchaseDate">Purchase Date</label>
-                        <input type="date" id="invItemPurchaseDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="warrantyDate">Warranty Date</label>
-                        <input type="date" id="invItemWarrantyDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="expiryDate">Expiry Date</label>
-                        <input type="date" id="invItemExpiryDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                    <div class="sm:col-span-2 lg:col-span-3">
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="assetImage">Asset Image (Upload or URL)</label>
-                        <div class="flex gap-2 items-start">
-                            <div class="flex-1 space-y-2">
-                                <div class="flex flex-wrap gap-2">
-                                    <input type="file" id="invItemImageFile" accept="image/*" class="hidden" onchange="handleAssetImageUpload(event)">
-                                    <button type="button" onclick="document.getElementById('invItemImageFile').click()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-3 py-2 rounded-lg border border-slate-300 transition-colors whitespace-nowrap" data-i18n="uploadPhoto">Upload Photo</button>
-                                    <input type="text" id="invItemImageUrl" data-i18n-placeholder="imageUrlPlaceholder" oninput="updateImagePreviewFromUrl()" class="flex-1 min-w-[140px] text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
-                                    <button type="button" onclick="aiAnalyzeImage()" id="btnAIAnalyze" style="display:none" class="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-medium px-3 py-2 rounded-lg border border-indigo-200 transition-colors whitespace-nowrap">AI Analyze</button>
+                        <div id="stockFieldsContainer" class="hidden sm:col-span-2">
+                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 rounded-lg border border-slate-200 bg-slate-50">
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="uom">UOM</label>
+                                    <input type="text" id="invItemUom" placeholder="e.g., pcs, kg, box, liter" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="quantity">Quantity</label>
+                                    <input type="number" id="invItemQuantity" min="0" step="1" placeholder="0" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="minLevel">Min Level</label>
+                                    <input type="number" id="invItemMinQuantity" min="0" step="1" placeholder="0" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
                                 </div>
                             </div>
-                            <img id="invItemImagePreview" src="" class="h-16 w-16 object-cover rounded-lg border border-slate-200 bg-slate-100 hidden" alt="Preview">
                         </div>
                     </div>
-                    <div class="sm:col-span-2 lg:col-span-3">
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="aiMetadata">AI Metadata (Image Description for Search)</label>
-                        <textarea id="invItemAiMetadata" rows="2" data-i18n-placeholder="aiMetadataPlaceholder" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 outline-none resize-none"></textarea>
-                    </div>
-                    <div class="sm:col-span-2 lg:col-span-3">
-                        <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="remarks">Annotations / Remarks</label>
-                        <div class="flex gap-2">
-                            <input type="text" id="invItemRemarks" data-i18n-placeholder="remarksPlaceholder" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
-                            <button onclick="commitItemToInventory()" id="btnSubmitInventoryForm" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-5 rounded-lg transition-colors tracking-wide whitespace-nowrap" data-i18n="saveAsset">Save Asset</button>
-                            <button onclick="clearAllInventoryFields()" class="text-xs text-slate-500 hover:text-slate-700 border border-slate-300 rounded-lg px-4 py-2 font-medium transition-colors whitespace-nowrap">Clear</button>
+                </div>
+
+                <!-- Section 2: Category & Location -->
+                <div class="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Category &amp; Location</h3>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div class="sm:col-span-2">
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="categoryRoute">Category Route Allocation</label>
+                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                                <select id="invCatL1" onchange="syncCategoryLevel2()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 1</option></select>
+                                <select id="invCatL2" onchange="syncCategoryLevel3()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 2</option></select>
+                                <select id="invCatL3" onchange="syncCategoryLevel4()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 3</option></select>
+                                <select id="invCatL4" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 4</option></select>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="targetSegment">Target Home Segment</label>
+                            <select id="invItemSegmentSelect" onchange="syncInventoryFormContainersDropdown()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="chooseSegment">-- Choose Segment --</option></select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="containerAssign">Container Assignment</label>
+                            <select id="invItemContainerSelect" onchange="syncInventoryFormSubContainersDropdown()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="chooseContainer">-- Choose Container --</option></select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="subContainerAssign">Sub-Container Assignment</label>
+                            <select id="invItemSubContainerSelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="chooseSubContainer">-- Choose Sub-Container --</option></select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="owner">Owner</label>
+                            <select id="invItemOwnerSelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="selectUser">-- Select User --</option></select>
                         </div>
                     </div>
+                </div>
+
+                <!-- Section 3: Dates & Attachments -->
+                <div class="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Dates &amp; Attachments</h3>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="purchaseDate">Purchase Date</label>
+                            <input type="date" id="invItemPurchaseDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="warrantyDate">Warranty Date</label>
+                            <input type="date" id="invItemWarrantyDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="expiryDate">Expiry Date</label>
+                            <input type="date" id="invItemExpiryDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                        <div></div>
+                        <div class="sm:col-span-2">
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="assetImage">Asset Image (Upload or URL)</label>
+                            <div class="flex gap-2 items-start">
+                                <div class="flex-1 space-y-2">
+                                    <div class="flex flex-wrap gap-2">
+                                        <input type="file" id="invItemImageFile" accept="image/*" class="hidden" onchange="handleAssetImageUpload(event)">
+                                        <button type="button" onclick="document.getElementById('invItemImageFile').click()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-3 py-2 rounded-lg border border-slate-300 transition-colors whitespace-nowrap" data-i18n="uploadPhoto">Upload Photo</button>
+                                        <input type="text" id="invItemImageUrl" data-i18n-placeholder="imageUrlPlaceholder" oninput="updateImagePreviewFromUrl()" class="flex-1 min-w-[140px] text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                                        <button type="button" onclick="aiAnalyzeImage()" id="btnAIAnalyze" style="display:none" class="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-medium px-3 py-2 rounded-lg border border-indigo-200 transition-colors whitespace-nowrap">AI Analyze</button>
+                                    </div>
+                                </div>
+                                <img id="invItemImagePreview" src="" class="h-16 w-16 object-cover rounded-lg border border-slate-200 bg-slate-100 hidden" alt="Preview">
+                            </div>
+                        </div>
+                        <div class="sm:col-span-2">
+                            <div class="flex justify-between items-center cursor-pointer mb-1" onclick="toggleAiMetadata()">
+                                <label class="text-xs font-semibold text-slate-600 cursor-pointer" data-i18n="aiMetadata">AI Metadata (Image Description for Search)</label>
+                                <span id="aiMetadataToggleIcon" class="text-slate-400 text-xs font-bold transition-transform duration-200 select-none">&#x25BC;</span>
+                            </div>
+                            <div id="aiMetadataContent">
+                                <textarea id="invItemAiMetadata" rows="2" data-i18n-placeholder="aiMetadataPlaceholder" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 outline-none resize-none"></textarea>
+                            </div>
+                        </div>
+                        <div class="sm:col-span-2">
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="remarks">Annotations / Remarks</label>
+                            <input type="text" id="invItemRemarks" data-i18n-placeholder="remarksPlaceholder" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sticky Action Bar -->
+            <div id="registerActionBar" class="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-4 py-3 z-40 shadow-lg">
+                <div class="max-w-7xl mx-auto flex items-center gap-2">
+                    <h2 id="inventoryFormTitle" class="text-sm font-bold text-slate-900 truncate flex-1">Register Inventory Stock Asset</h2>
+                    <button onclick="clearInventoryFormContext()" id="btnResetFormState" class="btn btn-sm btn-danger-light hidden">Exit Edit</button>
+                    <button onclick="clearAllInventoryFields()" class="btn btn-sm btn-ghost">Clear</button>
+                    <button onclick="commitItemToInventory()" id="btnSubmitInventoryForm" class="btn btn-sm btn-primary shadow-sm" data-i18n="saveAsset">Save Asset</button>
                 </div>
             </div>
         </section>
@@ -347,13 +402,13 @@
                     <p class="text-[11px] text-slate-500 mb-2">Describe items by appearance, location, or category — AI will find matches across names, AI metadata, and remarks.</p>
                     <div class="flex gap-2">
                         <input type="text" id="aiSearchDescription" placeholder="e.g. 'blue jacket in bedroom wardrobe' or 'summer clothes'" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 outline-none">
-                        <button onclick="performAISearch()" id="btnAISearch" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 rounded-lg transition-colors whitespace-nowrap">AI Search</button>
+                        <button onclick="performAISearch()" id="btnAISearch" class="btn btn-sm btn-indigo-fill whitespace-nowrap">AI Search</button>
                     </div>
                 </div>
             </div>
 
             <div class="bg-white rounded-xl border border-slate-200 shadow-sm">
-                <div class="overflow-x-auto max-h-[60vh] overflow-y-auto">
+                <div class="overflow-x-auto max-h-[60vh] overflow-y-auto hidden md:block">
                     <table class="w-full text-left border-collapse min-w-[800px]">
                         <thead class="sticky top-0 z-10">
                             <tr class="bg-slate-50 border-b border-slate-200 text-xs font-bold text-slate-500 uppercase tracking-wider">
@@ -369,13 +424,14 @@
                         <tbody id="inventoryTableDataRows" class="text-sm divide-y divide-slate-100"></tbody>
                     </table>
                 </div>
+                <div id="inventoryCardListMobile" class="block md:hidden max-h-[60vh] overflow-y-auto p-3 space-y-2"></div>
             </div>
         </section>
 
-        <div id="cloudSettingsModal" class="fixed inset-0 bg-black/50 z-[9997] flex items-start justify-center p-4 pt-12 hidden overflow-y-auto" onclick="closeCloudSettings(event)">
+        <div id="cloudSettingsModal" class="fixed inset-0 bg-black/50 z-[9997] flex items-start justify-center p-4 pt-12 hidden overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="cloudSettingsTitle" onclick="closeCloudSettings(event)">
             <div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl" onclick="event.stopPropagation()">
                 <div class="sticky top-0 bg-white border-b border-slate-100 rounded-t-xl px-5 py-3 flex justify-between items-center z-10">
-                    <h2 class="text-base font-bold text-slate-900">Cloud Engine Settings</h2>
+                    <h2 id="cloudSettingsTitle" class="text-base font-bold text-slate-900">Cloud Engine Settings</h2>
                     <button onclick="closeCloudSettings()" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
                 </div>
                 <div class="p-5 space-y-6 max-h-[75vh] overflow-y-auto">
@@ -383,7 +439,8 @@
         <section id="tab-cloud">
             <div class="max-w-3xl mx-auto space-y-6">
                 <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-                    <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">Pipeline Credentials <span id="syncStatusBadge" class="text-[10px] text-slate-400 font-medium ml-2">⚪ Not synced</span></h2>
+                    <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">Pipeline Credentials <span id="syncStatusBadge" class="text-[10px] text-slate-400 font-medium ml-2">Saved locally</span></h2>
+                    <div id="syncAlertRow" class="hidden rounded-lg p-3 mb-4 text-xs font-medium"></div>
                     <div class="space-y-4">
                         <div>
                             <label class="block text-xs font-semibold text-slate-600 mb-1">Google Apps Script Web App Deployment Endpoint URL</label>
@@ -415,7 +472,7 @@
                                 <h3 class="text-sm font-bold text-slate-900 mb-1">Compile Spreadsheet Output</h3>
                                 <p class="text-xs text-slate-500 mb-4">Process current local registers into a cleanly formatted multi-column flattened dynamic `.xlsx` file sheet matrix.</p>
                             </div>
-                            <button id="btnExportXlsx" onclick="exportLocalDatabasesToExcel()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors w-full sm:w-auto shadow-sm">Generate .xlsx Export</button>
+                            <button id="btnExportXlsx" onclick="exportLocalDatabasesToExcel()" class="btn btn-sm btn-emerald-fill w-full sm:w-auto shadow-sm">Generate .xlsx Export</button>
                         </div>
                         <div class="p-4 border border-slate-200 rounded-xl bg-slate-50 flex flex-col justify-between">
                             <div>
@@ -423,7 +480,7 @@
                                 <p class="text-xs text-slate-500 mb-3">Load structured spreadsheet files to append missing item parameters back into local system storage configurations.</p>
                                 <input type="file" id="excelFileStreamUploader" accept=".xlsx, .xls" class="hidden" onchange="importExcelToLocalDatabases(event)">
                             </div>
-                            <button onclick="document.getElementById('excelFileStreamUploader').click()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors w-full sm:w-auto shadow-sm text-center">Process Local `.xlsx` Document</button>
+                            <button onclick="document.getElementById('excelFileStreamUploader').click()" class="btn btn-sm btn-indigo-fill w-full sm:w-auto shadow-sm text-center">Process Local `.xlsx` Document</button>
                         </div>
                     </div>
                 </div>
@@ -446,17 +503,23 @@
                         <span class="text-xs text-slate-500">days before expiry</span>
                         <button onclick="commitReminderSettings()" class="bg-slate-100 hover:bg-slate-200 text-xs font-medium px-3 py-1.5 rounded-lg border border-slate-300 transition-colors">Save</button>
                     </div>
-                    <p class="text-[10px] text-slate-400 mt-2">Reminders are sent via the Google Script when you push to cloud. Ensure user emails are set above.</p>
+                    <p class="text-[10px] text-slate-400 mt-2">Reminders are sent automatically by the daily server check. Ensure user emails are set above.</p>
                 </div>
 
                 <div class="bg-white p-5 rounded-xl border border-red-200 bg-red-50/30 shadow-sm">
-                    <h2 class="text-sm font-bold uppercase tracking-wider text-red-500 mb-2">Destructive Operations Matrix</h2>
-                    <p class="text-xs text-slate-500 mb-4">Purges application states and removes records permanently. Back up configurations via spreadsheets before proceeding.</p>
-                    <div class="flex flex-wrap gap-3">
-                        <button onclick="triggerSynchronousCloudBackupPush()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors shadow-sm">Push to Cloud</button>
-                        <button onclick="triggerSynchronousCloudFetchPull()" class="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors shadow-sm">Pull from Cloud</button>
-                        <button onclick="verifyCloudSync()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold py-2 px-4 rounded-lg transition-colors shadow-sm border border-slate-300">Verify Sync</button>
-                        <button onclick="purgeSystemStorageCache()" class="bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors shadow-sm">Wipe Local Cache</button>
+                    <div class="flex justify-between items-center cursor-pointer" onclick="document.getElementById('advancedOpsContent').classList.toggle('hidden')">
+                        <h2 class="text-sm font-bold uppercase tracking-wider text-red-500 mb-0">Advanced Operations</h2>
+                        <span id="advancedOpsToggle" class="text-red-400 text-sm font-bold transition-transform duration-200">&#x25BC;</span>
+                    </div>
+                    <div id="advancedOpsContent" class="hidden mt-3">
+                        <p class="text-xs text-slate-500 mb-3">Manual overrides for troubleshooting. Normally sync happens automatically.</p>
+                        <div class="flex flex-wrap gap-2 mb-3">
+                            <button onclick="triggerSynchronousCloudBackupPush()" class="btn btn-sm btn-primary shadow-sm">Upload now</button>
+                            <button onclick="triggerSynchronousCloudFetchPull()" class="btn btn-sm btn-dark-amber shadow-sm">Restore from cloud</button>
+                            <button onclick="verifyCloudSync()" class="btn btn-sm btn-secondary">Check sync status</button>
+                        </div>
+                        <p class="text-[10px] text-red-400 mb-2">Destructive: permanently removes all local data.</p>
+                        <button onclick="purgeSystemStorageCache()" class="btn btn-sm btn-danger shadow-sm">Wipe Local Cache</button>
                     </div>
                 </div>
             </div>
@@ -475,11 +538,11 @@
                             <p class="text-xs text-slate-500 mb-2" data-i18n="scanDesc">Scan a barcode label or enter an Item ID to find where the item belongs.</p>
                             <div id="scanReaderContainer" class="hidden rounded-lg overflow-hidden border border-slate-300"></div>
                             <div class="flex gap-2 mt-2">
-                                <button id="btnStartScan" onclick="startBarcodeScan()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold py-2.5 px-4 rounded-lg transition-colors shadow-sm flex items-center justify-center gap-2">
+                                <button id="btnStartScan" onclick="startBarcodeScan()" class="btn btn-md btn-indigo-fill flex-1 shadow-sm">
                                     <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
                                     <span data-i18n="scanCamera">Scan Barcode</span>
                                 </button>
-                                <button id="btnStopScan" onclick="stopBarcodeScan()" class="hidden bg-red-50 hover:bg-red-100 text-red-600 text-sm font-bold py-2.5 px-4 rounded-lg border border-red-200 transition-colors" data-i18n="scanStop">Stop</button>
+                                <button id="btnStopScan" onclick="stopBarcodeScan()" class="btn btn-md btn-danger-light hidden" data-i18n="scanStop">Stop</button>
                             </div>
                         </div>
 
@@ -489,7 +552,7 @@
                         </div>
 
                         <div class="flex gap-2">
-                            <input type="text" id="scanManualIdInput" data-i18n-placeholder="scanPlaceholder" placeholder="Enter System ID..." class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-indigo-500 outline-none font-mono">
+                            <input type="text" id="scanManualIdInput" data-i18n-placeholder="scanPlaceholder" placeholder="Enter Barcode ID or System ID" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-indigo-500 outline-none font-mono">
                             <button onclick="lookupItemByManualId()" class="bg-slate-800 hover:bg-slate-900 text-white text-sm font-bold px-5 rounded-lg transition-colors" data-i18n="scanLookup">Look Up</button>
                         </div>
                     </div>
@@ -498,14 +561,17 @@
                 <div id="scanResultCard" class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm hidden">
                     <div class="flex justify-between items-start mb-3">
                         <h3 id="scanResultName" class="text-lg font-bold text-slate-900"></h3>
-                        <span id="scanResultStatus" class="text-[10px] bg-emerald-100 text-emerald-700 font-semibold px-2.5 py-1 rounded-full" data-i18n="scanFound">Item located</span>
+                        <span id="scanResultStatus" class="text-[10px] bg-emerald-100 text-emerald-700 font-semibold px-2.5 py-1 rounded-full flex-shrink-0 ml-2" data-i18n="scanFound">Item located</span>
+                    </div>
+                    <div id="scanResultLowStockBadge" class="hidden bg-red-50 border border-red-200 text-red-700 text-xs font-bold rounded-lg px-3 py-1.5 mb-3 flex items-center gap-1.5">
+                        <span>⚠ Low stock — reorder needed</span>
                     </div>
                     <img id="scanResultImage" src="" class="w-full max-h-48 object-contain rounded-lg border border-slate-200 bg-slate-50 mb-3 hidden">
-                    <div class="space-y-1.5 text-sm">
-                        <div class="flex justify-between"><span class="text-slate-400">Category</span><span id="scanResultCategory" class="font-medium text-slate-700"></span></div>
-                        <div class="flex justify-between"><span class="text-slate-400">Location</span><span id="scanResultLocation" class="font-medium text-slate-700"></span></div>
-                        <div class="flex justify-between"><span class="text-slate-400">Owner</span><span id="scanResultOwner" class="font-medium text-slate-700"></span></div>
-                        <div class="flex justify-between"><span class="text-slate-400">Expiry</span><span id="scanResultExpiry" class="font-medium text-slate-700"></span></div>
+                    <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+                        <div><span class="text-slate-400 text-xs">Category</span><br><span id="scanResultCategory" class="font-medium text-slate-700 text-xs"></span></div>
+                        <div><span class="text-slate-400 text-xs">Location</span><br><span id="scanResultLocation" class="font-medium text-slate-700 text-xs"></span></div>
+                        <div><span class="text-slate-400 text-xs">Owner</span><br><span id="scanResultOwner" class="font-medium text-slate-700 text-xs"></span></div>
+                        <div><span class="text-slate-400 text-xs">Expiry</span><br><span id="scanResultExpiry" class="font-medium text-slate-700 text-xs"></span></div>
                     </div>
                     <div class="mt-3 pt-3 border-t border-slate-100">
                         <p class="text-xs text-slate-400 font-medium">Remarks</p>
@@ -516,30 +582,26 @@
                         <p id="scanResultStockText" class="text-sm text-slate-700 mt-1 font-medium"></p>
                     </div>
                     <div class="mt-4 flex flex-wrap gap-2">
-                        <button onclick="scanEditItem()" class="flex-1 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg transition-colors flex items-center justify-center gap-1.5">
-                            <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                            Edit
-                        </button>
-                        <button id="btnScanDrop" onclick="scanDropItem()" class="flex-1 text-xs font-bold bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 py-2 px-3 rounded-lg transition-colors hidden flex items-center justify-center gap-1.5">
-                            <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                            Drop
-                        </button>
-                        <button id="btnScanOut" onclick="scanStockOut()" class="flex-1 text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 py-2 px-3 rounded-lg transition-colors hidden flex items-center justify-center gap-1.5">
-                            <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
-                            Out
-                        </button>
-                        <button id="btnScanIn" onclick="scanStockIn()" class="flex-1 text-xs font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 py-2 px-3 rounded-lg transition-colors hidden flex items-center justify-center gap-1.5">
-                            <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 17h8m0 0v-8m0 8l-8-8-4 4-6-6"/></svg>
-                            In
-                        </button>
+                        <button onclick="showItemDetail(_currentScanItemId)" class="btn btn-sm btn-ghost">View</button>
+                        <button onclick="scanEditItem()" class="btn btn-sm btn-primary">Edit</button>
+                        <button id="btnScanDrop" onclick="scanDropItem()" class="btn btn-sm btn-danger-light hidden">Drop</button>
+                        <button id="btnScanOut" onclick="scanStockOut()" class="btn btn-sm btn-warning hidden">Out</button>
+                        <button id="btnScanIn" onclick="scanStockIn()" class="btn btn-sm btn-success hidden">In</button>
                     </div>
                 </div>
 
-                <div id="scanNotFoundCard" class="bg-amber-50 border border-amber-200 rounded-xl p-4 hidden">
-                    <p class="text-sm text-amber-800 font-medium flex items-center gap-2">
-                        <svg class="h-5 w-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                        <span data-i18n="scanNotFound">No item found with this ID.</span>
-                    </p>
+                <div id="scanNotFoundCard" class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 hidden">
+                    <div id="scanNotFoundContent" class="empty-state">
+                        <div class="empty-state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg></div>
+                        <div class="empty-state-title">Item not found</div>
+                        <div class="empty-state-desc" id="scanNotFoundReason">No item found with this ID</div>
+                        <button class="empty-state-btn" onclick="switchTab('tab-register')">Register new item</button>
+                    </div>
+                </div>
+
+                <div id="recentScansCard" class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm hidden">
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Recent Scans</h3>
+                    <div id="recentScansList" class="space-y-1"></div>
                 </div>
             </div>
         </section>
@@ -578,7 +640,7 @@
         </div>
     </nav>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=2"></script>
 
     <button onclick="quickAddAsset()" class="fixed bottom-20 md:bottom-6 right-6 w-14 h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-xl flex items-center justify-center z-50 transition-transform hover:scale-110 active:scale-95" title="Quick Add Asset">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
@@ -600,6 +662,7 @@
                 <div id="detailItemStockRow" class="flex justify-between hidden"><span class="text-slate-400">Stock</span><span id="detailItemStock" class="font-medium text-amber-700"></span></div>
                 <div class="flex justify-between"><span class="text-slate-400">Added</span><span id="detailItemTime" class="font-medium text-slate-700"></span></div>
                 <div class="pt-2 border-t border-slate-100"><span class="text-slate-400 text-xs">Remarks</span><p id="detailItemRemarks" class="text-slate-600 mt-1"></p></div>
+                <div id="detailItemAiMetadataRow" class="pt-2 border-t border-slate-100 hidden"><span class="text-slate-400 text-xs">AI Description</span><p id="detailItemAiMetadata" class="text-indigo-600 mt-1 text-xs"></p></div>
                 <div class="pt-2 border-t border-slate-100 mt-3">
                     <span class="text-slate-400 text-xs">Barcode Label</span>
                     <div class="bg-white border border-slate-200 rounded-lg p-3 mt-1.5 flex flex-col items-center">
@@ -609,40 +672,50 @@
                     </div>
                 </div>
                 <div class="mt-4 pt-3 border-t border-slate-100 flex flex-wrap gap-2">
-                    <button onclick="scanEditItem()" class="flex-1 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg transition-colors flex items-center justify-center gap-1.5">
+                    <button onclick="scanEditItem()" class="btn btn-sm btn-primary flex-1">
                         <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                         Edit
                     </button>
-                    <button id="btnDetailDrop" onclick="scanDropItem(); closeItemDetail()" class="flex-1 text-xs font-bold bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 py-2 px-3 rounded-lg transition-colors hidden flex items-center justify-center gap-1.5">
+                    <button id="btnDetailDrop" onclick="scanDropItem(); closeItemDetail()" class="btn btn-sm btn-danger-light flex-1 hidden">
                         <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                         Drop
                     </button>
-                    <button id="btnDetailOut" onclick="scanStockOut()" class="flex-1 text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 py-2 px-3 rounded-lg transition-colors hidden flex items-center justify-center gap-1.5">
+                    <button id="btnDetailOut" onclick="scanStockOut()" class="btn btn-sm btn-warning flex-1 hidden">
                         <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
                         Out
                     </button>
-                    <button id="btnDetailIn" onclick="scanStockIn()" class="flex-1 text-xs font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 py-2 px-3 rounded-lg transition-colors hidden flex items-center justify-center gap-1.5">
+                    <button id="btnDetailIn" onclick="scanStockIn()" class="btn btn-sm btn-success flex-1 hidden">
                         <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 17h8m0 0v-8m0 8l-8-8-4 4-6-6"/></svg>
                         In
                     </button>
                 </div>
+                <div class="pt-2"><span class="text-slate-400 text-xs">Barcode ID</span><p id="detailItemBarcodeId" class="text-[10px] text-slate-700 font-mono mt-0.5"></p></div>
                 <div class="pt-2"><span class="text-slate-400 text-xs">System ID</span><p id="detailItemId" class="text-[10px] text-slate-400 font-mono mt-0.5"></p></div>
             </div>
         </div>
     </div>
 
-    <div id="overflowMenu" class="hidden fixed bg-white border border-slate-200 rounded-xl shadow-xl z-[9999] py-1.5 w-52 overflow-hidden" onclick="event.stopPropagation()">
+    <div id="overflowMenu" class="hidden fixed bg-white border border-slate-200 rounded-xl shadow-xl z-[9999] py-1.5 w-56 overflow-hidden" onclick="event.stopPropagation()">
+        <div class="mobile-only px-3 pt-1 pb-2">
+            <div class="text-[10px] uppercase tracking-wider text-slate-400 font-bold px-1 mb-1.5">Quick Actions</div>
+            <div class="grid grid-cols-2 gap-1.5">
+                <select id="headerUserSelectMobile" onchange="switchCurrentUser(this.value)" class="col-span-2 text-xs border border-slate-200 rounded-lg px-2.5 py-2 focus:ring-2 focus:ring-blue-500 outline-none bg-slate-50 text-slate-700 font-medium w-full"></select>
+                <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en'); toggleOverflowMenu()" class="text-xs bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg px-3 py-2 text-slate-600 font-medium transition-colors text-center">中/EN</button>
+                <button onclick="openCloudSettings(); toggleOverflowMenu()" class="text-xs bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg px-3 py-2 text-blue-600 font-medium transition-colors text-center">Cloud</button>
+            </div>
+        </div>
+        <div class="mobile-only border-t border-slate-100 my-0.5"></div>
         <button onclick="triggerSynchronousCloudBackupPush(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
             <svg class="h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
-            Push to Cloud
+            Upload now
         </button>
         <button onclick="syncFromCloudWithToast(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
             <svg class="h-4 w-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/></svg>
-            Pull from Cloud
+            Restore from cloud
         </button>
         <button onclick="verifyCloudSync(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
             <svg class="h-4 w-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-            Verify Sync
+            Check sync status
         </button>
         <div class="border-t border-slate-100 my-1"></div>
         <button onclick="exportLocalDatabasesToExcel(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
