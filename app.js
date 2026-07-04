@@ -1229,8 +1229,6 @@ function startBarcodeScan() {
         container.classList.remove('hidden');
         btnStart.classList.add('hidden');
         btnStop.classList.remove('hidden');
-        document.getElementById('scanNotFoundCard').classList.add('hidden');
-        document.getElementById('scanResultCard').classList.add('hidden');
 
         _html5QrScanner = new Html5Qrcode('scanReaderContainer');
         setTimeout(function() {
@@ -1238,12 +1236,15 @@ function startBarcodeScan() {
                 { facingMode: 'environment' },
                 {
                     fps: 10,
-                    aspectRatio: 1.777,
-                    disableFlip: false
+                    qrbox: { width: 250, height: 250 },
+                    formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE ]
                 },
                 function onScanSuccess(decodedText) {
                     stopBarcodeScan();
-                    displayScanResult(decodedText.trim());
+                    var input = document.getElementById('scanManualIdInput');
+                    input.value = decodedText.trim();
+                    input.focus();
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
                 },
                 function onScanError() {}
             ).catch(function(err) {
