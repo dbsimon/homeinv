@@ -1325,7 +1325,7 @@ function showItemDetail(itemId) {
         img.classList.add('hidden');
     }
     document.getElementById('itemDetailModal').classList.remove('hidden');
-    _currentBarcodeValue = item.barcodeId || item.id;
+    _currentBarcodeValue = item.barcodeId;
     _currentBarcodeName = item.name;
     _currentScanItemId = item.id;
 
