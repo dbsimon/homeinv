@@ -1238,16 +1238,8 @@ function startBarcodeScan() {
                 { facingMode: 'environment' },
                 {
                     fps: 10,
-                    qrbox: { width: 300, height: 120 },
-                    formatsToSupport: [
-                        Html5QrcodeSupportedFormats.QR_CODE,
-                        Html5QrcodeSupportedFormats.EAN_13,
-                        Html5QrcodeSupportedFormats.EAN_8,
-                        Html5QrcodeSupportedFormats.CODE_128,
-                        Html5QrcodeSupportedFormats.CODE_39,
-                        Html5QrcodeSupportedFormats.UPC_A,
-                        Html5QrcodeSupportedFormats.UPC_E
-                    ]
+                    aspectRatio: 1.777,
+                    disableFlip: false
                 },
                 function onScanSuccess(decodedText) {
                     stopBarcodeScan();
@@ -1301,7 +1293,6 @@ function scanExistingStockBarcode() {
         return;
     }
 
-    // Create a temporary scanner overlay in the register page
     var overlay = document.getElementById('stockScanOverlay');
     if (!overlay) {
         overlay = document.createElement('div');
@@ -1321,21 +1312,13 @@ function scanExistingStockBarcode() {
                 { facingMode: 'environment' },
                 {
                     fps: 10,
-                    qrbox: { width: 300, height: 120 },
-                    formatsToSupport: [
-                        Html5QrcodeSupportedFormats.QR_CODE,
-                        Html5QrcodeSupportedFormats.EAN_13,
-                        Html5QrcodeSupportedFormats.EAN_8,
-                        Html5QrcodeSupportedFormats.CODE_128,
-                        Html5QrcodeSupportedFormats.CODE_39,
-                        Html5QrcodeSupportedFormats.UPC_A,
-                        Html5QrcodeSupportedFormats.UPC_E
-                    ]
+                    aspectRatio: 1.777,
+                    disableFlip: false
                 },
                 function onScanSuccess(decodedText) {
                     cancelStockBarcodeScan();
                     var id = decodedText.trim();
-    var item = appState.inventory.find(function(i) { return i.id === id && !i.deletedAt; });
+                    var item = getItemLookupMatch(id);
                     if (item) {
                         setupItemModificationContext(item.id);
                         showToast('Found: ' + item.name, 'success');
