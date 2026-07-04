@@ -3,7 +3,7 @@
  * Data Model (v2)
  * Copyright (c) Westdoor Streetson 2026
  */
-const APP_VERSION = '1.41';
+const APP_VERSION = '1.50';
 
 // ===== Translation System =====
 const LANG = {
@@ -197,6 +197,8 @@ const LANG = {
     payloadToken: 'Payload Verification Token',
     aiMetadata: 'AI Metadata (Image Description for Search)',
     aiMetadataPlaceholder: 'AI-generated description of the asset...',
+    barcodeCopied: 'Barcode ID copied',
+    barcodeCopyFailed: 'Copy failed',
   },
   'zh-Hant': {
     appTitle: '物件追蹤',
@@ -391,6 +393,8 @@ const LANG = {
     payloadToken: '載荷驗證令牌',
     aiMetadata: 'AI 元數據（用於搜尋的圖片描述）',
     aiMetadataPlaceholder: 'AI 生成的資產描述...',
+    barcodeCopied: 'Barcode ID 已複製',
+    barcodeCopyFailed: '複製失敗',
   }
 };
 
@@ -416,7 +420,7 @@ function generateItemId() {
 function generateBarcodeId() {
     var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     var result = '';
-    for (var i = 0; i < 8; i++) {
+    for (var i = 0; i < 6; i++) {
         result += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     return result;
@@ -467,6 +471,98 @@ let editingNode = null; // { type: 'segment'|'container'|'subContainer', segment
 let _mapDirty = false;
 let _classesDirty = false;
 let _formDirty = false;
+var _mapZoom = 1;
+var _mapPanX = 0;
+var _mapPanY = 0;
+var _mapDragging = false;
+var _mapDragStartX = 0;
+var _mapDragStartY = 0;
+var _mapDragStartPanX = 0;
+var _mapDragStartPanY = 0;
+
+function applyMapTransform() {
+    var stage = document.getElementById('spatialMapStage');
+    if (!stage) return;
+    stage.style.transform = 'translate(' + _mapPanX + 'px, ' + _mapPanY + 'px) scale(' + _mapZoom + ')';
+}
+
+function zoomInMap() {
+    var vp = document.getElementById('spatialMapViewport');
+    if (!vp) return;
+    var newZoom = Math.min(_mapZoom * 1.4, 4);
+    var rect = vp.getBoundingClientRect();
+    var cx = rect.width / 2;
+    var cy = rect.height / 2;
+    _mapPanX = cx - (cx - _mapPanX) * (newZoom / _mapZoom);
+    _mapPanY = cy - (cy - _mapPanY) * (newZoom / _mapZoom);
+    _mapZoom = newZoom;
+    applyMapTransform();
+}
+
+function zoomOutMap() {
+    var vp = document.getElementById('spatialMapViewport');
+    if (!vp) return;
+    var newZoom = Math.max(_mapZoom / 1.4, 0.3);
+    var rect = vp.getBoundingClientRect();
+    var cx = rect.width / 2;
+    var cy = rect.height / 2;
+    _mapPanX = cx - (cx - _mapPanX) * (newZoom / _mapZoom);
+    _mapPanY = cy - (cy - _mapPanY) * (newZoom / _mapZoom);
+    _mapZoom = newZoom;
+    applyMapTransform();
+}
+
+function resetMapZoom() {
+    _mapZoom = 1;
+    _mapPanX = 0;
+    _mapPanY = 0;
+    applyMapTransform();
+}
+
+function mapStageCoordFromEvent(e) {
+    var vp = document.getElementById('spatialMapViewport');
+    if (!vp) return null;
+    var rect = vp.getBoundingClientRect();
+    var rx = e.clientX - rect.left;
+    var ry = e.clientY - rect.top;
+    var sx = (rx - _mapPanX) / _mapZoom;
+    var sy = (ry - _mapPanY) / _mapZoom;
+    return { x: sx, y: sy, vpW: rect.width, vpH: rect.height };
+}
+
+function installMapDragListeners() {
+    var vp = document.getElementById('spatialMapViewport');
+    if (!vp) return;
+
+    vp.addEventListener('pointerdown', function(e) {
+        if (e.target !== vp && e.target !== document.getElementById('spatialMapGridMatrix') && e.target !== document.getElementById('spatialMapBgImage')) return;
+        _mapDragging = true;
+        _mapDragStartX = e.clientX;
+        _mapDragStartY = e.clientY;
+        _mapDragStartPanX = _mapPanX;
+        _mapDragStartPanY = _mapPanY;
+        var stage = document.getElementById('spatialMapStage');
+        if (stage) stage.classList.add('panning');
+        e.preventDefault();
+    });
+
+    window.addEventListener('pointermove', function(e) {
+        if (!_mapDragging) return;
+        var dx = e.clientX - _mapDragStartX;
+        var dy = e.clientY - _mapDragStartY;
+        if (Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+        _mapPanX = _mapDragStartPanX + dx;
+        _mapPanY = _mapDragStartPanY + dy;
+        applyMapTransform();
+    });
+
+    window.addEventListener('pointerup', function(e) {
+        if (!_mapDragging) return;
+        _mapDragging = false;
+        var stage = document.getElementById('spatialMapStage');
+        if (stage) stage.classList.remove('panning');
+    });
+}
 
 // Coordinate key helpers
 function buildCoordKey(seg, con, sub) {
@@ -754,6 +850,7 @@ window.addEventListener('DOMContentLoaded', () => {
         autoPullFromCloudIfPossible();
         installFormDirtyListener();
         installFocusTraps();
+        installMapDragListeners();
         updateLoginSyncStatus();
     } catch (e) {
         alert('Init error: ' + e.message + ' (line ' + e.lineNumber + ')');
@@ -1177,8 +1274,8 @@ function showItemDetail(itemId) {
         img.classList.add('hidden');
     }
     document.getElementById('itemDetailModal').classList.remove('hidden');
-    _currentBarcodeItemId = item.id;
-    _currentBarcodeItemName = item.name;
+    _currentBarcodeValue = item.barcodeId || item.id;
+    _currentBarcodeName = item.name;
     _currentScanItemId = item.id;
 
     var isStock = item.itemType === 'stock';
@@ -1189,18 +1286,20 @@ function showItemDetail(itemId) {
     document.getElementById('btnDetailIn').classList.toggle('hidden', !isStock);
     document.getElementById('btnDetailIn').classList.toggle('flex', isStock);
 
-    // Generate barcode
+    var barcodeText = _currentBarcodeValue;
     setTimeout(function() {
         try {
-            var barcodeText = item.barcodeId || item.id;
             JsBarcode('#detailItemBarcode', barcodeText, {
-                format: 'CODE128',
-                width: 2.5,
-                height: 64,
-                displayValue: false,
-                margin: 10,
+                format: 'CODE39',
+                width: 5,
+                height: 110,
+                displayValue: true,
+                margin: 20,
                 background: '#ffffff',
-                lineColor: '#1e293b'
+                lineColor: '#1e293b',
+                font: 'monospace',
+                fontSize: 18,
+                textMargin: 6
             });
             document.getElementById('detailItemBarcodeLabel').innerText = item.name;
         } catch(e) {
@@ -1210,8 +1309,8 @@ function showItemDetail(itemId) {
     }, 50);
 }
 
-var _currentBarcodeItemId = null;
-var _currentBarcodeItemName = null;
+var _currentBarcodeValue = null;
+var _currentBarcodeName = null;
 
 var _html5QrScanner = null;
 
@@ -1529,42 +1628,79 @@ async function scanStockIn() {
 }
 
 function downloadBarcodeLabel() {
-    if (!_currentBarcodeItemId) return;
+    if (!_currentBarcodeValue) return;
     var svg = document.getElementById('detailItemBarcode');
     if (!svg) return;
+
+    var bbox = svg.getBBox();
+    var svgW = Math.ceil(bbox.width);
+    var svgH = Math.ceil(bbox.height);
+    svg.setAttribute('width', svgW);
+    svg.setAttribute('height', svgH);
 
     var canvas = document.createElement('canvas');
     var ctx = canvas.getContext('2d');
     var svgData = new XMLSerializer().serializeToString(svg);
     var img = new Image();
 
+    var scale = 2;
+    var padH = 30;
+    var padV = 12;
+    var labelW = svgW + padH * 2;
+    var labelH = svgH + padV * 2 + 48;
+
     img.onload = function() {
-        var labelW = Math.max(img.width + 30, 300);
-        var labelH = img.height + 60;
-        canvas.width = labelW * 3;
-        canvas.height = labelH * 3;
-        ctx.scale(3, 3);
+        canvas.width = labelW * scale;
+        canvas.height = labelH * scale;
+        ctx.scale(scale, scale);
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, labelW, labelH);
-        ctx.drawImage(img, (labelW - img.width) / 2, 8);
+        ctx.drawImage(img, padH, padV, svgW, svgH);
         ctx.fillStyle = '#1e293b';
-        ctx.font = '11px "Inter", "Segoe UI", sans-serif';
+        ctx.font = '20px "Inter", "Segoe UI", sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(_currentBarcodeItemName || '', labelW / 2, img.height + 24);
-        ctx.font = '9px monospace';
+        ctx.fillText(_currentBarcodeName || '', labelW / 2, svgH + padV + 28);
+        ctx.font = '16px monospace';
         ctx.fillStyle = '#64748b';
-        ctx.fillText(_currentBarcodeItemId || '', labelW / 2, img.height + 44);
+        ctx.fillText(_currentBarcodeValue || '', labelW / 2, svgH + padV + 52);
 
         var url = canvas.toDataURL('image/png');
         var a = document.createElement('a');
         a.href = url;
-        a.download = 'Label_' + (_currentBarcodeItemName || 'item').replace(/[^a-zA-Z0-9]/g, '_') + '.png';
+        a.download = 'Label_' + (_currentBarcodeName || 'item').replace(/[^a-zA-Z0-9]/g, '_') + '.png';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
     };
 
     img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+}
+
+function copyBarcodeId() {
+    var val = _currentBarcodeValue || '';
+    if (!val) return;
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(val).then(function() {
+            showToast(t('barcodeCopied'), 'success');
+        }).catch(function() {
+            showToast(t('barcodeCopyFailed'), 'error');
+        });
+    } else {
+        var textarea = document.createElement('textarea');
+        textarea.value = val;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            document.execCommand('copy');
+            showToast(t('barcodeCopied'), 'success');
+        } catch(e) {
+            showToast(t('barcodeCopyFailed'), 'error');
+        }
+        document.body.removeChild(textarea);
+    }
 }
 
 function closeItemDetail() {
@@ -2151,13 +2287,15 @@ function renderSpatialMapGrid() {
         if (node && node.container && !node.subContainer) {
             var nodeKey = buildCoordKey(node.segment, node.container, '');
             if (!appState.coordinates[nodeKey]) {
-                const dimensions = gridMatrix.getBoundingClientRect();
-                const xPercent = Math.round(((e.clientX - dimensions.left) / dimensions.width) * 100);
-                const yPercent = Math.round(((e.clientY - dimensions.top) / dimensions.height) * 100);
-                appState.coordinates[nodeKey] = { x: xPercent, y: yPercent };
-                markMapDirty();
-                renderSpatialMapGrid();
-                placed = true;
+                var sc = mapStageCoordFromEvent(e);
+                if (sc) {
+                    var xPercent = Math.round((sc.x / sc.vpW) * 100);
+                    var yPercent = Math.round((sc.y / sc.vpH) * 100);
+                    appState.coordinates[nodeKey] = { x: xPercent, y: yPercent };
+                    markMapDirty();
+                    renderSpatialMapGrid();
+                    placed = true;
+                }
             }
         }
         if (!placed) clearActiveNode();
@@ -2226,22 +2364,20 @@ function startMarkerDrag(e, marker, seg, con) {
     e.preventDefault();
     e.stopPropagation();
     window._markerDidDrag = false;
-    var grid = document.getElementById('spatialMapGridMatrix');
-    var rect = grid.getBoundingClientRect();
-    var startX = e.touches ? e.touches[0].clientX : e.clientX;
-    var startY = e.touches ? e.touches[0].clientY : e.clientY;
 
     function onMove(ev) {
         ev.preventDefault();
         var clientX = ev.touches ? ev.touches[0].clientX : ev.clientX;
         var clientY = ev.touches ? ev.touches[0].clientY : ev.clientY;
-        var dx = clientX - startX;
-        var dy = clientY - startY;
-        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+        var sc = mapStageCoordFromEvent({ clientX: clientX, clientY: clientY });
+        if (!sc) return;
+        var dx = Math.abs(clientX - (e.touches ? e.touches[0].clientX : e.clientX));
+        var dy = Math.abs(clientY - (e.touches ? e.touches[0].clientY : e.clientY));
+        if (dx > 2 || dy > 2) {
             window._markerDidDrag = true;
         }
-        var pctX = Math.round(((clientX - rect.left) / rect.width) * 100);
-        var pctY = Math.round(((clientY - rect.top) / rect.height) * 100);
+        var pctX = Math.round((sc.x / sc.vpW) * 100);
+        var pctY = Math.round((sc.y / sc.vpH) * 100);
         pctX = Math.max(0, Math.min(100, pctX));
         pctY = Math.max(0, Math.min(100, pctY));
         marker.style.left = pctX + '%';

@@ -170,10 +170,17 @@
                               </button>
                               <span id="mapUnsavedBadge" class="hidden text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">Unsaved</span>
                          </div>
-                         <div class="relative bg-slate-100 border border-slate-300 rounded-xl overflow-hidden shadow-inner aspect-[4/3] w-full max-w-3xl mx-auto">
-                             <div id="spatialMapBgImage" class="absolute inset-0 spatial-bg-image pointer-events-none" style="display:none;"></div>
-                             <div id="spatialMapGridMatrix" class="absolute inset-0 grid dynamic-grid-lines"></div>
-                          </div>
+                         <div class="relative bg-slate-100 border border-slate-300 rounded-xl overflow-hidden shadow-inner aspect-[4/3] w-full max-w-3xl mx-auto" id="spatialMapViewport">
+                             <div id="spatialMapStage" class="absolute inset-0" style="transform-origin:0 0">
+                                 <div id="spatialMapBgImage" class="absolute inset-0 spatial-bg-image pointer-events-none" style="display:none;"></div>
+                                 <div id="spatialMapGridMatrix" class="absolute inset-0 grid dynamic-grid-lines"></div>
+                             </div>
+                         </div>
+                         <div class="flex items-center justify-center gap-1 mt-2">
+                             <button onclick="zoomInMap()" class="btn btn-xs btn-secondary" title="Zoom in">+</button>
+                             <button onclick="zoomOutMap()" class="btn btn-xs btn-secondary" title="Zoom out">−</button>
+                             <button onclick="resetMapZoom()" class="btn btn-xs btn-secondary" title="Reset">Reset</button>
+                         </div>
                      </div>
                      <div id="containerAssetsPanel" class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm hidden">
                          <div class="flex justify-between items-center mb-3">
@@ -689,7 +696,7 @@
                         In
                     </button>
                 </div>
-                <div class="pt-2"><span class="text-slate-400 text-xs">Barcode ID</span><p id="detailItemBarcodeId" class="text-[10px] text-slate-700 font-mono mt-0.5"></p></div>
+                <div class="pt-2"><span class="text-slate-400 text-xs">Barcode ID</span><div class="flex items-center gap-2 mt-0.5"><p id="detailItemBarcodeId" class="text-[10px] text-slate-700 font-mono"></p><button onclick="copyBarcodeId()" class="btn btn-xs btn-blue-light" title="Copy Barcode ID">Copy</button></div></div>
                 <div class="pt-2"><span class="text-slate-400 text-xs">System ID</span><p id="detailItemId" class="text-[10px] text-slate-400 font-mono mt-0.5"></p></div>
             </div>
         </div>
