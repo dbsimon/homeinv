@@ -680,10 +680,60 @@ thead.sticky th {
         linear-gradient(to right, rgba(148,163,184,0.15) 1px, transparent 1px),
         linear-gradient(to bottom, rgba(148,163,184,0.15) 1px, transparent 1px);
 }
+
+/* ===== Floating Map Controls ===== */
+.map-controls {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: rgba(15, 23, 42, 0.78);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+    padding: 3px;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: auto;
+}
+.map-controls button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.85);
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+    padding: 0;
+}
+.map-controls button:hover {
+    background: rgba(255, 255, 255, 0.15);
+    color: #fff;
+}
+.map-controls button:active {
+    background: rgba(255, 255, 255, 0.22);
+    color: #fff;
+}
 @media (max-width: 639px) {
-    #spatialMapViewport .btn {
-        min-width: 36px;
-        min-height: 36px;
-        font-size: 14px;
+    .map-controls {
+        top: 8px;
+        right: 8px;
+        gap: 1px;
+        border-radius: 10px;
+        padding: 2px;
+    }
+    .map-controls button {
+        width: 40px;
+        height: 40px;
+        border-radius: 8px;
     }
 }

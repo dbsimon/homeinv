@@ -512,10 +512,61 @@ function zoomOutMap() {
     applyMapTransform();
 }
 
+// resetMapZoom is intentionally a hard reset to default origin (zoom=1, pan=0,0).
+// It is kept separate from fitMapToViewport() because reset is a known-safe anchor
+// state, while fitMapToViewport depends on placed content. Users may prefer a
+// quick reset to default over a content-aware fit in some workflows.
 function resetMapZoom() {
     _mapZoom = 1;
     _mapPanX = 0;
     _mapPanY = 0;
+    applyMapTransform();
+}
+
+// fitMapToViewport looks at all placed coordinate markers and computes a
+// zoom+pan such that the logical map content fits inside the viewport with
+// 10% margin on each side. Single-point maps use a minimum content area.
+function fitMapToViewport() {
+    var vp = document.getElementById('spatialMapViewport');
+    if (!vp) return;
+    var rect = vp.getBoundingClientRect();
+    var vpW = rect.width;
+    var vpH = rect.height;
+    if (vpW <= 0 || vpH <= 0) return;
+
+    if (appState.coordinates && Object.keys(appState.coordinates).length > 0) {
+        var minX = 100, minY = 100, maxX = 0, maxY = 0;
+        Object.keys(appState.coordinates).forEach(function(k) {
+            var c = appState.coordinates[k];
+            if (c.x < minX) minX = c.x;
+            if (c.x > maxX) maxX = c.x;
+            if (c.y < minY) minY = c.y;
+            if (c.y > maxY) maxY = c.y;
+        });
+
+        var contentW = ((maxX - minX) / 100) * vpW;
+        var contentH = ((maxY - minY) / 100) * vpH;
+        var cx = ((minX + maxX) / 2 / 100) * vpW;
+        var cy = ((minY + maxY) / 2 / 100) * vpH;
+
+        // Prevent division by zero for single-point maps
+        var minContent = 0.1 * Math.min(vpW, vpH);
+        if (contentW < minContent) contentW = minContent;
+        if (contentH < minContent) contentH = minContent;
+
+        var margin = 0.8; // content occupies 80% of the viewport (10% margin each side)
+        var fitZoom = Math.min((vpW * margin) / contentW, (vpH * margin) / contentH);
+        fitZoom = Math.max(0.3, Math.min(4, fitZoom));
+
+        _mapZoom = fitZoom;
+        _mapPanX = vpW / 2 - cx * _mapZoom;
+        _mapPanY = vpH / 2 - cy * _mapZoom;
+    } else {
+        // No coordinates placed; reset to default view
+        resetMapZoom();
+        return;
+    }
+
     applyMapTransform();
 }
 

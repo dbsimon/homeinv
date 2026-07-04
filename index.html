@@ -175,11 +175,17 @@
                                  <div id="spatialMapBgImage" class="absolute inset-0 spatial-bg-image pointer-events-none" style="display:none;"></div>
                                  <div id="spatialMapGridMatrix" class="absolute inset-0 grid dynamic-grid-lines"></div>
                              </div>
-                         </div>
-                         <div class="flex items-center justify-center gap-1 mt-2">
-                             <button onclick="zoomInMap()" class="btn btn-xs btn-secondary" title="Zoom in">+</button>
-                             <button onclick="zoomOutMap()" class="btn btn-xs btn-secondary" title="Zoom out">−</button>
-                             <button onclick="resetMapZoom()" class="btn btn-xs btn-secondary" title="Reset">Reset</button>
+                             <div class="map-controls">
+                                 <button type="button" id="btnMapFit" onclick="fitMapToViewport()" title="Fit to window" aria-label="Fit map to window">
+                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+                                 </button>
+                                 <button type="button" onclick="zoomOutMap()" title="Zoom out" aria-label="Zoom out">
+                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                 </button>
+                                 <button type="button" onclick="zoomInMap()" title="Zoom in" aria-label="Zoom in">
+                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                 </button>
+                             </div>
                          </div>
                      </div>
                      <div id="containerAssetsPanel" class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm hidden">
