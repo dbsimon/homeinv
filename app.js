@@ -3,7 +3,7 @@
  * Data Model (v2)
  * Copyright (c) Westdoor Streetson 2026
  */
-const APP_VERSION = '1.50';
+const APP_VERSION = '1.51';
 
 // ===== Translation System =====
 const LANG = {
