@@ -3104,6 +3104,7 @@ function switchItemType(type) {
     var stockDatesNote = document.getElementById('stockDatesNote');
     var scanBtn = document.getElementById('btnScanExistingBarcode');
     markFormDirty();
+    document.getElementById('invItemTypeValue').value = type;
     if (type === 'stock') {
         btnUnique.className = 'flex-1 text-xs font-medium py-2 px-3 bg-white text-slate-500 border border-slate-200 transition-colors';
         btnStock.className = 'flex-1 text-xs font-medium py-2 px-3 bg-amber-500 text-white transition-colors';
@@ -3272,6 +3273,7 @@ function clearStockLocationRows() {
 }
 
 function commitItemToInventory() {
+    try {
     var name = document.getElementById('invItemName').value.trim();
     var categoryStr = buildCategoryPathFromSelects();
     var imageUrl = document.getElementById('invItemImageUrl').value.trim();
@@ -3279,7 +3281,7 @@ function commitItemToInventory() {
     var editId = document.getElementById('editTargetItemId').value;
     var now = new Date().toISOString();
     var deviceId = appState.meta.deviceId;
-    var isStock = !document.getElementById('stockLocationsSection').classList.contains('hidden');
+    var isStock = document.getElementById('invItemTypeValue').value === 'stock';
     var owner = document.getElementById('invItemOwnerSelect').value || appState.currentUser || 'Default';
 
     if (!name || !categoryStr) {
@@ -3385,6 +3387,10 @@ function commitItemToInventory() {
     syncUIComponents();
     showToast('\u{1F4E4} Pending sync', 'success');
     triggerBackgroundSync();
+    } catch (err) {
+        console.error('[commitItemToInventory] Runtime error:', err);
+        showToast('Save failed: ' + (err.message || 'Unknown error'), 'error');
+    }
 }
 
 function setupItemModificationContext(itemId) {
@@ -3468,6 +3474,7 @@ function softClearForNextItem() {
     document.getElementById('invItemMinQuantity').value = '';
     clearStockLocationRows();
     switchItemType('unique');
+    document.getElementById('invItemTypeValue').value = 'unique';
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
@@ -3495,6 +3502,7 @@ function clearAllInventoryFields() {
     document.getElementById('invItemMinQuantity').value = '';
     clearStockLocationRows();
     switchItemType('unique');
+    document.getElementById('invItemTypeValue').value = 'unique';
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
@@ -3525,6 +3533,7 @@ function clearInventoryFormContext() {
     document.getElementById('invItemMinQuantity').value = '';
     clearStockLocationRows();
     switchItemType('unique');
+    document.getElementById('invItemTypeValue').value = 'unique';
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
