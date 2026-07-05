@@ -471,6 +471,319 @@ let appState = {
     spatialBackgroundImage: null
 };
 
+/* ==========================================================================
+   IndexedDB Image Store — isolate photos from localStorage
+   ========================================================================== */
+var _imageDb = null;
+var _imageBlobUrlCache = {};
+var _pendingImageMeta = null;
+
+function openImageDb() {
+    return new Promise(function(resolve, reject) {
+        if (_imageDb) return resolve(_imageDb);
+        var request = indexedDB.open('findmyitem-assets', 1);
+        request.onupgradeneeded = function(e) {
+            var db = e.target.result;
+            if (!db.objectStoreNames.contains('images')) {
+                db.createObjectStore('images', { keyPath: 'key' });
+            }
+        };
+        request.onsuccess = function(e) { _imageDb = e.target.result; resolve(_imageDb); };
+        request.onerror = function(e) { reject(e.target.error); };
+    });
+}
+
+function idbPutImage(record) {
+    return openImageDb().then(function(db) {
+        return new Promise(function(resolve, reject) {
+            var tx = db.transaction('images', 'readwrite');
+            var store = tx.objectStore('images');
+            var req = store.put(record);
+            req.onsuccess = function() { resolve(req.result); };
+            req.onerror = function() { reject(req.error); };
+        });
+    });
+}
+
+function idbGetImage(key) {
+    return openImageDb().then(function(db) {
+        return new Promise(function(resolve, reject) {
+            var tx = db.transaction('images', 'readonly');
+            var store = tx.objectStore('images');
+            var req = store.get(key);
+            req.onsuccess = function() { resolve(req.result || null); };
+            req.onerror = function() { reject(req.error); };
+        });
+    });
+}
+
+function idbDeleteImage(key) {
+    return openImageDb().then(function(db) {
+        return new Promise(function(resolve, reject) {
+            var tx = db.transaction('images', 'readwrite');
+            var store = tx.objectStore('images');
+            var req = store.delete(key);
+            req.onsuccess = function() { resolve(); };
+            req.onerror = function() { reject(req.error); };
+        });
+    });
+}
+
+function idbListKeys() {
+    return openImageDb().then(function(db) {
+        return new Promise(function(resolve, reject) {
+            var tx = db.transaction('images', 'readonly');
+            var store = tx.objectStore('images');
+            var req = store.getAllKeys();
+            req.onsuccess = function() { resolve(req.result || []); };
+            req.onerror = function() { reject(req.error); };
+        });
+    });
+}
+
+/* ==========================================================================
+   Image Helpers — compress, store, resolve, migrate
+   ========================================================================== */
+function compressImageFileToBlob(file, maxPx, quality, mimeType) {
+    return new Promise(function(resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var img = new Image();
+            img.onload = function() {
+                var w = img.width, h = img.height;
+                if (w > maxPx || h > maxPx) {
+                    var ratio = Math.min(maxPx / w, maxPx / h);
+                    w = Math.round(w * ratio);
+                    h = Math.round(h * ratio);
+                }
+                var canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                var ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, w, h);
+                canvas.toBlob(function(blob) {
+                    resolve({ blob: blob, width: w, height: h });
+                }, mimeType || 'image/jpeg', quality);
+            };
+            img.onerror = function() { reject(new Error('Image load failed')); };
+            img.src = e.target.result;
+        };
+        reader.onerror = function() { reject(new Error('File read failed')); };
+        reader.readAsDataURL(file);
+    });
+}
+
+function blobToDataUrl(blob) {
+    return new Promise(function(resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function() { resolve(reader.result); };
+        reader.onerror = function() { reject(reader.error); };
+        reader.readAsDataURL(blob);
+    });
+}
+
+function generateImageKeys(itemId) {
+    var ts = Date.now().toString(36);
+    return { thumb: 'thumb_' + itemId + '_' + ts, full: 'full_' + itemId + '_' + ts };
+}
+
+function loadImageIntoCache(key) {
+    if (_imageBlobUrlCache[key]) return Promise.resolve(_imageBlobUrlCache[key]);
+    return idbGetImage(key).then(function(record) {
+        if (record && record.blob) {
+            var url = URL.createObjectURL(record.blob);
+            _imageBlobUrlCache[key] = url;
+            return url;
+        }
+        return null;
+    });
+}
+
+function revokeAllCachedBlobUrls() {
+    for (var k in _imageBlobUrlCache) {
+        if (Object.prototype.hasOwnProperty.call(_imageBlobUrlCache, k)) {
+            URL.revokeObjectURL(_imageBlobUrlCache[k]);
+        }
+    }
+    _imageBlobUrlCache = {};
+}
+
+function getRenderableImageSrc(item, preferThumb) {
+    if (!item) return 'https://placehold.co/100?text=No+Photo';
+    if (item.imageUrl && item.imageUrl.indexOf('http') === 0) return item.imageUrl;
+    if (item.imageSourceType === 'idb' || (item.imageUrl && item.imageUrl.indexOf('data:image') === 0)) {
+        var key = preferThumb ? (item.imageThumbKey || item.imageFullKey) : (item.imageFullKey || item.imageThumbKey);
+        if (key) {
+            if (_imageBlobUrlCache[key]) return _imageBlobUrlCache[key];
+            loadImageIntoCache(key);
+        }
+        return 'https://placehold.co/100?text=No+Photo';
+    }
+    return item.imageUrl || 'https://placehold.co/100?text=No+Photo';
+}
+
+function saveUploadedImageToIndexedDb(file, itemId) {
+    var keys = generateImageKeys(itemId);
+    return Promise.all([
+        compressImageFileToBlob(file, 320, 0.6, 'image/jpeg'),
+        compressImageFileToBlob(file, 1280, 0.75, 'image/jpeg')
+    ]).then(function(results) {
+        var thumbResult = results[0];
+        var fullResult = results[1];
+        return Promise.all([
+            blobToDataUrl(thumbResult.blob),
+            idbPutImage({ key: keys.thumb, blob: thumbResult.blob, mime: 'image/jpeg' }),
+            idbPutImage({ key: keys.full, blob: fullResult.blob, mime: 'image/jpeg' })
+        ]).then(function(putResults) {
+            var thumbDataUrl = putResults[0];
+            var blobUrl = URL.createObjectURL(thumbResult.blob);
+            _imageBlobUrlCache[keys.thumb] = blobUrl;
+            _pendingImageMeta = {
+                sourceType: 'idb',
+                thumbKey: keys.thumb,
+                fullKey: keys.full,
+                imageUrl: '',
+                imageMeta: {
+                    thumbBytes: thumbResult.blob.size,
+                    fullBytes: fullResult.blob.size,
+                    width: fullResult.width,
+                    height: fullResult.height,
+                    mime: 'image/jpeg',
+                    createdAt: new Date().toISOString()
+                }
+            };
+            return { dataUrl: thumbDataUrl, blobUrl: blobUrl, meta: _pendingImageMeta };
+        });
+    });
+}
+
+function removeItemIdbImages(item) {
+    if (!item) return Promise.resolve();
+    var keys = [];
+    if (item.imageThumbKey) keys.push(item.imageThumbKey);
+    if (item.imageFullKey) keys.push(item.imageFullKey);
+    if (keys.length === 0) return Promise.resolve();
+    return Promise.all(keys.map(function(k) {
+        if (_imageBlobUrlCache[k]) { URL.revokeObjectURL(_imageBlobUrlCache[k]); delete _imageBlobUrlCache[k]; }
+        return idbDeleteImage(k);
+    }));
+}
+
+function removeItemImagesQuiet(item) {
+    removeItemIdbImages(item).catch(function(e) { console.warn('[image] Cleanup error:', e); });
+}
+
+function cleanupOrphanedImages() {
+    return idbListKeys().then(function(allKeys) {
+        var liveKeys = {};
+        (appState.inventory || []).forEach(function(item) {
+            if (item.imageThumbKey) liveKeys[item.imageThumbKey] = true;
+            if (item.imageFullKey) liveKeys[item.imageFullKey] = true;
+        });
+        var orphanKeys = allKeys.filter(function(k) { return !liveKeys[k]; });
+        if (orphanKeys.length === 0) return 0;
+        return Promise.all(orphanKeys.map(function(k) {
+            if (_imageBlobUrlCache[k]) { URL.revokeObjectURL(_imageBlobUrlCache[k]); delete _imageBlobUrlCache[k]; }
+            return idbDeleteImage(k);
+        })).then(function() { return orphanKeys.length; });
+    });
+}
+
+function preloadAllIdbImages() {
+    var keys = [];
+    (appState.inventory || []).forEach(function(item) {
+        if (item.imageThumbKey) keys.push(item.imageThumbKey);
+        if (item.imageFullKey) keys.push(item.imageFullKey);
+    });
+    if (keys.length === 0) return Promise.resolve();
+    return Promise.all(keys.map(function(k) { return loadImageIntoCache(k); }));
+}
+
+function migrateLegacyDataUrlImages() {
+    var migrated = 0;
+    var pending = [];
+    (appState.inventory || []).forEach(function(item, idx) {
+        if (item.deletedAt) return;
+        if (!item.imageUrl || item.imageUrl.indexOf('data:image') !== 0) return;
+        if (item.imageSourceType === 'idb' && item.imageThumbKey) return;
+        var b64 = item.imageUrl;
+        var keys = generateImageKeys(item.id);
+        var blob = dataUrlToBlob(b64);
+        if (!blob) return;
+        item.imageSourceType = 'idb';
+        item.imageThumbKey = keys.thumb;
+        item.imageFullKey = keys.full;
+        item.imageMeta = item.imageMeta || { thumbBytes: blob.size, fullBytes: blob.size, mime: blob.type || 'image/jpeg', createdAt: new Date().toISOString() };
+        var origUrl = item.imageUrl;
+        item.imageUrl = '';
+        pending.push(
+            idbPutImage({ key: keys.thumb, blob: blob, mime: blob.type || 'image/jpeg' })
+                .then(function() { return blobToDataUrl(blob); })
+                .then(function(dataUrl) {
+                    var blobUrl = URL.createObjectURL(blob);
+                    _imageBlobUrlCache[keys.thumb] = blobUrl;
+                    _imageBlobUrlCache[keys.full] = blobUrl;
+                })
+                .catch(function(e) {
+                    item.imageSourceType = undefined;
+                    item.imageThumbKey = undefined;
+                    item.imageFullKey = undefined;
+                    item.imageUrl = origUrl;
+                    console.warn('[migrate] Failed for item ' + idx + ': ' + e.message);
+                })
+        );
+        migrated++;
+    });
+    return Promise.all(pending).then(function() {
+        if (migrated > 0) {
+            console.log('[migrate] Migrated ' + migrated + ' legacy base64 images to IndexedDB');
+            saveStateToLocalStorage();
+        }
+        return migrated;
+    });
+}
+
+function dataUrlToBlob(dataUrl) {
+    try {
+        var parts = dataUrl.split(',');
+        if (parts.length < 2) return null;
+        var mime = parts[0].match(/:(.*?);/);
+        var bytes = atob(parts[1]);
+        var arr = new Uint8Array(bytes.length);
+        for (var i = 0; i < bytes.length; i++) { arr[i] = bytes.charCodeAt(i); }
+        return new Blob([arr], { type: (mime ? mime[1] : 'image/jpeg') });
+    } catch(e) {
+        console.warn('[dataUrlToBlob] Failed:', e.message);
+        return null;
+    }
+}
+
+function maybeWarnStoragePressure() {
+    if (!navigator.storage || !navigator.storage.estimate) return;
+    navigator.storage.estimate().then(function(est) {
+        var used = est.usage || 0;
+        var quota = est.quota || 0;
+        if (quota > 0 && used / quota > 0.8) {
+            var usedMB = (used / 1024 / 1024).toFixed(1);
+            var quotaMB = (quota / 1024 / 1024).toFixed(1);
+            console.warn('[storage] High usage: ' + usedMB + '/' + quotaMB + ' MB (' + Math.round(used/quota*100) + '%)');
+            showToast('Storage is ' + Math.round(used/quota*100) + '% full (' + usedMB + '/' + quotaMB + ' MB). Compact or remove old items in Settings.', 'warning');
+        }
+    }).catch(function() {});
+    if (navigator.storage && navigator.storage.persist) {
+        navigator.storage.persist().then(function(granted) {
+            if (granted) console.log('[storage] Persistent storage granted');
+        }).catch(function() {});
+    }
+}
+
+// Legacy compatibility wrapper — keep old callback API working internally
+function compressImageFile(file, maxPx, quality, callback) {
+    compressImageFileToBlob(file, maxPx, quality).then(function(result) {
+        blobToDataUrl(result.blob).then(callback);
+    });
+}
+
 // ===== Multi-Location Stock Helpers =====
 function getStockEntries(item) {
     if (!item || item.itemType !== 'stock') return [];
@@ -1422,8 +1735,9 @@ function showItemDetail(itemId) {
         aiRow.classList.add('hidden');
     }
     var img = document.getElementById('detailItemImage');
-    if (item.imageUrl && item.imageUrl !== 'https://placehold.co/100?text=No+Photo') {
-        img.src = item.imageUrl;
+    var detailSrc = getRenderableImageSrc(item, false);
+    if (detailSrc && detailSrc !== 'https://placehold.co/100?text=No+Photo') {
+        img.src = detailSrc;
         img.classList.remove('hidden');
     } else {
         img.classList.add('hidden');
@@ -1707,8 +2021,9 @@ function displayScanResult(id) {
     document.getElementById('btnScanIn').classList.toggle('flex', isStock);
 
     var img = document.getElementById('scanResultImage');
-    if (item.imageUrl && item.imageUrl !== 'https://placehold.co/100?text=No+Photo' && !item.imageUrl.match(/^\[TRUNCATED\]/)) {
-        img.src = item.imageUrl;
+    var scanSrc = getRenderableImageSrc(item, true);
+    if (scanSrc && scanSrc !== 'https://placehold.co/100?text=No+Photo' && !scanSrc.match(/^\[TRUNCATED\]/)) {
+        img.src = scanSrc;
         img.classList.remove('hidden');
     } else {
         img.classList.add('hidden');
@@ -2809,7 +3124,7 @@ function renderContainerAssetList() {
     listEl.innerHTML = assets.map(function(item) {
         var locDetail = (item.itemType === 'stock') ? getStockLocationSummary(item) : (item.subContainer || '\u2014');
         return '<div class="container-asset-item flex items-center gap-3 p-2 rounded-lg border border-slate-100 cursor-pointer" onclick="switchTab(\'tab-inventory\'); document.getElementById(\'filterSearchQuery\').value=\'' + item.name.replace(/'/g, "\\'") + '\'; renderFilteredInventoryTable();">' +
-            '<img src="' + item.imageUrl + '" class="h-8 w-8 object-cover rounded border border-slate-200 bg-slate-100" onerror="this.src=\'https://placehold.co/100?text=Error\'">' +
+            '<img src="' + getRenderableImageSrc(item, true) + '" class="h-8 w-8 object-cover rounded border border-slate-200 bg-slate-100" onerror="this.src=\'https://placehold.co/100?text=Error\'">' +
             '<div class="flex-1 min-w-0">' +
             '<div class="font-semibold text-slate-800 truncate">' + item.name + '</div>' +
             '<div class="text-[10px] text-slate-400">' + locDetail + ' \u00B7 ' + item.category + ' \u00B7 \uD83D\uDC64 ' + (item.owner || 'Default') + '</div>' +
@@ -3312,10 +3627,10 @@ function commitItemToInventory() {
         }
     }
 
-    var itemId, createdAt, version, barcodeId;
+    var itemId, createdAt, version, barcodeId, existing;
     if (editId) {
         itemId = editId;
-        var existing = appState.inventory.find(function(i) { return i.id === editId; });
+        existing = appState.inventory.find(function(i) { return i.id === editId; });
         createdAt = existing ? (existing.createdAt || existing.timestamp || now) : now;
         version = existing ? ((existing.version || 1) + 1) : 1;
         barcodeId = existing ? (existing.barcodeId || generateBarcodeId()) : generateBarcodeId();
@@ -3333,7 +3648,11 @@ function commitItemToInventory() {
         brand: document.getElementById('invItemBrand').value.trim(),
         category: categoryStr,
         owner: owner,
-        imageUrl: imageUrl || 'https://placehold.co/100?text=No+Photo',
+        imageUrl: '',
+        imageSourceType: 'none',
+        imageThumbKey: '',
+        imageFullKey: '',
+        imageMeta: null,
         remarks: remarks,
         aiMetadata: document.getElementById('invItemAiMetadata').value.trim(),
         itemType: isStock ? 'stock' : 'unique',
@@ -3354,6 +3673,27 @@ function commitItemToInventory() {
         lastModifiedBy: deviceId,
         timestamp: now.replace('T', ' ').substring(0, 16)
     };
+
+    if (_pendingImageMeta && _pendingImageMeta.sourceType === 'idb') {
+        payloadItem.imageSourceType = 'idb';
+        payloadItem.imageThumbKey = _pendingImageMeta.thumbKey;
+        payloadItem.imageFullKey = _pendingImageMeta.fullKey;
+        payloadItem.imageMeta = _pendingImageMeta.imageMeta;
+        payloadItem.imageUrl = '';
+    } else if (imageUrl && imageUrl.indexOf('http') === 0) {
+        payloadItem.imageUrl = imageUrl;
+        payloadItem.imageSourceType = 'remote';
+    } else {
+        payloadItem.imageUrl = imageUrl || 'https://placehold.co/100?text=No+Photo';
+    }
+
+    if (editId && existing) {
+        if (existing.imageSourceType === 'idb' || (existing.imageUrl && existing.imageUrl.indexOf('data:image') === 0)) {
+            if (payloadItem.imageSourceType === 'idb' || payloadItem.imageSourceType !== existing.imageSourceType) {
+                removeItemImagesQuiet(existing);
+            }
+        }
+    }
 
     if (isStock) {
         payloadItem.stockEntries = collectStockEntriesFromForm();
@@ -3378,6 +3718,8 @@ function commitItemToInventory() {
         mutateState('COMMIT_ITEM', { itemId: itemId });
     }
 
+    _pendingImageMeta = null;
+
     if (editId) {
         clearInventoryFormContext();
     } else {
@@ -3401,6 +3743,8 @@ function setupItemModificationContext(itemId) {
         switchTab('tab-register');
         document.getElementById('inventoryFormTitle').innerText = t('modifyFormTitle');
         document.getElementById('btnResetFormState').classList.remove('hidden');
+        _pendingImageMeta = null;
+        _lastUploadedImageFile = null;
 
         document.getElementById('editTargetItemId').value = item.id;
         document.getElementById('invItemName').value = item.name;
@@ -3434,10 +3778,19 @@ function setupItemModificationContext(itemId) {
         setCascadingCategorySelects(item.category);
 
         var rawImg = item.imageUrl;
-        var isPlaceholder = (rawImg === 'https://placehold.co/100?text=No+Photo' || !rawImg);
-        document.getElementById('invItemImageUrl').value = isPlaceholder ? '' : rawImg;
+        var isIdb = item.imageSourceType === 'idb' && (item.imageThumbKey || item.imageFullKey);
+        var isRemote = rawImg && rawImg.indexOf('http') === 0;
+        var isPlaceholder = (!isIdb && !isRemote) && (rawImg === 'https://placehold.co/100?text=No+Photo' || !rawImg);
+        document.getElementById('invItemImageUrl').value = isRemote ? rawImg : '';
+        _pendingImageMeta = null;
         var preview = document.getElementById('invItemImagePreview');
-        if (!isPlaceholder) {
+        if (isIdb) {
+            var key = item.imageThumbKey || item.imageFullKey;
+            preview.src = _imageBlobUrlCache[key] || '';
+            if (!_imageBlobUrlCache[key]) loadImageIntoCache(key).then(function(url) { if (url) preview.src = url; });
+            preview.classList.remove('hidden');
+            document.getElementById('btnAIAnalyze').style.display = '';
+        } else if (isRemote) {
             preview.src = rawImg;
             preview.classList.remove('hidden');
             document.getElementById('btnAIAnalyze').style.display = '';
@@ -3475,6 +3828,8 @@ function softClearForNextItem() {
     clearStockLocationRows();
     switchItemType('unique');
     document.getElementById('invItemTypeValue').value = 'unique';
+    _pendingImageMeta = null;
+    _lastUploadedImageFile = null;
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
@@ -3503,6 +3858,8 @@ function clearAllInventoryFields() {
     clearStockLocationRows();
     switchItemType('unique');
     document.getElementById('invItemTypeValue').value = 'unique';
+    _pendingImageMeta = null;
+    _lastUploadedImageFile = null;
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
@@ -3534,6 +3891,8 @@ function clearInventoryFormContext() {
     clearStockLocationRows();
     switchItemType('unique');
     document.getElementById('invItemTypeValue').value = 'unique';
+    _pendingImageMeta = null;
+    _lastUploadedImageFile = null;
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
@@ -3548,10 +3907,10 @@ function copyItemToNew(itemId) {
     var item = appState.inventory.find(i => i.id === itemId && !i.deletedAt);
     if (!item) return;
     setupItemModificationContext(itemId);
-    // Overwrite the edit target ID to force a new item on save
     document.getElementById('editTargetItemId').value = '';
     document.getElementById('inventoryFormTitle').innerText = t('inventoryFormTitle');
     document.getElementById('btnResetFormState').classList.add('hidden');
+    _pendingImageMeta = null;
     showToast('Copied "' + item.name + '" — edit and save as new item', 'info');
 }
 
@@ -3564,6 +3923,7 @@ async function removeItemFromInventory(itemId) {
         item.updatedAt = new Date().toISOString();
         item.version = (item.version || 1) + 1;
         item.lastModifiedBy = appState.meta.deviceId;
+        removeItemImagesQuiet(item);
     }
     mutateState('REMOVE_ITEM', { itemId: itemId });
     syncUIComponents();
@@ -3601,12 +3961,16 @@ function handleAssetImageUpload(event) {
 
     _lastUploadedImageFile = file;
 
-    compressImageFile(file, 1024, 0.7, function(dataUrl) {
-        document.getElementById('invItemImageUrl').value = dataUrl;
+    var tempId = 'new_' + Date.now().toString(36);
+    saveUploadedImageToIndexedDb(file, tempId).then(function(result) {
+        document.getElementById('invItemImageUrl').value = '';
         var preview = document.getElementById('invItemImagePreview');
-        preview.src = dataUrl;
+        preview.src = result.blobUrl || result.dataUrl;
         preview.classList.remove('hidden');
         document.getElementById('btnAIAnalyze').style.display = '';
+    }).catch(function(err) {
+        console.error('[upload] IDB save failed:', err);
+        showToast('Image upload failed: ' + err.message, 'error');
     });
     event.target.value = '';
 }
@@ -3627,7 +3991,7 @@ function updateImagePreviewFromUrl() {
 
 async function aiAnalyzeImage() {
     const storedUrl = document.getElementById('invItemImageUrl').value.trim();
-    if (!storedUrl && !_lastUploadedImageFile) { showToast('Upload an image first.', 'error'); return; }
+    if (!storedUrl && !_lastUploadedImageFile && !_pendingImageMeta) { showToast('Upload an image first.', 'error'); return; }
 
     const apiKey = localStorage.getItem('sys_ds_api_key');
     if (!apiKey) { showToast(t('aiNoKey'), 'error'); return; }
@@ -3637,7 +4001,6 @@ async function aiAnalyzeImage() {
     btn.innerText = 'Analyzing...';
 
     try {
-        // Build imageUrl for API: prefer original file for quality, fallback to stored URL
         var imageUrl = storedUrl;
         if (_lastUploadedImageFile) {
             imageUrl = await new Promise(function(resolve, reject) {
@@ -3646,8 +4009,23 @@ async function aiAnalyzeImage() {
                 reader.onerror = function() { reject(new Error('Failed to read image file')); };
                 reader.readAsDataURL(_lastUploadedImageFile);
             });
-            // Only use the original file once, then clear
             _lastUploadedImageFile = null;
+        } else if (_pendingImageMeta && _pendingImageMeta.fullKey) {
+            var fullRecord = await idbGetImage(_pendingImageMeta.fullKey);
+            if (fullRecord && fullRecord.blob) {
+                imageUrl = await blobToDataUrl(fullRecord.blob);
+            }
+        } else if (!imageUrl) {
+            var editId = document.getElementById('editTargetItemId').value;
+            if (editId) {
+                var item = appState.inventory.find(function(i) { return i.id === editId; });
+                if (item && item.imageSourceType === 'idb' && item.imageFullKey) {
+                    var record = await idbGetImage(item.imageFullKey);
+                    if (record && record.blob) {
+                        imageUrl = await blobToDataUrl(record.blob);
+                    }
+                }
+            }
         }
         var categories = flattenCategoryTreeToLinearRoutes(appState.categories);
         var categoriesHint = categories.length > 0 ? categories.join(' | ') : 'Uncategorized';
@@ -3870,7 +4248,7 @@ function exportLocalDatabasesToExcel() {
                 "Quantity": item.itemType === 'stock' ? getTotalStockQuantity(item) : '',
                 "Min Quantity": item.itemType === 'stock' ? (item.minQuantity || 0) : '',
                 "Stock Entries JSON": stockJson,
-                "Image Link Asset": safeCell(item.imageUrl || ''),
+                "Image Link Asset": safeCell(getRenderableImageSrc(item, false).replace(/^https:\/\/placehold\.co\/100\?text=No\+Photo$/, '')),
                 "User Remarks Annotation": safeCell(item.remarks || ''),
                 "Last System Entry Update": safeCell(item.timestamp || '')
             };
@@ -4522,35 +4900,18 @@ function saveStateToLocalStorage() {
 
 function saveStateWithRecovery() {
     var origQueue = (appState.syncQueue || []).slice();
-    var imageRestore = {};
     var recovered = false;
 
     if (origQueue.length > 10) {
         appState.syncQueue = origQueue.slice(-10);
     }
 
-    appState.inventory.forEach(function(item, i) {
-        if (item.imageUrl && item.imageUrl.indexOf('data:image') === 0) {
-            imageRestore[i] = item.imageUrl;
-            item.imageUrl = 'https://placehold.co/100?text=Image+Purged';
-        }
-    });
-
-    if (appState.spatialBackgroundImage && appState.spatialBackgroundImage.indexOf('data:image') === 0) {
-        imageRestore['__bg'] = appState.spatialBackgroundImage;
-        appState.spatialBackgroundImage = null;
-    }
-
     try {
         localStorage.setItem('hk_inventory_state', JSON.stringify(appState));
         recovered = true;
-        console.warn('[saveState] Recovery: queue ' + origQueue.length + '→' + (appState.syncQueue || []).length + ', images stripped: ' + Object.keys(imageRestore).filter(function(k) { return k !== '__bg'; }).length);
+        console.warn('[saveState] Recovery: trimmed sync queue ' + origQueue.length + '→' + (appState.syncQueue || []).length);
     } catch (e) {
         appState.syncQueue = origQueue;
-        for (var idx in imageRestore) {
-            if (idx === '__bg') appState.spatialBackgroundImage = imageRestore[idx];
-            else appState.inventory[parseInt(idx)].imageUrl = imageRestore[idx];
-        }
     }
 
     return recovered;
@@ -4569,30 +4930,38 @@ function diagnoseStorage() {
     var stateBytes = stateStr.length * 2;
     var inventoryCount = appState.inventory.length;
     var queueLen = (appState.syncQueue || []).length;
-    var imageCount = 0;
-    var imageBytes = 0;
+    var idbImageCount = 0;
+    var idbThumbBytes = 0;
+    var idbFullBytes = 0;
+    var remoteCount = 0;
     appState.inventory.forEach(function(item) {
-        if (item.imageUrl && item.imageUrl.indexOf('data:image') === 0) {
-            imageCount++;
-            imageBytes += item.imageUrl.length * 2;
+        if (item.imageSourceType === 'idb') {
+            idbImageCount++;
+            if (item.imageMeta) {
+                idbThumbBytes += item.imageMeta.thumbBytes || 0;
+                idbFullBytes += item.imageMeta.fullBytes || 0;
+            }
         }
+        if (item.imageUrl && item.imageUrl.indexOf('http') === 0) remoteCount++;
     });
+    var idbTotalKB = ((idbThumbBytes + idbFullBytes) / 1024).toFixed(1);
     var report = [
         '=== Storage Diagnostic ===',
         'Total localStorage: ' + (totalBytes / 1024 / 1024).toFixed(2) + ' MB (' + totalBytes + ' bytes)',
         'App state only:     ' + (stateBytes / 1024 / 1024).toFixed(2) + ' MB (' + stateBytes + ' bytes)',
         'Inventory items:    ' + inventoryCount,
         'Sync queue entries: ' + queueLen,
-        'Base64 images:      ' + imageCount + ' (' + (imageBytes / 1024).toFixed(1) + ' KB)',
-        'Estimated limit:    ~5 MB (browser-dependent)',
+        'IDB-backed images:  ' + idbImageCount + ' (~' + idbTotalKB + ' KB in IndexedDB)',
+        'Remote URL images:  ' + remoteCount,
+        'Estimated limit:    ~5 MB (localStorage) + IndexedDB quota (varies)',
         ''
     ];
-    if (imageCount > 0) {
-        report.push('TOP IMAGE HOGS:');
+    if (idbImageCount > 0) {
+        report.push('IDB IMAGE DETAILS:');
         var ranked = [];
         appState.inventory.forEach(function(item, i) {
-            if (item.imageUrl && item.imageUrl.indexOf('data:image') === 0) {
-                ranked.push({ idx: i, name: item.name, kb: (item.imageUrl.length * 2 / 1024) });
+            if (item.imageSourceType === 'idb' && item.imageMeta) {
+                ranked.push({ idx: i, name: item.name, kb: ((item.imageMeta.thumbBytes || 0) + (item.imageMeta.fullBytes || 0)) / 1024 });
             }
         });
         ranked.sort(function(a, b) { return b.kb - a.kb; });
@@ -4602,10 +4971,10 @@ function diagnoseStorage() {
     }
     report.push('');
     report.push('SUGGESTIONS:');
-    report.push('  - Run compactStorage() to trim sync queue');
-    if (imageCount > 0) report.push('  - Re-upload images as smaller files (jpeg < 100KB)');
+    report.push('  - Run compactLocalStorage() to trim sync queue');
+    report.push('  - Call cleanupOrphanedImages() to free unreferenced blobs');
     report.push('  - Remove unused items');
-    report.push('  - Purge Local Cache as last resort');
+    report.push('  - Purge Local Cache as last resort (also wipes IndexedDB)');
     console.log(report.join('\n'));
     return report.join('\n');
 }
@@ -4787,6 +5156,9 @@ function restoreStateFromLocalStorage() {
             appState = JSON.parse(data);
             appState = migrateLegacyState(appState);
             saveStateToLocalStorage();
+            migrateLegacyDataUrlImages().then(preloadAllIdbImages).then(function() {
+                maybeWarnStoragePressure();
+            });
         } catch (e) {
             console.error("Local state compilation damaged.", e);
         }
@@ -4796,8 +5168,13 @@ function restoreStateFromLocalStorage() {
 async function purgeSystemStorageCache() {
     var ok = await showAppConfirm(t('confirmPurge'), 'Wipe All Data');
     if (ok) {
+        revokeAllCachedBlobUrls();
         localStorage.removeItem('hk_inventory_state');
-        location.reload();
+        if (_imageDb) { _imageDb.close(); _imageDb = null; }
+        var delReq = indexedDB.deleteDatabase('findmyitem-assets');
+        delReq.onsuccess = function() { location.reload(); };
+        delReq.onerror = function() { location.reload(); };
+        delReq.onblocked = function() { location.reload(); };
     }
 }
 
@@ -5031,7 +5408,7 @@ function renderFilteredInventoryTable() {
         } else {
             locHtml = '<div class="font-semibold text-slate-700 cursor-pointer hover:text-blue-600" onclick="event.stopPropagation(); filterBy(\'segment\',\'' + (item.segment || '').replace(/'/g, "&#39;") + '\')">' + (item.segment || '') + '  >  ' + (item.container || '') + '</div><div class="text-slate-500 mt-0.5">\uD83D\uDCE6 ' + (item.subContainer || '<span class="text-slate-300 italic">\u2014</span>') + '</div>';
         }
-        tr.innerHTML = '<td class="px-4 py-3 text-center"><img src="' + item.imageUrl + '" class="h-10 w-10 object-cover rounded-md border border-slate-200 mx-auto bg-slate-100" onerror="this.src=\'https://placehold.co/100?text=Error\'"></td>'
+        tr.innerHTML = '<td class="px-4 py-3 text-center"><img src="' + getRenderableImageSrc(item, true) + '" class="h-10 w-10 object-cover rounded-md border border-slate-200 mx-auto bg-slate-100" onerror="this.src=\'https://placehold.co/100?text=Error\'"></td>'
             + '<td class="px-4 py-3 cursor-pointer hover:bg-blue-50/50" onclick="showItemDetail(\'' + item.id + '\')"><div class="font-bold text-slate-900 hover:text-blue-600">' + item.name + syncIndicator + '</div>'
             + (item.brand ? '<div class="text-[10px] text-slate-400 mt-0.5">' + item.brand + '</div>' : '')
             + '<div class="text-[10px] text-slate-400 font-mono mt-0.5">ID: ' + item.id + '</div>'
@@ -5075,7 +5452,7 @@ function renderFilteredInventoryTable() {
             }
 
             card.innerHTML =
-                '<img src="' + item.imageUrl + '" class="inv-card-img" onerror="this.src=\'https://placehold.co/100?text=Error\'">'
+                '<img src="' + getRenderableImageSrc(item, true) + '" class="inv-card-img" onerror="this.src=\'https://placehold.co/100?text=Error\'">'
                 + '<div class="inv-card-body">'
                 + '<div class="inv-card-name">' + item.name + '</div>'
                 + (item.brand ? '<div class="inv-card-brand">' + item.brand + '</div>' : '')
@@ -5126,7 +5503,7 @@ function renderToBuyList() {
         var badge = isOut ? '<span class="tobuy-badge-out">OUT OF STOCK</span>' : '<span class="tobuy-badge-low">LOW -' + shortage + '</span>';
         var locSummary = getStockLocationSummary(item);
         return '<div class="tobuy-card" onclick="showItemDetail(\'' + item.id + '\')">' +
-            '<img src="' + item.imageUrl + '" class="tobuy-img" onerror="this.src=\'https://placehold.co/100?text=Error\'">' +
+            '<img src="' + getRenderableImageSrc(item, true) + '" class="tobuy-img" onerror="this.src=\'https://placehold.co/100?text=Error\'">' +
             '<div class="tobuy-body">' +
             '<div class="tobuy-name">' + item.name + (item.brand ? ' <span class="text-xs text-slate-400">' + item.brand + '</span>' : '') + '</div>' +
             '<div class="tobuy-meta">' +
