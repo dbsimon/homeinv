@@ -159,6 +159,44 @@ button, select, .tab-nav, .container-asset-item {
     background-color: #eff6ff;
 }
 
+/* Desktop nav scroll — hide scrollbar, keep swipe/touch */
+.desktop-nav-scroll::-webkit-scrollbar {
+    display: none;
+}
+.desktop-nav-scroll {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+/* Sortable table headers */
+.sort-header {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    font-family: inherit;
+}
+.sort-header:hover {
+    color: #1e293b;
+}
+.sort-header:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+th[aria-sort] .sort-header {
+    color: #2563eb;
+}
+.sort-arrow {
+    font-size: 10px;
+    margin-left: 2px;
+}
+
+/* Ensure .tab-active border renders correctly inside a scroll container */
+.desktop-nav-scroll .tab-active {
+    border-bottom: 3px solid #2563eb !important;
+}
+
 /* Bigger table text for readability */
 #inventoryTableDataRows td {
     font-size: 0.8125rem;

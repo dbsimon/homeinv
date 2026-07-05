@@ -493,18 +493,6 @@ function openImageDb() {
     });
 }
 
-function idbPutImage(record) {
-    return openImageDb().then(function(db) {
-        return new Promise(function(resolve, reject) {
-            var tx = db.transaction('images', 'readwrite');
-            var store = tx.objectStore('images');
-            var req = store.put(record);
-            req.onsuccess = function() { resolve(req.result); };
-            req.onerror = function() { reject(req.error); };
-        });
-    });
-}
-
 function idbGetImage(key) {
     return openImageDb().then(function(db) {
         return new Promise(function(resolve, reject) {
@@ -608,9 +596,23 @@ function revokeAllCachedBlobUrls() {
     _imageBlobUrlCache = {};
 }
 
+function normalizeDriveUrl(url) {
+    if (!url || url.indexOf('drive.google.com/uc?') === -1) return url;
+    var match = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (match) return 'https://drive.google.com/thumbnail?id=' + match[1] + '&sz=w1280';
+    return url;
+}
+
 function getRenderableImageSrc(item, preferThumb) {
     if (!item) return 'https://placehold.co/100?text=No+Photo';
-    if (item.imageUrl && item.imageUrl.indexOf('http') === 0) return item.imageUrl;
+    var primaryUrl = preferThumb ? (item.imageThumbUrl || item.imageUrl) : (item.imageUrl || item.imageThumbUrl);
+    var primaryKey = preferThumb ? (item.imageThumbKey || item.imageFullKey) : (item.imageFullKey || item.imageThumbKey);
+    if (primaryUrl && primaryUrl.indexOf('http') === 0) {
+        if (primaryKey && !_imageBlobUrlCache[primaryKey]) {
+            setTimeout(function() { hydrateRemoteImage(item); }, 200);
+        }
+        return normalizeDriveUrl(primaryUrl);
+    }
     if (item.imageSourceType === 'idb' || (item.imageUrl && item.imageUrl.indexOf('data:image') === 0)) {
         var key = preferThumb ? (item.imageThumbKey || item.imageFullKey) : (item.imageFullKey || item.imageThumbKey);
         if (key) {
@@ -643,6 +645,7 @@ function saveUploadedImageToIndexedDb(file, itemId) {
                 thumbKey: keys.thumb,
                 fullKey: keys.full,
                 imageUrl: '',
+                imageThumbUrl: '',
                 imageMeta: {
                     thumbBytes: thumbResult.blob.size,
                     fullBytes: fullResult.blob.size,
@@ -655,6 +658,96 @@ function saveUploadedImageToIndexedDb(file, itemId) {
             return { dataUrl: thumbDataUrl, blobUrl: blobUrl, meta: _pendingImageMeta };
         });
     });
+}
+
+function uploadImageToCloud(blob, fileName) {
+    var endpoint = localStorage.getItem('sys_gas_url');
+    var secret = localStorage.getItem('sys_api_pwd');
+    if (!endpoint) return Promise.reject(new Error('Cloud sync not configured. Set API URL in Settings.'));
+    return blobToDataUrl(blob).then(function(dataUrl) {
+        var b64 = dataUrl.split(',')[1];
+        var params = new URLSearchParams();
+        params.append('token', secret);
+        params.append('action', 'IMAGE_UPLOAD');
+        params.append('data', b64);
+        params.append('fileName', fileName);
+        return fetch(endpoint, { method: 'POST', body: params }).then(function(r) { return r.json(); });
+    }).then(function(result) {
+        if (result && result.success) return result.url;
+        throw new Error(result ? result.error : 'Upload returned no URL');
+    });
+}
+
+function saveUploadedImage(file, tempId) {
+    return Promise.all([
+        compressImageFileToBlob(file, 320, 0.6, 'image/jpeg'),
+        compressImageFileToBlob(file, 1280, 0.75, 'image/jpeg')
+    ]).then(function(results) {
+        var thumbResult = results[0];
+        var fullResult = results[1];
+
+        return uploadImageToCloud(thumbResult.blob, 'thumb_' + tempId + '.jpg').then(function(thumbUrl) {
+            return uploadImageToCloud(fullResult.blob, 'full_' + tempId + '.jpg').then(function(fullUrl) {
+                var keys = generateImageKeys(tempId);
+                idbPutImage({ key: keys.thumb, blob: thumbResult.blob, mime: 'image/jpeg' }).catch(function(){});
+                idbPutImage({ key: keys.full, blob: fullResult.blob, mime: 'image/jpeg' }).catch(function(){});
+                var blobUrl = URL.createObjectURL(thumbResult.blob);
+                _imageBlobUrlCache[keys.thumb] = blobUrl;
+                _pendingImageMeta = {
+                    sourceType: 'remote',
+                    thumbKey: keys.thumb,
+                    fullKey: keys.full,
+                    imageUrl: fullUrl,
+                    imageThumbUrl: thumbUrl,
+                    imageMeta: {
+                        thumbBytes: thumbResult.blob.size,
+                        fullBytes: fullResult.blob.size,
+                        width: fullResult.width,
+                        height: fullResult.height,
+                        mime: 'image/jpeg',
+                        createdAt: new Date().toISOString()
+                    }
+                };
+                return { dataUrl: blobUrl, blobUrl: blobUrl, meta: _pendingImageMeta };
+            });
+        });
+    });
+}
+
+function normalizeImageFields(item) {
+    if (!item) return item;
+    if (item.imageThumbUrl || item.imageUrl) {
+        item.imageSourceType = 'remote';
+    } else if (!item.imageSourceType && (item.imageThumbKey || item.imageFullKey)) {
+        item.imageSourceType = 'idb';
+    }
+    return item;
+}
+
+function hydrateRemoteImage(item) {
+    if (!item) return;
+    var thumbUrl = normalizeDriveUrl(item.imageThumbUrl);
+    var fullUrl = normalizeDriveUrl(item.imageUrl);
+    var thumbKey = item.imageThumbKey;
+    var fullKey = item.imageFullKey;
+    if (thumbUrl && thumbUrl.indexOf('http') === 0 && thumbKey && !_imageBlobUrlCache[thumbKey]) {
+        fetch(thumbUrl)
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+            .then(function(blob) {
+                idbPutImage({ key: thumbKey, blob: blob, mime: blob.type || 'image/jpeg' }).catch(function(){});
+                _imageBlobUrlCache[thumbKey] = URL.createObjectURL(blob);
+            })
+            .catch(function(e) { /* silent */ });
+    }
+    if (fullUrl && fullUrl.indexOf('http') === 0 && fullKey && !_imageBlobUrlCache[fullKey] && fullUrl !== thumbUrl) {
+        fetch(fullUrl)
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+            .then(function(blob) {
+                idbPutImage({ key: fullKey, blob: blob, mime: blob.type || 'image/jpeg' }).catch(function(){});
+                _imageBlobUrlCache[fullKey] = URL.createObjectURL(blob);
+            })
+            .catch(function(e) { /* silent */ });
+    }
 }
 
 function removeItemIdbImages(item) {
@@ -725,9 +818,9 @@ function migrateLegacyDataUrlImages() {
                     _imageBlobUrlCache[keys.full] = blobUrl;
                 })
                 .catch(function(e) {
-                    item.imageSourceType = undefined;
-                    item.imageThumbKey = undefined;
-                    item.imageFullKey = undefined;
+                    delete item.imageSourceType;
+                    delete item.imageThumbKey;
+                    delete item.imageFullKey;
                     item.imageUrl = origUrl;
                     console.warn('[migrate] Failed for item ' + idx + ': ' + e.message);
                 })
@@ -1071,8 +1164,9 @@ function updateSyncAlertRow() {
         row.innerText = '\u274C Sync failed. Check your connection and endpoint URL, then try again.';
         row.classList.remove('hidden');
     } else if (_syncConflict) {
-        row.className = 'rounded-lg p-3 mb-4 text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200';
-        row.innerText = '\u26A0\uFE0F Data conflict detected. Pull from cloud or push again to resolve.';
+        row.className = 'rounded-lg p-3 mb-4 text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 cursor-pointer';
+        row.innerHTML = '\u26A0\uFE0F <u>Data conflict detected. Tap to pull cloud data & resolve.</u>';
+        row.onclick = function() { syncFromCloudWithToast(); };
         row.classList.remove('hidden');
     } else if (appState.meta.lastSyncedAt) {
         row.className = 'rounded-lg p-3 mb-4 text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200';
@@ -1096,8 +1190,8 @@ function updateSyncBanner() {
         textMobile = 'Failed';
     } else if (_syncConflict) {
         dotClass = 'sync-dot-amber';
-        text = 'Conflict detected';
-        textMobile = 'Conflict';
+        text = '\u26A0\uFE0F Conflict — tap to resolve';
+        textMobile = 'Conflict — tap';
     } else if (pending > 0) {
         dotClass = 'sync-dot-gray';
         text = 'Pending sync (' + pending + ')';
@@ -1423,8 +1517,9 @@ function updateLoginSyncStatus() {
             msg = 'Sync failed';
             break;
         case 'conflict':
-            card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center';
-            msg = 'Conflict detected';
+            card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center cursor-pointer';
+            msg = 'Conflict \u2014 tap Sync to resolve';
+            card.onclick = function() { syncFromCloudWithToast(); };
             break;
         case 'pending':
             card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center';
@@ -1590,7 +1685,7 @@ function installFocusTraps() {
     if (cloudModal) trapFocus(cloudModal);
 }
 
-function toggleOverflowMenu(e) {
+function toggleOverflowMenu(e, btnEl) {
     if (e) e.stopPropagation();
     var menu = document.getElementById('overflowMenu');
     if (!menu) return;
@@ -1600,12 +1695,11 @@ function toggleOverflowMenu(e) {
         return;
     }
 
-    // Position menu near the clicked button
-    if (e && e.currentTarget) {
-        var rect = e.currentTarget.getBoundingClientRect();
+    var btn = btnEl || (e && e.currentTarget) || (e && e.target && e.target.closest('button'));
+    if (btn) {
+        var rect = btn.getBoundingClientRect();
         var isMobile = window.innerWidth < 768;
         if (isMobile) {
-            // Bottom sheet style: full-width, anchored above the nav bar
             menu.style.left = '8px';
             menu.style.right = '8px';
             menu.style.width = 'auto';
@@ -1615,7 +1709,6 @@ function toggleOverflowMenu(e) {
             menu.style.maxHeight = (rect.top - 16) + 'px';
             menu.style.overflowY = 'auto';
         } else {
-            // Desktop dropdown below the button
             var menuW = 208;
             var left = Math.min(rect.right - menuW, window.innerWidth - menuW - 8);
             left = Math.max(8, left);
@@ -1909,7 +2002,9 @@ function scanExistingStockBarcode() {
 
 function cancelStockBarcodeScan() {
     if (_html5QrScanner) {
-        try { _html5QrScanner.stop().then(function() { _html5QrScanner.clear(); }).catch(function() {}); } catch(e) {}
+        try { _html5QrScanner.stop().then(function() { _html5QrScanner.clear(); }).catch(function() {                });
+                normalizeAllItemImageFields();
+            } catch(e) {}
         _html5QrScanner = null;
     }
     var overlay = document.getElementById('stockScanOverlay');
@@ -3627,6 +3722,16 @@ function commitItemToInventory() {
         }
     }
 
+    if (_imageUploadState === 'failed') {
+        showToast('Photo upload failed. Item was not saved. Check Cloud Engine settings and Apps Script deployment.', 'error');
+        _imageUploadState = 'idle';
+        return;
+    }
+    if (_imageUploadState === 'uploading') {
+        showToast('Photo is still uploading. Please wait and try again.', 'warning');
+        return;
+    }
+
     var itemId, createdAt, version, barcodeId, existing;
     if (editId) {
         itemId = editId;
@@ -3649,6 +3754,7 @@ function commitItemToInventory() {
         category: categoryStr,
         owner: owner,
         imageUrl: '',
+        imageThumbUrl: '',
         imageSourceType: 'none',
         imageThumbKey: '',
         imageFullKey: '',
@@ -3674,24 +3780,57 @@ function commitItemToInventory() {
         timestamp: now.replace('T', ' ').substring(0, 16)
     };
 
-    if (_pendingImageMeta && _pendingImageMeta.sourceType === 'idb') {
-        payloadItem.imageSourceType = 'idb';
+    if (_pendingImageMeta && (_pendingImageMeta.sourceType === 'idb' || _pendingImageMeta.sourceType === 'remote')) {
+        payloadItem.imageSourceType = _pendingImageMeta.sourceType;
         payloadItem.imageThumbKey = _pendingImageMeta.thumbKey;
         payloadItem.imageFullKey = _pendingImageMeta.fullKey;
         payloadItem.imageMeta = _pendingImageMeta.imageMeta;
-        payloadItem.imageUrl = '';
+        payloadItem.imageUrl = _pendingImageMeta.imageUrl || '';
+        payloadItem.imageThumbUrl = _pendingImageMeta.imageThumbUrl || '';
+    } else if (editId && existing) {
+        if (!imageUrl && existing.imageUrl && existing.imageUrl.indexOf('http') === 0) {
+            payloadItem.imageUrl = 'https://placehold.co/100?text=No+Photo';
+            payloadItem.imageThumbUrl = '';
+            payloadItem.imageSourceType = 'none';
+            payloadItem.imageThumbKey = '';
+            payloadItem.imageFullKey = '';
+            payloadItem.imageMeta = null;
+        } else if (imageUrl === existing.imageUrl || (!imageUrl && !existing.imageUrl)) {
+            payloadItem.imageSourceType = existing.imageSourceType || 'none';
+            payloadItem.imageThumbKey = existing.imageThumbKey || '';
+            payloadItem.imageFullKey = existing.imageFullKey || '';
+            payloadItem.imageMeta = existing.imageMeta || null;
+            payloadItem.imageUrl = existing.imageUrl || '';
+            payloadItem.imageThumbUrl = existing.imageThumbUrl || '';
+        } else if (imageUrl && imageUrl.indexOf('http') === 0) {
+            payloadItem.imageUrl = imageUrl;
+            payloadItem.imageThumbUrl = '';
+            payloadItem.imageSourceType = 'remote';
+            payloadItem.imageThumbKey = '';
+            payloadItem.imageFullKey = '';
+            payloadItem.imageMeta = null;
+        } else {
+            payloadItem.imageSourceType = existing.imageSourceType || 'none';
+            payloadItem.imageThumbKey = existing.imageThumbKey || '';
+            payloadItem.imageFullKey = existing.imageFullKey || '';
+            payloadItem.imageMeta = existing.imageMeta || null;
+            payloadItem.imageUrl = existing.imageUrl || '';
+            payloadItem.imageThumbUrl = existing.imageThumbUrl || '';
+        }
     } else if (imageUrl && imageUrl.indexOf('http') === 0) {
         payloadItem.imageUrl = imageUrl;
+        payloadItem.imageThumbUrl = '';
         payloadItem.imageSourceType = 'remote';
     } else {
         payloadItem.imageUrl = imageUrl || 'https://placehold.co/100?text=No+Photo';
+        payloadItem.imageThumbUrl = '';
     }
 
     if (editId && existing) {
-        if (existing.imageSourceType === 'idb' || (existing.imageUrl && existing.imageUrl.indexOf('data:image') === 0)) {
-            if (payloadItem.imageSourceType === 'idb' || payloadItem.imageSourceType !== existing.imageSourceType) {
-                removeItemImagesQuiet(existing);
-            }
+        var replacingPhoto = _pendingImageMeta && _pendingImageMeta.sourceType;
+        var removingPhoto = !_pendingImageMeta && !imageUrl && (existing.imageThumbKey || existing.imageFullKey || (existing.imageUrl && existing.imageUrl.indexOf('http') === 0));
+        if (replacingPhoto || removingPhoto || (existing.imageSourceType === 'idb' && payloadItem.imageSourceType !== 'idb') || (existing.imageUrl && existing.imageUrl.indexOf('data:image') === 0)) {
+            removeItemImagesQuiet(existing);
         }
     }
 
@@ -3719,6 +3858,7 @@ function commitItemToInventory() {
     }
 
     _pendingImageMeta = null;
+    _imageUploadState = 'idle';
 
     if (editId) {
         clearInventoryFormContext();
@@ -3778,20 +3918,26 @@ function setupItemModificationContext(itemId) {
         setCascadingCategorySelects(item.category);
 
         var rawImg = item.imageUrl;
+        var isRemoteType = item.imageSourceType === 'remote';
         var isIdb = item.imageSourceType === 'idb' && (item.imageThumbKey || item.imageFullKey);
-        var isRemote = rawImg && rawImg.indexOf('http') === 0;
+        var isRemoteUrl = rawImg && rawImg.indexOf('http') === 0;
+        var isRemote = isRemoteType || isRemoteUrl;
         var isPlaceholder = (!isIdb && !isRemote) && (rawImg === 'https://placehold.co/100?text=No+Photo' || !rawImg);
-        document.getElementById('invItemImageUrl').value = isRemote ? rawImg : '';
+        document.getElementById('invItemImageUrl').value = isRemoteUrl ? rawImg : '';
         _pendingImageMeta = null;
+        _imageUploadState = 'idle';
         var preview = document.getElementById('invItemImagePreview');
+        var previewSrc;
         if (isIdb) {
             var key = item.imageThumbKey || item.imageFullKey;
-            preview.src = _imageBlobUrlCache[key] || '';
+            previewSrc = _imageBlobUrlCache[key] || '';
             if (!_imageBlobUrlCache[key]) loadImageIntoCache(key).then(function(url) { if (url) preview.src = url; });
-            preview.classList.remove('hidden');
-            document.getElementById('btnAIAnalyze').style.display = '';
         } else if (isRemote) {
-            preview.src = rawImg;
+            previewSrc = normalizeDriveUrl(item.imageThumbUrl) || rawImg;
+            if (isRemoteType && !isRemoteUrl) hydrateRemoteImage(item);
+        }
+        if (previewSrc) {
+            preview.src = previewSrc;
             preview.classList.remove('hidden');
             document.getElementById('btnAIAnalyze').style.display = '';
         } else {
@@ -3830,6 +3976,7 @@ function softClearForNextItem() {
     document.getElementById('invItemTypeValue').value = 'unique';
     _pendingImageMeta = null;
     _lastUploadedImageFile = null;
+    _imageUploadState = 'idle';
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
@@ -3860,6 +4007,7 @@ function clearAllInventoryFields() {
     document.getElementById('invItemTypeValue').value = 'unique';
     _pendingImageMeta = null;
     _lastUploadedImageFile = null;
+    _imageUploadState = 'idle';
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
@@ -3893,6 +4041,7 @@ function clearInventoryFormContext() {
     document.getElementById('invItemTypeValue').value = 'unique';
     _pendingImageMeta = null;
     _lastUploadedImageFile = null;
+    _imageUploadState = 'idle';
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
     preview.src = '';
@@ -3911,6 +4060,7 @@ function copyItemToNew(itemId) {
     document.getElementById('inventoryFormTitle').innerText = t('inventoryFormTitle');
     document.getElementById('btnResetFormState').classList.add('hidden');
     _pendingImageMeta = null;
+    _imageUploadState = 'idle';
     showToast('Copied "' + item.name + '" — edit and save as new item', 'info');
 }
 
@@ -3955,22 +4105,38 @@ function compressImageFile(file, maxPx, quality, callback) {
 
 var _lastUploadedImageFile = null;
 
+var _imageUploadState = 'idle';
+
 function handleAssetImageUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
 
     _lastUploadedImageFile = file;
+    _imageUploadState = 'uploading';
+    showToast('Uploading photo...', 'info');
 
     var tempId = 'new_' + Date.now().toString(36);
-    saveUploadedImageToIndexedDb(file, tempId).then(function(result) {
+    saveUploadedImage(file, tempId).then(function(result) {
+        _imageUploadState = 'ok';
         document.getElementById('invItemImageUrl').value = '';
         var preview = document.getElementById('invItemImagePreview');
         preview.src = result.blobUrl || result.dataUrl;
         preview.classList.remove('hidden');
         document.getElementById('btnAIAnalyze').style.display = '';
     }).catch(function(err) {
-        console.error('[upload] IDB save failed:', err);
-        showToast('Image upload failed: ' + err.message, 'error');
+        _imageUploadState = 'failed';
+        _lastUploadedImageFile = null;
+        _pendingImageMeta = null;
+        console.error('[upload] Cloud upload failed:', err);
+        var msg = (err.message || 'Unknown error');
+        if (msg.indexOf('Cloud sync not configured') !== -1 || msg.indexOf('Upload returned no URL') !== -1 || msg.indexOf('Failed to fetch') !== -1 || msg.indexOf('NetworkError') !== -1) {
+            msg = 'Photo upload failed. Check Cloud Engine settings and Apps Script deployment.';
+        }
+        showToast(msg, 'error');
+        var preview = document.getElementById('invItemImagePreview');
+        preview.src = '';
+        preview.classList.add('hidden');
+        document.getElementById('btnAIAnalyze').style.display = 'none';
     });
     event.target.value = '';
 }
@@ -4567,6 +4733,7 @@ async function syncFromCloudWithToast() {
             saveStateToLocalStorage();
             _syncInProgress = false;
             _syncLastFailed = false;
+            _syncConflict = false;
             updateSyncStatusBadge();
             updateSyncBanner();
             showToast('Synced \u2014 ' + (json.inventory || []).length + ' items', 'success');
@@ -4596,6 +4763,7 @@ function mergeCloudState(cloudState) {
 
     var mergedInventory = [];
     (cloudState.inventory || []).forEach(function(cloudItem) {
+        normalizeImageFields(cloudItem);
         var localItem = localItems[cloudItem.id];
         if (!localItem) {
             mergedInventory.push(cloudItem);
@@ -4621,6 +4789,7 @@ function mergeCloudState(cloudState) {
     }
 
     appState.inventory = mergedInventory;
+    appState.inventory.forEach(function(item) { normalizeImageFields(item); });
     appState.segments = cloudState.segments || appState.segments;
     appState.categories = cloudState.categories || appState.categories;
     appState.coordinates = cloudState.coordinates || appState.coordinates;
@@ -4669,7 +4838,7 @@ async function verifyCloudSync() {
             if (missingInCloud.length > 0) diffs.push(missingInCloud.length + ' only local');
             if (missingInLocal.length > 0) diffs.push(missingInLocal.length + ' only cloud');
             if (cloudRev !== localRev) diffs.push('revision mismatch');
-            showToast('\u26A0\uFE0F Out of sync \u2014 ' + diffs.join(', '), 'error');
+            showToast('\u26A0\uFE0F Out of sync \u2014 ' + diffs.join(', ') + '. Tap the sync banner or use Restore from cloud to resolve.', 'error');
             _syncConflict = true;
             updateSyncStatusBadge();
         }
@@ -4724,6 +4893,9 @@ async function autoPullFromCloudIfPossible() {
     } catch(e) {}
 }
 
+function normalizeAllItemImageFields() {
+    (appState.inventory || []).forEach(function(item) { normalizeImageFields(item); });
+}
 /* ==========================================================================
    Section 7.5: DeepSeek AI Semantic Search Engine
    ========================================================================== */
@@ -4839,6 +5011,46 @@ function resetAISearchFilter() {
 }
 
 var _currentItemTypeFilter = 'all';
+var _inventorySortKey = 'name';
+var _inventorySortDir = 'asc';
+
+function setInventorySort(key) {
+    if (_inventorySortKey === key) {
+        _inventorySortDir = _inventorySortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+        _inventorySortKey = key;
+        _inventorySortDir = 'asc';
+    }
+    renderFilteredInventoryTable();
+}
+
+function updateInventorySortIndicators() {
+    var headers = document.querySelectorAll('#tab-inventory thead th[data-sort-key]');
+    headers.forEach(function(th) {
+        var key = th.getAttribute('data-sort-key');
+        var indicator = th.querySelector('.sort-arrow');
+        if (indicator) indicator.textContent = '';
+        th.removeAttribute('aria-sort');
+        if (key === _inventorySortKey) {
+            th.setAttribute('aria-sort', _inventorySortDir === 'asc' ? 'ascending' : 'descending');
+            if (indicator) indicator.textContent = _inventorySortDir === 'asc' ? ' \u25B2' : ' \u25BC';
+        }
+    });
+}
+
+function getSortValue(item, key) {
+    if (!item) return '';
+    switch (key) {
+        case 'name':     return (item.name || '').toLowerCase();
+        case 'category': return (item.category || '').toLowerCase();
+        case 'location':
+            if (item.itemType === 'stock') return (getStockLocationSummary(item) || '').toLowerCase();
+            return [(item.segment || ''), (item.container || ''), (item.subContainer || '')].join('|').toLowerCase();
+        case 'owner':    return (item.owner || 'Default').toLowerCase();
+        case 'created':  return item.createdAt || item.timestamp || '';
+        default: return '';
+    }
+}
 
 function setItemTypeFilter(filter) {
     _currentItemTypeFilter = filter;
@@ -5156,6 +5368,7 @@ function restoreStateFromLocalStorage() {
             appState = JSON.parse(data);
             appState = migrateLegacyState(appState);
             saveStateToLocalStorage();
+            normalizeAllItemImageFields();
             migrateLegacyDataUrlImages().then(preloadAllIdbImages).then(function() {
                 maybeWarnStoragePressure();
             });
@@ -5370,6 +5583,14 @@ function renderFilteredInventoryTable() {
         return matchQuery && matchSeg && matchCon && matchCat && matchOwner;
     });
 
+    targets.sort(function(a, b) {
+        var va = getSortValue(a, _inventorySortKey);
+        var vb = getSortValue(b, _inventorySortKey);
+        if (va < vb) return _inventorySortDir === 'asc' ? -1 : 1;
+        if (va > vb) return _inventorySortDir === 'asc' ? 1 : -1;
+        return 0;
+    });
+
     document.getElementById('inventoryMetricCount').innerText = targets.length;
 
     tableBody.innerHTML = '';
@@ -5470,6 +5691,7 @@ function renderFilteredInventoryTable() {
             cardList.appendChild(card);
         });
     }
+    updateInventorySortIndicators();
 }
 
 function renderToBuyList() {

@@ -119,7 +119,7 @@
             </div>
             <div class="flex items-center gap-1.5 flex-shrink-0">
                 <span id="syncBannerMobile" class="text-[10px] font-medium whitespace-nowrap cursor-pointer" onclick="syncFromCloudWithToast()" title="Tap to sync"></span>
-                <button onclick="toggleOverflowMenu(event)" class="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors flex-shrink-0" aria-label="Menu">
+                <button onclick="toggleOverflowMenu(event, this)" class="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors flex-shrink-0" aria-label="Menu">
                     <svg class="h-5 w-5 text-slate-600" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
                 </button>
             </div>
@@ -127,31 +127,30 @@
     </header>
 
     <header class="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm hidden md:block">
-        <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-            <div class="flex items-center space-x-3">
-                <div class="h-8 w-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-lg">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        <div class="max-w-7xl mx-auto px-4 h-10 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2 min-w-0">
+                <div class="h-7 w-7 bg-blue-600 rounded-lg flex items-center justify-center text-white flex-shrink-0">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                 </div>
-                <h1 class="text-lg font-bold tracking-tight text-slate-900" data-i18n="appTitle">Find My Item</h1>
-                <div class="flex items-center gap-1.5 ml-3 pl-3 border-l border-slate-200">
-                    <span class="text-[10px] uppercase tracking-wider text-slate-400 font-bold">User</span>
-                    <select id="headerUserSelect" onchange="switchCurrentUser(this.value)" class="text-xs border border-slate-200 rounded-md px-2 py-1 focus:ring-2 focus:ring-blue-500 outline-none bg-slate-50 text-slate-700 font-medium"></select>
-                </div>
-                <div class="flex items-center gap-1.5 ml-2 pl-2 border-l border-slate-200">
-                    <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en')" class="text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md px-2 py-1 text-slate-600 font-medium transition-colors">中/EN</button>
-                    <button id="btnHeaderSyncNow" onclick="syncFromCloudWithToast()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1 text-blue-600 font-medium transition-colors"><span>↻</span></button>
-                    <span id="syncBannerDesktop" class="text-[10px] text-slate-400 font-medium"></span>
-                </div>
+                <h1 class="text-sm font-bold tracking-tight text-slate-900 truncate" data-i18n="appTitle">Find My Item</h1>
             </div>
-            <nav class="flex space-x-1" aria-label="Desktop Navigation">
-                <button onclick="switchTab('tab-spatial')" id="btn-desktop-spatial" class="tab-nav tab-active px-4 py-2 text-sm font-medium transition-all" data-i18n="tabLocation">Location</button>
-                <button onclick="switchTab('tab-register')" id="btn-desktop-register" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabRegister">Register</button>
-                <button onclick="switchTab('tab-inventory')" id="btn-desktop-inventory" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabBrowse">Browse</button>
-                <button onclick="switchTab('tab-classes')" id="btn-desktop-classes" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabClasses">Categories</button>
-                <button onclick="switchTab('tab-tobuy')" id="btn-desktop-tobuy" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabToBuy">To-Buy</button>
-                <button onclick="switchTab('tab-scan')" id="btn-desktop-scan" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabScan">Scan</button>
-                <div class="relative ml-1">
-                    <button onclick="toggleOverflowMenu(event)" class="tab-nav px-3 py-2 text-sm font-medium transition-all rounded-md" title="More options">
+            <div class="flex items-center gap-2 flex-shrink-0">
+                <select id="headerUserSelect" onchange="switchCurrentUser(this.value)" class="text-xs border border-slate-200 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none bg-slate-50 text-slate-700 font-medium max-w-[100px]"></select>
+                <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en')" class="text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md px-2 py-1.5 text-slate-600 font-medium transition-colors flex-shrink-0">中/EN</button>
+                <button id="btnHeaderSyncNow" onclick="syncFromCloudWithToast()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1.5 text-blue-600 font-medium transition-colors flex-shrink-0"><span>↻</span></button>
+                <span id="syncBannerDesktop" class="text-[10px] text-slate-400 font-medium hidden lg:inline"></span>
+            </div>
+        </div>
+        <div class="max-w-7xl mx-auto px-2">
+            <nav class="desktop-nav-scroll flex items-center gap-0.5 overflow-x-auto" aria-label="Desktop Navigation" style="-webkit-overflow-scrolling:touch; scrollbar-width:none; -ms-overflow-style:none;">
+                <button onclick="switchTab('tab-spatial')" id="btn-desktop-spatial" class="tab-nav tab-active px-4 py-2.5 text-sm font-medium transition-all whitespace-nowrap flex-shrink-0" data-i18n="tabLocation">Location</button>
+                <button onclick="switchTab('tab-register')" id="btn-desktop-register" class="tab-nav px-4 py-2.5 text-sm font-medium transition-all whitespace-nowrap flex-shrink-0" data-i18n="tabRegister">Register</button>
+                <button onclick="switchTab('tab-inventory')" id="btn-desktop-inventory" class="tab-nav px-4 py-2.5 text-sm font-medium transition-all whitespace-nowrap flex-shrink-0" data-i18n="tabBrowse">Browse</button>
+                <button onclick="switchTab('tab-classes')" id="btn-desktop-classes" class="tab-nav px-4 py-2.5 text-sm font-medium transition-all whitespace-nowrap flex-shrink-0" data-i18n="tabClasses">Categories</button>
+                <button onclick="switchTab('tab-tobuy')" id="btn-desktop-tobuy" class="tab-nav px-4 py-2.5 text-sm font-medium transition-all whitespace-nowrap flex-shrink-0" data-i18n="tabToBuy">To-Buy</button>
+                <button onclick="switchTab('tab-scan')" id="btn-desktop-scan" class="tab-nav px-4 py-2.5 text-sm font-medium transition-all whitespace-nowrap flex-shrink-0" data-i18n="tabScan">Scan</button>
+                <div class="flex-shrink-0 ml-0.5">
+                    <button onclick="toggleOverflowMenu(event, this)" class="tab-nav px-3 py-2.5 text-sm font-medium transition-all rounded-md whitespace-nowrap" title="More options">
                         <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
                     </button>
                 </div>
@@ -508,11 +507,11 @@
                         <thead class="sticky top-0 z-10">
                             <tr class="bg-slate-50 border-b border-slate-200 text-xs font-bold text-slate-500 uppercase tracking-wider">
                                 <th class="px-4 py-3 w-20 text-center">Visual</th>
-                                <th class="px-4 py-3">Asset Item Details</th>
-                                <th class="px-4 py-3">Classification</th>
-                                <th class="px-4 py-3">Location</th>
-                                <th class="px-4 py-3 w-16 text-center">Owner</th>
-                                <th class="px-4 py-3 w-40">Remarks</th>
+                                <th class="px-4 py-3" data-sort-key="name" aria-sort="ascending"><button type="button" onclick="setInventorySort('name')" class="sort-header w-full text-left uppercase tracking-wider font-bold text-xs text-slate-500 hover:text-slate-900 focus:outline-none focus:text-blue-600 transition-colors">Asset Item Details<span class="sort-arrow"> ▲</span></button></th>
+                                <th class="px-4 py-3" data-sort-key="category"><button type="button" onclick="setInventorySort('category')" class="sort-header w-full text-left uppercase tracking-wider font-bold text-xs text-slate-500 hover:text-slate-900 focus:outline-none focus:text-blue-600 transition-colors">Classification<span class="sort-arrow"></span></button></th>
+                                <th class="px-4 py-3" data-sort-key="location"><button type="button" onclick="setInventorySort('location')" class="sort-header w-full text-left uppercase tracking-wider font-bold text-xs text-slate-500 hover:text-slate-900 focus:outline-none focus:text-blue-600 transition-colors">Location<span class="sort-arrow"></span></button></th>
+                                <th class="px-4 py-3 w-16 text-center" data-sort-key="owner"><button type="button" onclick="setInventorySort('owner')" class="sort-header w-full text-center uppercase tracking-wider font-bold text-xs text-slate-500 hover:text-slate-900 focus:outline-none focus:text-blue-600 transition-colors">Owner<span class="sort-arrow"></span></button></th>
+                                <th class="px-4 py-3 w-40" data-sort-key="created"><button type="button" onclick="setInventorySort('created')" class="sort-header w-full text-left uppercase tracking-wider font-bold text-xs text-slate-500 hover:text-slate-900 focus:outline-none focus:text-blue-600 transition-colors">Created<span class="sort-arrow"></span></button></th>
                                 <th class="px-3 py-3 w-20 text-center">Actions</th>
                             </tr>
                         </thead>
@@ -755,14 +754,14 @@
             <span class="text-[10px] tracking-tight font-medium" data-i18n="tabScan">Scan</span>
         </button>
         <div class="relative flex-1">
-            <button onclick="toggleOverflowMenu(event)" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all w-full">
+            <button onclick="toggleOverflowMenu(event, this)" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all w-full">
                 <svg class="h-5 w-5 mb-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
                 <span class="text-[10px] tracking-tight font-medium">More</span>
             </button>
         </div>
     </nav>
 
-    <script src="app.js?v=2"></script>
+    <script src="app.js?v=10"></script>
 
     <button onclick="quickAddAsset()" class="fixed bottom-20 md:bottom-6 right-6 w-14 h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-xl flex items-center justify-center z-50 transition-transform hover:scale-110 active:scale-95" title="Quick Add Asset">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
