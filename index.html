@@ -35,6 +35,67 @@
         </div>
     </div>
 
+    <div id="stockLocationPickerOverlay" class="app-modal-overlay hidden" role="dialog" aria-modal="true" onclick="closeStockLocationPicker()">
+        <div class="bg-white rounded-xl shadow-2xl p-5 w-full max-w-md max-h-[80vh] overflow-y-auto" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-center mb-3">
+                <h3 id="slPickerTitle" class="text-sm font-bold text-slate-900">Choose Location</h3>
+                <button onclick="closeStockLocationPicker()" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
+            </div>
+            <div id="slPickerList" class="space-y-1.5 mb-3"></div>
+            <button id="slPickerAddNewBtn" onclick="openNewStockLocationModal(_slPickerItemId)" class="btn btn-sm btn-blue-light w-full justify-center hidden">
+                <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                Add New Location
+            </button>
+        </div>
+    </div>
+
+    <div id="newStockLocationOverlay" class="app-modal-overlay hidden" role="dialog" aria-modal="true" onclick="closeNewStockLocationModal()">
+        <div class="bg-white rounded-xl shadow-2xl p-5 w-full max-w-md max-h-[85vh] overflow-y-auto" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="text-sm font-bold text-slate-900">New Stock Location</h3>
+                <button onclick="closeNewStockLocationModal()" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
+            </div>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">Segment</label>
+                    <select id="nslSegment" onchange="syncNewStockLocationContainer()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">-- Choose Segment --</option></select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">Container</label>
+                    <select id="nslContainer" onchange="syncNewStockLocationSub()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">-- Choose Container --</option></select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">Sub-Container</label>
+                    <select id="nslSubContainer" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">-- Choose Sub-Container --</option></select>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">Quantity to Add</label>
+                        <input type="number" id="nslQty" min="1" step="1" value="1" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">Expiry Date</label>
+                        <input type="date" id="nslExpiry" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">Purchase Date</label>
+                        <input type="date" id="nslPurchase" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">Warranty Date</label>
+                        <input type="date" id="nslWarranty" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+                </div>
+                <div class="flex gap-2 justify-end pt-2 border-t border-slate-100">
+                    <button onclick="closeNewStockLocationModal()" class="btn btn-sm btn-ghost">Cancel</button>
+                    <button onclick="commitNewStockEntryFromModal(_nslItemId)" id="btnCommitNewLocation" class="btn btn-sm btn-primary">Add & Stock In</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="passwordOverlay" class="fixed inset-0 bg-slate-900 z-[9999] flex items-center justify-center p-4">
         <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm border border-slate-100">
             <h3 class="text-xl font-bold text-slate-900 mb-2" data-i18n="passwordTitle">Access Restrained</h3>
@@ -87,6 +148,7 @@
                 <button onclick="switchTab('tab-register')" id="btn-desktop-register" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabRegister">Register</button>
                 <button onclick="switchTab('tab-inventory')" id="btn-desktop-inventory" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabBrowse">Browse</button>
                 <button onclick="switchTab('tab-classes')" id="btn-desktop-classes" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabClasses">Categories</button>
+                <button onclick="switchTab('tab-tobuy')" id="btn-desktop-tobuy" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabToBuy">To-Buy</button>
                 <button onclick="switchTab('tab-scan')" id="btn-desktop-scan" class="tab-nav px-4 py-2 text-sm font-medium transition-all" data-i18n="tabScan">Scan</button>
                 <div class="relative ml-1">
                     <button onclick="toggleOverflowMenu(event)" class="tab-nav px-3 py-2 text-sm font-medium transition-all rounded-md" title="More options">
@@ -257,7 +319,7 @@
                             <div class="flex items-center gap-2">
                                 <div class="flex flex-1 max-w-xs rounded-lg border border-slate-300 overflow-hidden">
                                     <button type="button" id="btnItemTypeUnique" onclick="switchItemType('unique')" class="flex-1 text-xs font-medium py-2 px-3 bg-blue-600 text-white transition-colors">Unique</button>
-                                    <button type="button" id="btnItemTypeStock" onclick="switchItemType('stock')" class="flex-1 text-xs font-medium py-2 px-3 bg-white text-slate-500 transition-colors">Stock</button>
+                                    <button type="button" id="btnItemTypeStock" onclick="switchItemType('stock')" class="flex-1 text-xs font-medium py-2 px-3 bg-white text-slate-500 border border-slate-200 transition-colors">Stock</button>
                                 </div>
                                 <button type="button" id="btnScanExistingBarcode" onclick="scanExistingStockBarcode()" title="Scan existing item barcode to restock" class="hidden text-xs bg-amber-50 hover:bg-amber-100 text-amber-600 border border-amber-200 rounded-lg px-3 py-2 font-medium transition-colors whitespace-nowrap flex items-center gap-1">
                                     <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v1m6 11h2m-6 0h-2.48a2.5 2.5 0 00-4.52 0H4m16 0h-2m-4 4v1M4 8h2m4 0h4m2 0h2M8 8V6a4 4 0 018 0v2"/></svg>
@@ -265,28 +327,29 @@
                                 </button>
                             </div>
                         </div>
-                        <div id="stockFieldsContainer" class="hidden sm:col-span-2">
-                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 rounded-lg border border-slate-200 bg-slate-50">
+                        <div id="stockGlobalFields" class="hidden sm:col-span-2">
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-lg border border-amber-200 bg-amber-50/30">
                                 <div>
-                                    <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="uom">UOM</label>
-                                    <input type="text" id="invItemUom" placeholder="e.g., pcs, kg, box, liter" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                                    <label class="block text-xs font-semibold text-slate-700 mb-1" data-i18n="uom">Unit of Measure</label>
+                                    <input type="text" id="invItemUom" placeholder="e.g., pcs, kg, box, liter" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-amber-500 outline-none">
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="quantity">Quantity</label>
-                                    <input type="number" id="invItemQuantity" min="0" step="1" placeholder="0" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="minLevel">Min Level</label>
-                                    <input type="number" id="invItemMinQuantity" min="0" step="1" placeholder="0" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                                    <label class="block text-xs font-semibold text-slate-700 mb-1" data-i18n="minLevel">Minimum Stock Level</label>
+                                    <input type="number" id="invItemMinQuantity" min="0" step="1" placeholder="0" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-amber-500 outline-none">
                                 </div>
                             </div>
+                            <p class="text-[10px] text-slate-500 mt-1.5">These are global settings applied to the whole item. Location-specific quantities are set below.</p>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="owner">Owner</label>
+                            <select id="invItemOwnerSelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="selectUser">-- Select User --</option></select>
                         </div>
                     </div>
                 </div>
 
-                <!-- Section 2: Category & Location -->
+                <!-- Section 2: Category & Unique Item Location -->
                 <div class="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm">
-                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Category &amp; Location</h3>
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Category</h3>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div class="sm:col-span-2">
                             <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="categoryRoute">Category Route Allocation</label>
@@ -297,6 +360,8 @@
                                 <select id="invCatL4" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Level 4</option></select>
                             </div>
                         </div>
+                    </div>
+                    <div id="uniqueLocationSection" class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3 pt-3 border-t border-slate-100">
                         <div>
                             <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="targetSegment">Target Home Segment</label>
                             <select id="invItemSegmentSelect" onchange="syncInventoryFormContainersDropdown()" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="chooseSegment">-- Choose Segment --</option></select>
@@ -309,30 +374,46 @@
                             <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="subContainerAssign">Sub-Container Assignment</label>
                             <select id="invItemSubContainerSelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="chooseSubContainer">-- Choose Sub-Container --</option></select>
                         </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="owner">Owner</label>
-                            <select id="invItemOwnerSelect" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"><option value="" data-i18n="selectUser">-- Select User --</option></select>
-                        </div>
                     </div>
+                </div>
+
+                <!-- Section 2b: Stock Locations (stock only) -->
+                <div id="stockLocationsSection" class="bg-white p-4 sm:p-5 rounded-xl border border-amber-200 shadow-sm hidden">
+                    <div class="flex justify-between items-center mb-2">
+                        <div>
+                            <h3 class="text-xs font-bold uppercase tracking-wider text-amber-600">Stock Locations</h3>
+                            <p class="text-[10px] text-slate-500 mt-0.5">Each row = one physical storage spot. Quantity is per location — total is summed below.</p>
+                        </div>
+                        <span id="stockLocationsTotalQty" class="text-xs font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200">Total: 0</span>
+                    </div>
+                    <div id="stockLocationsRows" class="space-y-3"></div>
+                    <button type="button" id="btnAddStockLocation" onclick="addStockLocationRow()" class="mt-3 btn btn-sm btn-amber-outline w-full justify-center">
+                        <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                        Add Location
+                    </button>
                 </div>
 
                 <!-- Section 3: Dates & Attachments -->
                 <div class="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm">
                     <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Dates &amp; Attachments</h3>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="purchaseDate">Purchase Date</label>
-                            <input type="date" id="invItemPurchaseDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                        <div id="uniqueDatesRow1" class="sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="purchaseDate">Purchase Date</label>
+                                <input type="date" id="invItemPurchaseDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="warrantyDate">Warranty Date</label>
+                                <input type="date" id="invItemWarrantyDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="expiryDate">Expiry Date</label>
+                                <input type="date" id="invItemExpiryDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                            </div>
                         </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="warrantyDate">Warranty Date</label>
-                            <input type="date" id="invItemWarrantyDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                        <div id="stockDatesNote" class="sm:col-span-2 hidden">
+                            <p class="text-[10px] text-slate-400 bg-slate-50 border border-slate-200 rounded-lg p-2">For stock items, purchase/warranty/expiry dates are set per location in the Stock Locations section above.</p>
                         </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="expiryDate">Expiry Date</label>
-                            <input type="date" id="invItemExpiryDate" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
-                        </div>
-                        <div></div>
                         <div class="sm:col-span-2">
                             <label class="block text-xs font-semibold text-slate-600 mb-1" data-i18n="assetImage">Asset Image (Upload or URL)</label>
                             <div class="flex gap-2 items-start">
@@ -541,6 +622,24 @@
             </div>
         </div>
 
+        <section id="tab-tobuy" class="tab-panel hidden-panel">
+            <div class="max-w-4xl mx-auto">
+                <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <div>
+                            <h2 class="text-base font-bold text-slate-900">To-Buy List</h2>
+                            <p class="text-xs text-slate-500">Items that are low on stock or out of stock and need replenishment.</p>
+                        </div>
+                        <span id="tobuyMetricCount" class="text-xs font-bold bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full border border-amber-200">0 items</span>
+                    </div>
+                    <div class="flex gap-2 mt-3">
+                        <button onclick="renderToBuyList()" class="btn btn-xs btn-ghost">Refresh</button>
+                    </div>
+                </div>
+                <div id="tobuyListContainer" class="space-y-2"></div>
+            </div>
+        </section>
+
         <section id="tab-scan" class="tab-panel hidden-panel">
             <div class="max-w-lg mx-auto space-y-5">
                 <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
@@ -582,22 +681,23 @@
                     <img id="scanResultImage" src="" class="w-full max-h-48 object-contain rounded-lg border border-slate-200 bg-slate-50 mb-3 hidden">
                     <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
                         <div><span class="text-slate-400 text-xs">Category</span><br><span id="scanResultCategory" class="font-medium text-slate-700 text-xs"></span></div>
-                        <div><span class="text-slate-400 text-xs">Location</span><br><span id="scanResultLocation" class="font-medium text-slate-700 text-xs"></span></div>
                         <div><span class="text-slate-400 text-xs">Owner</span><br><span id="scanResultOwner" class="font-medium text-slate-700 text-xs"></span></div>
-                        <div><span class="text-slate-400 text-xs">Expiry</span><br><span id="scanResultExpiry" class="font-medium text-slate-700 text-xs"></span></div>
                     </div>
                     <div class="mt-3 pt-3 border-t border-slate-100">
                         <p class="text-xs text-slate-400 font-medium">Remarks</p>
                         <p id="scanResultRemarks" class="text-sm text-slate-600 mt-1"></p>
                     </div>
                     <div id="scanResultStockInfo" class="mt-3 pt-3 border-t border-slate-100 hidden">
-                        <p class="text-xs text-slate-400 font-medium">Stock Level</p>
-                        <p id="scanResultStockText" class="text-sm text-slate-700 mt-1 font-medium"></p>
+                        <div class="flex justify-between items-center mb-2">
+                            <p class="text-xs text-slate-400 font-medium">Stock Level</p>
+                            <span id="scanResultStockTotal" class="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100"></span>
+                        </div>
+                        <div id="scanResultStockBreakdown" class="space-y-1.5 max-h-40 overflow-y-auto"></div>
                     </div>
                     <div class="mt-4 flex flex-wrap gap-2">
                         <button onclick="showItemDetail(_currentScanItemId)" class="btn btn-sm btn-ghost">View</button>
                         <button onclick="scanEditItem()" class="btn btn-sm btn-primary">Edit</button>
-                        <button id="btnScanDrop" onclick="scanDropItem()" class="btn btn-sm btn-danger-light hidden">Drop</button>
+                        <button id="btnScanDrop" onclick="scanDropItem()" class="btn btn-sm btn-danger-light">Drop</button>
                         <button id="btnScanOut" onclick="scanStockOut()" class="btn btn-sm btn-warning hidden">Out</button>
                         <button id="btnScanIn" onclick="scanStockIn()" class="btn btn-sm btn-success hidden">In</button>
                     </div>
@@ -641,6 +741,10 @@
             <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
             <span class="text-[10px] tracking-tight font-medium" data-i18n="tabClasses">Categories</span>
         </button>
+        <button onclick="switchTab('tab-tobuy')" id="btn-mobile-tobuy" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all flex-1">
+            <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 100 4 2 2 0 000-4z"/></svg>
+            <span class="text-[10px] tracking-tight font-medium">To-Buy</span>
+        </button>
         <button onclick="switchTab('tab-scan')" id="btn-mobile-scan" class="flex flex-col items-center justify-center py-2 text-slate-400 transition-all flex-1">
             <svg class="h-5 w-5 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v1m6 11h2m-6 0h-2.48a2.5 2.5 0 00-4.52 0H4m16 0h-2m-4 4v1M4 8h2m4 0h4m2 0h2M8 8V6a4 4 0 018 0v2"/></svg>
             <span class="text-[10px] tracking-tight font-medium" data-i18n="tabScan">Scan</span>
@@ -672,7 +776,13 @@
                 <div class="flex justify-between"><span class="text-slate-400">Location</span><span id="detailItemLocation" class="font-medium text-slate-700"></span></div>
                 <div class="flex justify-between"><span class="text-slate-400">Owner</span><span id="detailItemOwner" class="font-medium text-slate-700"></span></div>
                 <div class="flex justify-between"><span class="text-slate-400">Expiry Date</span><span id="detailItemExpiry" class="font-medium text-slate-700"></span></div>
-                <div id="detailItemStockRow" class="flex justify-between hidden"><span class="text-slate-400">Stock</span><span id="detailItemStock" class="font-medium text-amber-700"></span></div>
+                <div id="detailItemStockSection" class="hidden pt-2 border-t border-slate-100">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-slate-400 text-xs">Stock</span>
+                        <span id="detailItemStockTotal" class="font-bold text-blue-700 text-sm"></span>
+                    </div>
+                    <div id="detailItemStockBreakdown" class="space-y-1.5 max-h-48 overflow-y-auto"></div>
+                </div>
                 <div class="flex justify-between"><span class="text-slate-400">Added</span><span id="detailItemTime" class="font-medium text-slate-700"></span></div>
                 <div class="pt-2 border-t border-slate-100"><span class="text-slate-400 text-xs">Remarks</span><p id="detailItemRemarks" class="text-slate-600 mt-1"></p></div>
                 <div id="detailItemAiMetadataRow" class="pt-2 border-t border-slate-100 hidden"><span class="text-slate-400 text-xs">AI Description</span><p id="detailItemAiMetadata" class="text-indigo-600 mt-1 text-xs"></p></div>
@@ -689,7 +799,7 @@
                         <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                         Edit
                     </button>
-                    <button id="btnDetailDrop" onclick="scanDropItem(); closeItemDetail()" class="btn btn-sm btn-danger-light flex-1 hidden">
+                    <button id="btnDetailDrop" onclick="scanDropItem(); closeItemDetail()" class="btn btn-sm btn-danger-light flex-1">
                         <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                         Drop
                     </button>

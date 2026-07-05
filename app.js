@@ -199,6 +199,9 @@ const LANG = {
     aiMetadataPlaceholder: 'AI-generated description of the asset...',
     barcodeCopied: 'Barcode ID copied',
     barcodeCopyFailed: 'Copy failed',
+    tabToBuy: 'To-Buy',
+    stockLow: 'Low stock',
+    stockOut: 'Out of stock',
   },
   'zh-Hant': {
     appTitle: '物件追蹤',
@@ -395,6 +398,9 @@ const LANG = {
     aiMetadataPlaceholder: 'AI 生成的資產描述...',
     barcodeCopied: 'Barcode ID 已複製',
     barcodeCopyFailed: '複製失敗',
+    tabToBuy: '待購清單',
+    stockLow: '存量不足',
+    stockOut: '缺貨',
   }
 };
 
@@ -464,6 +470,78 @@ let appState = {
     activeMappingNode: null,
     spatialBackgroundImage: null
 };
+
+// ===== Multi-Location Stock Helpers =====
+function getStockEntries(item) {
+    if (!item || item.itemType !== 'stock') return [];
+    if (item.stockEntries && Array.isArray(item.stockEntries)) return item.stockEntries;
+    return [];
+}
+
+function getActiveStockEntries(item) {
+    return getStockEntries(item).filter(function(e) { return !e.hiddenAt; });
+}
+
+function getTotalStockQuantity(item) {
+    return getActiveStockEntries(item).reduce(function(sum, e) { return sum + (e.quantity || 0); }, 0);
+}
+
+function isStockItemLow(item) {
+    if (item.itemType !== 'stock') return false;
+    var total = getTotalStockQuantity(item);
+    return total <= (item.minQuantity || 0) && (item.minQuantity || 0) > 0;
+}
+
+function isStockItemOutOfStock(item) {
+    if (item.itemType !== 'stock') return false;
+    return getTotalStockQuantity(item) === 0;
+}
+
+function getStockLocationLabel(entry) {
+    var parts = [];
+    if (entry.segment) parts.push(entry.segment);
+    if (entry.container) parts.push(entry.container);
+    if (entry.subContainer) parts.push(entry.subContainer);
+    return parts.join(' > ') || '\u2014';
+}
+
+function getStockLocationSummary(item) {
+    if (item.itemType !== 'stock') return '';
+    var entries = getActiveStockEntries(item);
+    if (entries.length === 0) return 'No locations';
+    var locations = entries.map(function(e) { return getStockLocationLabel(e) + ' (' + (e.quantity || 0) + ')'; });
+    if (locations.length <= 2) return locations.join(' | ');
+    return locations.slice(0, 2).join(' | ') + ' +' + (locations.length - 2) + ' more';
+}
+
+function generateStockEntryId() {
+    return 'se_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 6);
+}
+
+function migrateLegacyStockItem(item) {
+    if (item.itemType !== 'stock') return false;
+    if (item.stockEntries && Array.isArray(item.stockEntries)) return false;
+    var entry = {
+        id: generateStockEntryId(),
+        segment: item.segment || '',
+        container: item.container || '',
+        subContainer: item.subContainer || '',
+        quantity: item.quantity || 0,
+        purchaseDate: item.purchaseDate || '',
+        warrantyDate: item.warrantyDate || '',
+        expiryDate: item.expiryDate || '',
+        hiddenAt: item.quantity === 0 ? new Date().toISOString() : null
+    };
+    item.stockEntries = [entry];
+    item.segment = '';
+    item.container = '';
+    item.subContainer = '';
+    item.quantity = 0;
+    item.purchaseDate = '';
+    item.warrantyDate = '';
+    item.expiryDate = '';
+    return true;
+}
 
 // Transient runtime state (not persisted)
 let aiFilteredItemIds = null;
@@ -1113,6 +1191,9 @@ function switchTab(targetTabId) {
     if (targetTabId === 'tab-spatial') {
         clearActiveNode();
     }
+    if (targetTabId === 'tab-tobuy') {
+        renderToBuyList();
+    }
 }
 
 function markFormDirty() {
@@ -1284,7 +1365,7 @@ function filterBy(field, value) {
 }
 
 function showItemDetail(itemId) {
-    const item = appState.inventory.find(i => i.id === itemId && !i.deletedAt);
+    var item = appState.inventory.find(function(i) { return i.id === itemId && !i.deletedAt; });
     if (!item) return;
     document.getElementById('detailItemName').innerText = item.name;
     var brandEl = document.getElementById('detailItemBrand');
@@ -1295,15 +1376,38 @@ function showItemDetail(itemId) {
         brandEl.classList.add('hidden');
     }
     document.getElementById('detailItemCategory').innerText = item.category;
-    document.getElementById('detailItemLocation').innerText = (item.segment || '') + ' > ' + (item.container || '') + (item.subContainer ? ' > ' + item.subContainer : '');
+    if (item.itemType === 'stock') {
+        document.getElementById('detailItemLocation').innerText = getStockLocationSummary(item);
+    } else {
+        document.getElementById('detailItemLocation').innerText = (item.segment || '') + ' > ' + (item.container || '') + (item.subContainer ? ' > ' + item.subContainer : '');
+    }
     document.getElementById('detailItemOwner').innerText = item.owner || 'Default';
     document.getElementById('detailItemExpiry').innerText = item.expiryDate || '\u2014';
     if (item.itemType === 'stock') {
-        var qtyWarn = item.quantity <= item.minQuantity && item.minQuantity > 0 ? ' \u26A0\uFE0F Low stock' : '';
-        document.getElementById('detailItemStockRow').classList.remove('hidden');
-        document.getElementById('detailItemStock').innerText = (item.quantity || 0) + ' ' + (item.uom || 'pcs') + '  /  min ' + (item.minQuantity || 0) + qtyWarn;
+        var totalQty = getTotalStockQuantity(item);
+        var isLow = isStockItemLow(item);
+        var isOut = isStockItemOutOfStock(item);
+        var statusBadge = '';
+        if (isOut) statusBadge = '<span class="text-[10px] bg-red-50 text-red-700 border border-red-200 rounded-full px-2 py-0.5 ml-2 font-bold">OUT</span>';
+        else if (isLow) statusBadge = '<span class="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-2 py-0.5 ml-2 font-bold">LOW</span>';
+        var stockSection = document.getElementById('detailItemStockSection');
+        stockSection.classList.remove('hidden');
+        document.getElementById('detailItemStockTotal').innerHTML = totalQty + ' ' + (item.uom || 'pcs') + ' / min ' + (item.minQuantity || 0) + statusBadge;
+        var breakdown = document.getElementById('detailItemStockBreakdown');
+        var entries = getActiveStockEntries(item);
+        breakdown.innerHTML = entries.map(function(e, idx) {
+            var locLabel = getStockLocationLabel(e);
+            var expStr = e.expiryDate ? '<span class="text-[10px] text-red-500 ml-1">Exp: ' + e.expiryDate + '</span>' : '';
+            var rowId = 'detail-loc-' + idx;
+            return '<div class="flex items-center justify-between text-xs py-1 px-2 bg-slate-50 rounded border border-slate-100">' +
+                '<span class="text-slate-600 truncate flex-1">' + locLabel + expStr + '</span>' +
+                '<span class="font-bold text-slate-800 mx-2">' + (e.quantity || 0) + '</span>' +
+                '<button onclick="continueStockEntryIn(\'' + item.id + '\', \'' + e.id + '\')" class="text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-600 border border-emerald-200 rounded px-2 py-0.5 font-medium">IN</button>' +
+                '<button onclick="continueStockEntryOut(\'' + item.id + '\', \'' + e.id + '\')" class="text-[10px] bg-amber-50 hover:bg-amber-100 text-amber-600 border border-amber-200 rounded px-2 py-0.5 font-medium ml-1">OUT</button>' +
+                '</div>';
+        }).join('');
     } else {
-        document.getElementById('detailItemStockRow').classList.add('hidden');
+        document.getElementById('detailItemStockSection').classList.add('hidden');
     }
     document.getElementById('detailItemTime').innerText = item.timestamp;
     document.getElementById('detailItemRemarks').innerText = item.remarks || 'None';
@@ -1317,7 +1421,7 @@ function showItemDetail(itemId) {
     } else {
         aiRow.classList.add('hidden');
     }
-    const img = document.getElementById('detailItemImage');
+    var img = document.getElementById('detailItemImage');
     if (item.imageUrl && item.imageUrl !== 'https://placehold.co/100?text=No+Photo') {
         img.src = item.imageUrl;
         img.classList.remove('hidden');
@@ -1330,8 +1434,8 @@ function showItemDetail(itemId) {
     _currentScanItemId = item.id;
 
     var isStock = item.itemType === 'stock';
-    document.getElementById('btnDetailDrop').classList.toggle('hidden', isStock);
-    document.getElementById('btnDetailDrop').classList.toggle('flex', !isStock);
+    document.getElementById('btnDetailDrop').classList.remove('hidden');
+    document.getElementById('btnDetailDrop').classList.add('flex');
     document.getElementById('btnDetailOut').classList.toggle('hidden', !isStock);
     document.getElementById('btnDetailOut').classList.toggle('flex', isStock);
     document.getElementById('btnDetailIn').classList.toggle('hidden', !isStock);
@@ -1510,7 +1614,16 @@ function scanEditItem() {
 
 function addToRecentScans(item) {
     _recentScans = _recentScans.filter(function(r) { return r.id !== item.id; });
-    _recentScans.unshift({ id: item.id, name: item.name, segment: item.segment, container: item.container, subContainer: item.subContainer || '', time: new Date().toISOString() });
+    var seg = item.segment || '';
+    var con = item.container || '';
+    var sub = item.subContainer || '';
+    if (item.itemType === 'stock' && getActiveStockEntries(item).length > 0) {
+        var first = getActiveStockEntries(item)[0];
+        seg = first.segment || '';
+        con = first.container || '';
+        sub = first.subContainer || '';
+    }
+    _recentScans.unshift({ id: item.id, name: item.name, segment: seg, container: con, subContainer: sub, time: new Date().toISOString() });
     if (_recentScans.length > 5) _recentScans = _recentScans.slice(0, 5);
 }
 
@@ -1555,29 +1668,39 @@ function displayScanResult(id) {
 
     document.getElementById('scanResultName').innerText = item.name + (item.brand ? '  \u2014  ' + item.brand : '');
     document.getElementById('scanResultCategory').innerText = item.category;
-    document.getElementById('scanResultLocation').innerText = (item.segment || '') + ' \u203A ' + (item.container || '') + (item.subContainer ? ' \u203A ' + item.subContainer : '');
     document.getElementById('scanResultOwner').innerText = item.owner || 'Default';
-    document.getElementById('scanResultExpiry').innerText = item.expiryDate || '\u2014';
     document.getElementById('scanResultRemarks').innerText = item.remarks || 'None';
 
     var lowBadge = document.getElementById('scanResultLowStockBadge');
-    if (isStock && item.quantity <= item.minQuantity && item.minQuantity > 0) {
+    if (isStock && isStockItemLow(item)) {
         lowBadge.classList.remove('hidden');
     } else {
         lowBadge.classList.add('hidden');
     }
 
     var stockInfo = document.getElementById('scanResultStockInfo');
-    var stockText = document.getElementById('scanResultStockText');
     if (isStock) {
         stockInfo.classList.remove('hidden');
-        stockText.innerText = (item.quantity || 0) + ' ' + (item.uom || 'pcs') + (item.quantity <= item.minQuantity && item.minQuantity > 0 ? ' \u26A0\uFE0F Below min (' + item.minQuantity + ')' : '');
+        var totalQty = getTotalStockQuantity(item);
+        document.getElementById('scanResultStockTotal').innerText = '' + totalQty + ' ' + (item.uom || 'pcs') + ' / min ' + (item.minQuantity || 0);
+        var breakdown = document.getElementById('scanResultStockBreakdown');
+        var entries = getActiveStockEntries(item);
+        breakdown.innerHTML = entries.map(function(e, idx) {
+            var locLabel = getStockLocationLabel(e);
+            var expStr = e.expiryDate ? '<span class="text-[10px] text-red-500 ml-1">Exp: ' + e.expiryDate + '</span>' : '';
+            return '<div class="flex items-center justify-between text-xs py-1.5 px-2 bg-slate-50 rounded border border-slate-100">' +
+                '<span class="text-slate-600 truncate flex-1">' + locLabel + expStr + '</span>' +
+                '<span class="font-bold text-slate-800 mx-2">' + (e.quantity || 0) + '</span>' +
+                '<button onclick="event.stopPropagation(); continueStockEntryIn(\'' + item.id + '\', \'' + e.id + '\')" class="text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-600 border border-emerald-200 rounded px-2 py-0.5 font-medium">IN</button>' +
+                '<button onclick="event.stopPropagation(); continueStockEntryOut(\'' + item.id + '\', \'' + e.id + '\')" class="text-[10px] bg-amber-50 hover:bg-amber-100 text-amber-600 border border-amber-200 rounded px-2 py-0.5 font-medium ml-1">OUT</button>' +
+                '</div>';
+        }).join('');
     } else {
         stockInfo.classList.add('hidden');
     }
 
-    document.getElementById('btnScanDrop').classList.toggle('hidden', isStock);
-    document.getElementById('btnScanDrop').classList.toggle('flex', !isStock);
+    document.getElementById('btnScanDrop').classList.remove('hidden');
+    document.getElementById('btnScanDrop').classList.add('flex');
     document.getElementById('btnScanOut').classList.toggle('hidden', !isStock);
     document.getElementById('btnScanOut').classList.toggle('flex', isStock);
     document.getElementById('btnScanIn').classList.toggle('hidden', !isStock);
@@ -1611,45 +1734,69 @@ async function scanDropItem() {
     syncUIComponents();
 }
 
+var _slPickerItemId = null;
+var _slPickerMode = null;
+var _nslItemId = null;
+
+function openStockLocationActionPicker(itemId, mode) {
+    var item = appState.inventory.find(function(i) { return i.id === itemId && !i.deletedAt; });
+    if (!item || item.itemType !== 'stock') return;
+    var entries = getActiveStockEntries(item);
+    _slPickerItemId = itemId;
+    _slPickerMode = mode;
+
+    if (mode === 'OUT' && entries.filter(function(e) { return (e.quantity || 0) > 0; }).length === 0) {
+        showToast('No locations with stock to remove.', 'error');
+        return;
+    }
+
+    var title = mode === 'IN' ? 'Add Stock — Choose Location' : 'Remove Stock — Choose Location';
+    document.getElementById('slPickerTitle').innerText = title;
+    var listEl = document.getElementById('slPickerList');
+    listEl.innerHTML = entries.map(function(e) {
+        var locLabel = getStockLocationLabel(e);
+        var css = 'cursor-pointer hover:bg-blue-50 border rounded-lg p-2.5 transition-colors flex justify-between items-center';
+        var onclick = mode === 'IN'
+            ? "closeStockLocationPicker(); continueStockEntryIn('" + itemId + "', '" + e.id + "')"
+            : "closeStockLocationPicker(); continueStockEntryOut('" + itemId + "', '" + e.id + "')";
+        return '<div class="' + css + '" onclick="' + onclick + '">' +
+            '<div><div class="text-xs font-semibold text-slate-800">' + locLabel + '</div>' +
+            (e.expiryDate ? '<div class="text-[10px] text-red-500">Exp: ' + e.expiryDate + '</div>' : '') +
+            '</div>' +
+            '<span class="text-sm font-bold text-blue-600">' + (e.quantity || 0) + '</span>' +
+            '</div>';
+    }).join('');
+
+    var addBtn = document.getElementById('slPickerAddNewBtn');
+    if (mode === 'IN') {
+        addBtn.classList.remove('hidden');
+        addBtn.classList.add('flex');
+    } else {
+        addBtn.classList.add('hidden');
+        addBtn.classList.remove('flex');
+    }
+
+    document.getElementById('stockLocationPickerOverlay').classList.remove('hidden');
+}
+
+function closeStockLocationPicker() {
+    document.getElementById('stockLocationPickerOverlay').classList.add('hidden');
+}
+
 async function scanStockOut() {
     if (!_currentScanItemId) return;
     var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId && !i.deletedAt; });
     if (!item || item.itemType !== 'stock') return;
-    var currentQty = item.quantity || 0;
-    var uom = item.uom || 'pcs';
-    var input = await showAppPrompt(
-        'Remove stock from "' + item.name + '"?',
-        'Current: ' + currentQty + ' ' + uom,
-        ''
-    );
-    if (!input) return;
-    var amount = parseInt(input);
-    if (isNaN(amount) || amount <= 0) { showToast('Please enter a positive number.', 'error'); return; }
-    if (amount > currentQty) { showToast('Cannot remove more than current stock (' + currentQty + ').', 'error'); return; }
-    var newQty = currentQty - amount;
-    item.quantity = newQty;
-    item.updatedAt = new Date().toISOString();
-    item.version = (item.version || 1) + 1;
-    item.lastModifiedBy = appState.meta.deviceId;
-    mutateState('STOCK_OUT', { itemId: item.id, amount: amount });
-    if (newQty === 0) {
-        item.deletedAt = new Date().toISOString();
-        item.version = (item.version || 1) + 1;
-        mutateState('REMOVE_ITEM', { itemId: item.id, reason: 'stock-zero' });
-        removeFromRecentScans(item.id);
-        renderRecentScans();
+    var entries = getActiveStockEntries(item);
+    var valid = entries.filter(function(e) { return (e.quantity || 0) > 0; });
+    if (valid.length === 0) {
+        showToast('No locations with stock to remove.', 'error');
+        return;
     }
-    syncUIComponents();
-    if (newQty === 0) {
-        closeItemDetail();
-        document.getElementById('scanResultCard').classList.add('hidden');
-        document.getElementById('scanNotFoundCard').classList.remove('hidden');
-        document.getElementById('scanNotFoundReason').innerText = '"' + item.name + '" depleted & removed.';
-        showToast('Stock reached 0 \u2014 item removed', 'success');
+    if (valid.length === 1) {
+        continueStockEntryOut(item.id, valid[0].id);
     } else {
-        showItemDetail(_currentScanItemId);
-        displayScanResult(_currentScanItemId);
-        showToast('Removed ' + amount + ' ' + uom + ' \u2014 now ' + newQty, 'success');
+        openStockLocationActionPicker(item.id, 'OUT');
     }
 }
 
@@ -1657,25 +1804,144 @@ async function scanStockIn() {
     if (!_currentScanItemId) return;
     var item = appState.inventory.find(function(i) { return i.id === _currentScanItemId && !i.deletedAt; });
     if (!item || item.itemType !== 'stock') return;
-    var currentQty = item.quantity || 0;
-    var uom = item.uom || 'pcs';
-    var input = await showAppPrompt(
-        'Add stock to "' + item.name + '"?',
-        'Current: ' + currentQty + ' ' + uom,
-        ''
-    );
-    if (!input) return;
-    var amount = parseInt(input);
-    if (isNaN(amount) || amount <= 0) { showToast('Please enter a positive number.', 'error'); return; }
-    item.quantity = currentQty + amount;
+    openStockLocationActionPicker(item.id, 'IN');
+}
+
+async function continueStockEntryIn(itemId, entryId) {
+    var item = appState.inventory.find(function(i) { return i.id === itemId; });
+    if (!item) return;
+    var entry = getStockEntries(item).find(function(e) { return e.id === entryId; });
+    if (!entry) return;
+    var amount = await showAppPrompt('Add stock to ' + getStockLocationLabel(entry) + '?', 'Current: ' + (entry.quantity || 0) + ' ' + (item.uom || 'pcs'), '');
+    if (!amount) return;
+    var amt = parseInt(amount);
+    if (isNaN(amt) || amt <= 0) { showToast('Please enter a positive number.', 'error'); return; }
+    entry.quantity = (entry.quantity || 0) + amt;
+    item.quantity = getTotalStockQuantity(item);
     item.updatedAt = new Date().toISOString();
     item.version = (item.version || 1) + 1;
     item.lastModifiedBy = appState.meta.deviceId;
-    mutateState('STOCK_IN', { itemId: item.id, amount: amount });
+    mutateState('STOCK_IN', { itemId: item.id, amount: amt, entryId: entryId });
     syncUIComponents();
-    showItemDetail(_currentScanItemId);
-    displayScanResult(_currentScanItemId);
-    showToast('Added ' + amount + ' ' + uom + ' \u2014 now ' + item.quantity, 'success');
+    if (_currentScanItemId === itemId) {
+        showItemDetail(itemId);
+        displayScanResult(itemId);
+    } else {
+        showItemDetail(itemId);
+    }
+    showToast('Added ' + amt + ' ' + (item.uom || 'pcs'), 'success');
+}
+
+async function continueStockEntryOut(itemId, entryId) {
+    var item = appState.inventory.find(function(i) { return i.id === itemId; });
+    if (!item) return;
+    var entry = getStockEntries(item).find(function(e) { return e.id === entryId; });
+    if (!entry) return;
+    if ((entry.quantity || 0) <= 0) { showToast('No stock to remove from this location.', 'error'); return; }
+    var amount = await showAppPrompt('Remove from ' + getStockLocationLabel(entry) + '?', 'Current: ' + (entry.quantity || 0) + ' ' + (item.uom || 'pcs'), '');
+    if (!amount) return;
+    var amt = parseInt(amount);
+    if (isNaN(amt) || amt <= 0) { showToast('Please enter a positive number.', 'error'); return; }
+    if (amt > (entry.quantity || 0)) { showToast('Cannot remove more than current (' + (entry.quantity || 0) + ').', 'error'); return; }
+    entry.quantity = (entry.quantity || 0) - amt;
+    item.quantity = getTotalStockQuantity(item);
+    item.updatedAt = new Date().toISOString();
+    item.version = (item.version || 1) + 1;
+    item.lastModifiedBy = appState.meta.deviceId;
+    mutateState('STOCK_OUT', { itemId: item.id, amount: amt, entryId: entryId });
+    syncUIComponents();
+    if (_currentScanItemId === itemId) {
+        showItemDetail(itemId);
+        displayScanResult(itemId);
+    } else {
+        showItemDetail(itemId);
+    }
+    showToast('Removed ' + amt + ' ' + (item.uom || 'pcs'), 'success');
+}
+
+function openNewStockLocationModal(itemId) {
+    _nslItemId = itemId;
+    var segSel = document.getElementById('nslSegment');
+    segSel.innerHTML = '<option value="">-- Choose Segment --</option>';
+    Object.keys(appState.segments).forEach(function(s) {
+        var opt = document.createElement('option');
+        opt.value = s; opt.innerText = s; segSel.appendChild(opt);
+    });
+    document.getElementById('nslContainer').innerHTML = '<option value="">-- Choose Container --</option>';
+    document.getElementById('nslSubContainer').innerHTML = '<option value="">-- Choose Sub-Container --</option>';
+    document.getElementById('nslQty').value = 1;
+    document.getElementById('nslExpiry').value = '';
+    document.getElementById('nslPurchase').value = '';
+    document.getElementById('nslWarranty').value = '';
+    document.getElementById('newStockLocationOverlay').classList.remove('hidden');
+    closeStockLocationPicker();
+}
+
+function closeNewStockLocationModal() {
+    document.getElementById('newStockLocationOverlay').classList.add('hidden');
+}
+
+function syncNewStockLocationContainer() {
+    var seg = document.getElementById('nslSegment').value;
+    var conSel = document.getElementById('nslContainer');
+    conSel.innerHTML = '<option value="">-- Choose Container --</option>';
+    if (seg && appState.segments[seg]) {
+        Object.keys(appState.segments[seg]).forEach(function(c) {
+            var opt = document.createElement('option');
+            opt.value = c; opt.innerText = c; conSel.appendChild(opt);
+        });
+    }
+    syncNewStockLocationSub();
+}
+
+function syncNewStockLocationSub() {
+    var seg = document.getElementById('nslSegment').value;
+    var con = document.getElementById('nslContainer').value;
+    var subSel = document.getElementById('nslSubContainer');
+    subSel.innerHTML = '<option value="">-- Choose Sub-Container --</option>';
+    if (seg && con && appState.segments[seg] && appState.segments[seg][con]) {
+        (appState.segments[seg][con] || []).forEach(function(s) {
+            var opt = document.createElement('option');
+            opt.value = s; opt.innerText = s; subSel.appendChild(opt);
+        });
+    }
+}
+
+async function commitNewStockEntryFromModal(itemId) {
+    var seg = document.getElementById('nslSegment').value;
+    var con = document.getElementById('nslContainer').value;
+    if (!seg || !con) { showToast('Segment and Container are required.', 'error'); return; }
+    var item = appState.inventory.find(function(i) { return i.id === itemId; });
+    if (!item) return;
+    var qty = parseInt(document.getElementById('nslQty').value) || 0;
+    if (qty <= 0) { showToast('Quantity must be > 0.', 'error'); return; }
+    var entry = {
+        id: generateStockEntryId(),
+        segment: seg,
+        container: con,
+        subContainer: document.getElementById('nslSubContainer').value || '',
+        quantity: qty,
+        purchaseDate: document.getElementById('nslPurchase').value,
+        warrantyDate: document.getElementById('nslWarranty').value,
+        expiryDate: document.getElementById('nslExpiry').value,
+        hiddenAt: null
+    };
+    if (!item.stockEntries) item.stockEntries = [];
+    item.stockEntries.push(entry);
+    item.quantity = getTotalStockQuantity(item);
+    item.updatedAt = new Date().toISOString();
+    item.version = (item.version || 1) + 1;
+    item.lastModifiedBy = appState.meta.deviceId;
+    mutateState('STOCK_IN', { itemId: item.id, amount: qty, entryId: entry.id });
+    closeNewStockLocationModal();
+    syncUIComponents();
+    if (_currentScanItemId === itemId) {
+        showItemDetail(itemId);
+        displayScanResult(itemId);
+    } else {
+        showItemDetail(itemId);
+    }
+    showToast('Added ' + qty + ' ' + (item.uom || 'pcs') + ' to new location ' + getStockLocationLabel(entry), 'success');
 }
 
 function downloadBarcodeLabel() {
@@ -1916,7 +2182,12 @@ function addSegmentNode() {
                 } else newCoords[k] = appState.coordinates[k];
             }
             appState.coordinates = newCoords;
-            appState.inventory.forEach(function(item) { if (item.segment === oldName) item.segment = sName; });
+            appState.inventory.forEach(function(item) {
+                if (item.segment === oldName) item.segment = sName;
+                if (item.stockEntries) {
+                    item.stockEntries.forEach(function(e) { if (e.segment === oldName) e.segment = sName; });
+                }
+            });
             if (appState.activeMappingNode && appState.activeMappingNode.segment === oldName) {
                 appState.activeMappingNode.segment = sName;
             }
@@ -1977,6 +2248,13 @@ function addContainerNode() {
         appState.inventory.forEach(function(item) {
             if (item.segment === oldSeg && item.container === oldName) {
                 item.segment = newSeg; item.container = newName;
+            }
+            if (item.stockEntries) {
+                item.stockEntries.forEach(function(e) {
+                    if (e.segment === oldSeg && e.container === oldName) {
+                        e.segment = newSeg; e.container = newName;
+                    }
+                });
             }
         });
         if (appState.activeMappingNode && appState.activeMappingNode.segment === oldSeg && appState.activeMappingNode.container === oldName) {
@@ -2045,6 +2323,13 @@ function addSubContainerNode() {
         appState.inventory.forEach(function(item) {
             if (item.segment === oldSeg && item.container === oldCon && item.subContainer === oldName) {
                 item.segment = newSeg; item.container = newCon; item.subContainer = newName;
+            }
+            if (item.stockEntries) {
+                item.stockEntries.forEach(function(e) {
+                    if (e.segment === oldSeg && e.container === oldCon && e.subContainer === oldName) {
+                        e.segment = newSeg; e.container = newCon; e.subContainer = newName;
+                    }
+                });
             }
         });
         if (appState.activeMappingNode && appState.activeMappingNode.segment === oldSeg && appState.activeMappingNode.container === oldCon && appState.activeMappingNode.subContainer === oldName) {
@@ -2476,32 +2761,40 @@ function clearLayoutBackground() {
 }
 
 function renderContainerAssetList() {
-    const panel = document.getElementById('containerAssetsPanel');
-    const label = document.getElementById('containerAssetsLabel');
-    const countEl = document.getElementById('containerAssetsCount');
-    const listEl = document.getElementById('containerAssetsList');
+    var panel = document.getElementById('containerAssetsPanel');
+    var label = document.getElementById('containerAssetsLabel');
+    var countEl = document.getElementById('containerAssetsCount');
+    var listEl = document.getElementById('containerAssetsList');
 
     if (!appState.activeMappingNode) {
         panel.classList.add('hidden');
         return;
     }
 
-    const { segment, container, subContainer } = appState.activeMappingNode;
-    const assets = appState.inventory.filter(item => {
+    var seg = appState.activeMappingNode.segment;
+    var con = appState.activeMappingNode.container;
+    var sub = appState.activeMappingNode.subContainer;
+    var assets = appState.inventory.filter(function(item) {
         if (item.deletedAt) return false;
-        if (item.segment !== segment) return false;
-        if (container && item.container !== container) return false;
-        if (subContainer && item.subContainer !== subContainer) return false;
+        if (item.itemType === 'stock') {
+            var entries = getActiveStockEntries(item);
+            return entries.some(function(e) {
+                return e.segment === seg && (!con || e.container === con) && (!sub || e.subContainer === sub);
+            });
+        }
+        if (item.segment !== seg) return false;
+        if (con && item.container !== con) return false;
+        if (sub && item.subContainer !== sub) return false;
         return true;
     });
 
-    var nodeLabel = segment;
-    if (container) nodeLabel += ' > ' + container;
-    if (subContainer) nodeLabel += ' > ' + subContainer;
+    var nodeLabel = seg;
+    if (con) nodeLabel += ' > ' + con;
+    if (sub) nodeLabel += ' > ' + sub;
 
     panel.classList.remove('hidden');
     label.innerText = nodeLabel;
-    countEl.innerText = `${assets.length} item${assets.length !== 1 ? 's' : ''}`;
+    countEl.innerText = assets.length + ' item' + (assets.length !== 1 ? 's' : '');
 
     if (assets.length === 0) {
         listEl.innerHTML = emptyStateHTML(
@@ -2513,16 +2806,17 @@ function renderContainerAssetList() {
         return;
     }
 
-    listEl.innerHTML = assets.map(item => `
-        <div class="container-asset-item flex items-center gap-3 p-2 rounded-lg border border-slate-100 cursor-pointer" onclick="switchTab('tab-inventory'); document.getElementById('filterSearchQuery').value='${item.name.replace(/'/g, "\\'")}'; renderFilteredInventoryTable();">
-            <img src="${item.imageUrl}" class="h-8 w-8 object-cover rounded border border-slate-200 bg-slate-100" onerror="this.src='https://placehold.co/100?text=Error'">
-            <div class="flex-1 min-w-0">
-                <div class="font-semibold text-slate-800 truncate">${item.name}</div>
-                <div class="text-[10px] text-slate-400">${item.subContainer || '—'} · ${item.category} · 👤 ${item.owner || 'Default'}</div>
-            </div>
-            <span class="text-[10px] text-slate-400 whitespace-nowrap">${item.timestamp}</span>
-        </div>
-    `).join('');
+    listEl.innerHTML = assets.map(function(item) {
+        var locDetail = (item.itemType === 'stock') ? getStockLocationSummary(item) : (item.subContainer || '\u2014');
+        return '<div class="container-asset-item flex items-center gap-3 p-2 rounded-lg border border-slate-100 cursor-pointer" onclick="switchTab(\'tab-inventory\'); document.getElementById(\'filterSearchQuery\').value=\'' + item.name.replace(/'/g, "\\'") + '\'; renderFilteredInventoryTable();">' +
+            '<img src="' + item.imageUrl + '" class="h-8 w-8 object-cover rounded border border-slate-200 bg-slate-100" onerror="this.src=\'https://placehold.co/100?text=Error\'">' +
+            '<div class="flex-1 min-w-0">' +
+            '<div class="font-semibold text-slate-800 truncate">' + item.name + '</div>' +
+            '<div class="text-[10px] text-slate-400">' + locDetail + ' \u00B7 ' + item.category + ' \u00B7 \uD83D\uDC64 ' + (item.owner || 'Default') + '</div>' +
+            '</div>' +
+            '<span class="text-[10px] text-slate-400 whitespace-nowrap">' + item.timestamp + '</span>' +
+            '</div>';
+    }).join('');
 }
 
 /* ==========================================================================
@@ -2803,40 +3097,217 @@ function syncFilterContainersDropdown() {
 function switchItemType(type) {
     var btnUnique = document.getElementById('btnItemTypeUnique');
     var btnStock = document.getElementById('btnItemTypeStock');
-    var stockFields = document.getElementById('stockFieldsContainer');
+    var stockGlobal = document.getElementById('stockGlobalFields');
+    var stockLocSection = document.getElementById('stockLocationsSection');
+    var uniqueLocSection = document.getElementById('uniqueLocationSection');
+    var uniqueDatesRow = document.getElementById('uniqueDatesRow1');
+    var stockDatesNote = document.getElementById('stockDatesNote');
     var scanBtn = document.getElementById('btnScanExistingBarcode');
     markFormDirty();
     if (type === 'stock') {
-        btnUnique.className = 'flex-1 btn btn-sm btn-secondary';
-        btnStock.className = 'flex-1 btn btn-sm btn-warning';
-        stockFields.classList.remove('hidden');
+        btnUnique.className = 'flex-1 text-xs font-medium py-2 px-3 bg-white text-slate-500 border border-slate-200 transition-colors';
+        btnStock.className = 'flex-1 text-xs font-medium py-2 px-3 bg-amber-500 text-white transition-colors';
+        stockGlobal.classList.remove('hidden');
+        stockLocSection.classList.remove('hidden');
+        uniqueLocSection.classList.add('hidden');
+        uniqueDatesRow.classList.add('hidden');
+        stockDatesNote.classList.remove('hidden');
         scanBtn.classList.remove('hidden');
+        if (document.getElementById('stockLocationsRows').children.length === 0) {
+            addStockLocationRow();
+        }
+        updateStockLocationsTotal();
     } else {
-        btnUnique.className = 'flex-1 btn btn-sm btn-primary';
-        btnStock.className = 'flex-1 btn btn-sm btn-secondary';
-        stockFields.classList.add('hidden');
+        btnUnique.className = 'flex-1 text-xs font-medium py-2 px-3 bg-blue-600 text-white transition-colors';
+        btnStock.className = 'flex-1 text-xs font-medium py-2 px-3 bg-white text-slate-500 border border-slate-200 transition-colors';
+        stockGlobal.classList.add('hidden');
+        stockLocSection.classList.add('hidden');
+        uniqueLocSection.classList.remove('hidden');
+        uniqueDatesRow.classList.remove('hidden');
+        stockDatesNote.classList.add('hidden');
         scanBtn.classList.add('hidden');
-        document.getElementById('invItemUom').value = '';
-        document.getElementById('invItemQuantity').value = '';
-        document.getElementById('invItemMinQuantity').value = '';
     }
 }
 
-function commitItemToInventory() {
-    const name = document.getElementById('invItemName').value.trim();
-    const categoryStr = buildCategoryPathFromSelects();
-    const segment = document.getElementById('invItemSegmentSelect').value;
-    const container = document.getElementById('invItemContainerSelect').value;
-    const subContainer = document.getElementById('invItemSubContainerSelect').value;
-    const imageUrl = document.getElementById('invItemImageUrl').value.trim();
-    const remarks = document.getElementById('invItemRemarks').value.trim();
-    const editId = document.getElementById('editTargetItemId').value;
-    const now = new Date().toISOString();
-    const deviceId = appState.meta.deviceId;
+// ===== Stock Location Row Management =====
+function addStockLocationRow(entryData) {
+    var rows = document.getElementById('stockLocationsRows');
+    var rowIdx = rows.children.length;
+    var row = document.createElement('div');
+    row.className = 'stock-location-row bg-amber-50/40 border border-amber-200 rounded-lg p-3 shadow-sm';
+    row.setAttribute('data-row-idx', rowIdx);
 
-    if (!name || !categoryStr || !segment || !container) {
+    var segOptions = '<option value="">-- Seg --</option>';
+    Object.keys(appState.segments).forEach(function(s) {
+        segOptions += '<option value="' + s.replace(/'/g, "&#39;") + '">' + s + '</option>';
+    });
+
+    var entryId = entryData ? entryData.id : generateStockEntryId();
+
+    row.innerHTML =
+        '<input type="hidden" class="sl-entry-id" value="' + entryId + '">' +
+        '<div class="flex justify-between items-center mb-2">' +
+        '<span class="text-[10px] font-bold text-slate-500">Location #' + (rowIdx + 1) + '</span>' +
+        '<button type="button" class="text-slate-300 hover:text-red-500 text-xs font-bold px-1" onclick="removeStockLocationRow(this)" title="Remove this location">&times;</button>' +
+        '</div>' +
+        '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">' +
+        '<div><label class="block text-[10px] font-semibold text-slate-500 mb-0.5">Segment</label><select class="sl-segment w-full text-xs border border-slate-300 rounded-md px-2 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none bg-white" onchange="syncStockRowContainers(this)"><option value="">-- Seg --</option>' + segOptions.slice(16) + '</select></div>' +
+        '<div><label class="block text-[10px] font-semibold text-slate-500 mb-0.5">Container</label><select class="sl-container w-full text-xs border border-slate-300 rounded-md px-2 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none bg-white" onchange="syncStockRowSubContainers(this)"><option value="">-- Con --</option></select></div>' +
+        '<div><label class="block text-[10px] font-semibold text-slate-500 mb-0.5">Sub-Container</label><select class="sl-subcontainer w-full text-xs border border-slate-300 rounded-md px-2 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none bg-white"><option value="">-- Sub --</option></select></div>' +
+        '<div><label class="block text-[10px] font-semibold text-slate-500 mb-0.5">Qty</label><input type="number" class="sl-qty w-full text-xs border border-slate-300 rounded-md px-2 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none bg-white" min="0" step="1" value="0" oninput="updateStockLocationsTotal()"></div>' +
+        '</div>' +
+        '<div class="grid grid-cols-3 gap-2">' +
+        '<div><label class="block text-[10px] font-semibold text-slate-500 mb-0.5">Purchase</label><input type="date" class="sl-purchase w-full text-xs border border-slate-300 rounded-md px-2 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none bg-white"></div>' +
+        '<div><label class="block text-[10px] font-semibold text-slate-500 mb-0.5">Warranty</label><input type="date" class="sl-warranty w-full text-xs border border-slate-300 rounded-md px-2 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none bg-white"></div>' +
+        '<div><label class="block text-[10px] font-semibold text-slate-500 mb-0.5">Expiry</label><input type="date" class="sl-expiry w-full text-xs border border-slate-300 rounded-md px-2 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none bg-white"></div>' +
+        '</div>';
+
+    rows.appendChild(row);
+
+    if (entryData) {
+        var selSeg = row.querySelector('.sl-segment');
+        selSeg.value = entryData.segment || '';
+        syncStockRowContainers(selSeg);
+        row.querySelector('.sl-container').value = entryData.container || '';
+        syncStockRowSubContainers(row.querySelector('.sl-container'));
+        row.querySelector('.sl-subcontainer').value = entryData.subContainer || '';
+        row.querySelector('.sl-qty').value = entryData.quantity || 0;
+        row.querySelector('.sl-purchase').value = entryData.purchaseDate || '';
+        row.querySelector('.sl-warranty').value = entryData.warrantyDate || '';
+        row.querySelector('.sl-expiry').value = entryData.expiryDate || '';
+    }
+
+    updateStockLocationsTotal();
+}
+
+function removeStockLocationRow(btn) {
+    var rows = document.getElementById('stockLocationsRows');
+    var row = btn.closest('.stock-location-row');
+    if (row) row.remove();
+    updateStockLocationsTotal();
+    renumberStockLocationRows();
+}
+
+function renumberStockLocationRows() {
+    var rows = document.getElementById('stockLocationsRows').children;
+    for (var i = 0; i < rows.length; i++) {
+        rows[i].setAttribute('data-row-idx', i);
+        var label = rows[i].querySelector('.text-slate-500');
+        if (label) label.innerText = 'Location #' + (i + 1);
+    }
+}
+
+function syncStockRowContainers(segSelect) {
+    var row = segSelect.closest('.stock-location-row');
+    var conSelect = row.querySelector('.sl-container');
+    var segVal = segSelect.value;
+    var saved = conSelect.value;
+    conSelect.innerHTML = '<option value="">-- Con --</option>';
+    if (segVal && appState.segments[segVal]) {
+        Object.keys(appState.segments[segVal]).forEach(function(c) {
+            var opt = document.createElement('option');
+            opt.value = c; opt.innerText = c; conSelect.appendChild(opt);
+        });
+    }
+    if ([].slice.call(conSelect.options).some(function(o) { return o.value === saved; })) {
+        conSelect.value = saved;
+    }
+    syncStockRowSubContainers(conSelect);
+}
+
+function syncStockRowSubContainers(conSelect) {
+    var row = conSelect.closest('.stock-location-row');
+    var segSelect = row.querySelector('.sl-segment');
+    var subSelect = row.querySelector('.sl-subcontainer');
+    var segVal = segSelect.value;
+    var conVal = conSelect.value;
+    var saved = subSelect.value;
+    subSelect.innerHTML = '<option value="">-- Sub --</option>';
+    if (segVal && conVal && appState.segments[segVal] && appState.segments[segVal][conVal]) {
+        (appState.segments[segVal][conVal] || []).forEach(function(sc) {
+            var opt = document.createElement('option');
+            opt.value = sc; opt.innerText = sc; subSelect.appendChild(opt);
+        });
+    }
+    if ([].slice.call(subSelect.options).some(function(o) { return o.value === saved; })) {
+        subSelect.value = saved;
+    }
+}
+
+function updateStockLocationsTotal() {
+    var total = 0;
+    var rows = document.getElementById('stockLocationsRows').children;
+    for (var i = 0; i < rows.length; i++) {
+        var qtyInput = rows[i].querySelector('.sl-qty');
+        if (qtyInput) total += (parseInt(qtyInput.value) || 0);
+    }
+    var el = document.getElementById('stockLocationsTotalQty');
+    if (el) el.innerText = 'Total: ' + total;
+}
+
+function collectStockEntriesFromForm() {
+    var entries = [];
+    var rows = document.getElementById('stockLocationsRows').children;
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var idEl = row.querySelector('.sl-entry-id');
+        entries.push({
+            id: idEl ? idEl.value : generateStockEntryId(),
+            segment: (row.querySelector('.sl-segment') || {}).value || '',
+            container: (row.querySelector('.sl-container') || {}).value || '',
+            subContainer: (row.querySelector('.sl-subcontainer') || {}).value || '',
+            quantity: parseInt((row.querySelector('.sl-qty') || {}).value) || 0,
+            purchaseDate: (row.querySelector('.sl-purchase') || {}).value || '',
+            warrantyDate: (row.querySelector('.sl-warranty') || {}).value || '',
+            expiryDate: (row.querySelector('.sl-expiry') || {}).value || '',
+            hiddenAt: null
+        });
+    }
+    return entries;
+}
+
+function clearStockLocationRows() {
+    var rows = document.getElementById('stockLocationsRows');
+    if (rows) rows.innerHTML = '';
+}
+
+function commitItemToInventory() {
+    var name = document.getElementById('invItemName').value.trim();
+    var categoryStr = buildCategoryPathFromSelects();
+    var imageUrl = document.getElementById('invItemImageUrl').value.trim();
+    var remarks = document.getElementById('invItemRemarks').value.trim();
+    var editId = document.getElementById('editTargetItemId').value;
+    var now = new Date().toISOString();
+    var deviceId = appState.meta.deviceId;
+    var isStock = !document.getElementById('stockLocationsSection').classList.contains('hidden');
+    var owner = document.getElementById('invItemOwnerSelect').value || appState.currentUser || 'Default';
+
+    if (!name || !categoryStr) {
         showToast(t('pleaseComplete'), 'error');
         return;
+    }
+
+    if (isStock) {
+        var entries = collectStockEntriesFromForm();
+        if (entries.length === 0) {
+            showToast('Please add at least one stock location.', 'error');
+            return;
+        }
+        var hasValidLocation = false;
+        for (var i = 0; i < entries.length; i++) {
+            if (entries[i].segment && entries[i].container) { hasValidLocation = true; break; }
+        }
+        if (!hasValidLocation) {
+            showToast('Each stock location needs at minimum a segment and container.', 'error');
+            return;
+        }
+    } else {
+        var segment = document.getElementById('invItemSegmentSelect').value;
+        var container = document.getElementById('invItemContainerSelect').value;
+        if (!segment || !container) {
+            showToast(t('pleaseComplete'), 'error');
+            return;
+        }
     }
 
     var itemId, createdAt, version, barcodeId;
@@ -2853,26 +3324,27 @@ function commitItemToInventory() {
         barcodeId = generateBarcodeId();
     }
 
-    const payloadItem = {
+    var payloadItem = {
         id: itemId,
         barcodeId: barcodeId,
-        name,
+        name: name,
         brand: document.getElementById('invItemBrand').value.trim(),
         category: categoryStr,
-        segment,
-        container,
-        subContainer: subContainer || '',
-        owner: document.getElementById('invItemOwnerSelect').value || appState.currentUser || 'Default',
+        owner: owner,
         imageUrl: imageUrl || 'https://placehold.co/100?text=No+Photo',
-        remarks,
+        remarks: remarks,
         aiMetadata: document.getElementById('invItemAiMetadata').value.trim(),
-        purchaseDate: document.getElementById('invItemPurchaseDate').value,
-        warrantyDate: document.getElementById('invItemWarrantyDate').value,
-        expiryDate: document.getElementById('invItemExpiryDate').value,
-        itemType: document.getElementById('stockFieldsContainer').classList.contains('hidden') ? 'unique' : 'stock',
-        uom: document.getElementById('stockFieldsContainer').classList.contains('hidden') ? '' : document.getElementById('invItemUom').value.trim(),
-        quantity: document.getElementById('stockFieldsContainer').classList.contains('hidden') ? 0 : (parseInt(document.getElementById('invItemQuantity').value) || 0),
-        minQuantity: document.getElementById('stockFieldsContainer').classList.contains('hidden') ? 0 : (parseInt(document.getElementById('invItemMinQuantity').value) || 0),
+        itemType: isStock ? 'stock' : 'unique',
+        uom: isStock ? document.getElementById('invItemUom').value.trim() : '',
+        quantity: 0,
+        minQuantity: isStock ? (parseInt(document.getElementById('invItemMinQuantity').value) || 0) : 0,
+        segment: '',
+        container: '',
+        subContainer: '',
+        purchaseDate: '',
+        warrantyDate: '',
+        expiryDate: '',
+        stockEntries: [],
         createdAt: createdAt,
         updatedAt: now,
         version: version,
@@ -2881,8 +3353,22 @@ function commitItemToInventory() {
         timestamp: now.replace('T', ' ').substring(0, 16)
     };
 
+    if (isStock) {
+        payloadItem.stockEntries = collectStockEntriesFromForm();
+        payloadItem.quantity = getTotalStockQuantity(payloadItem);
+        payloadItem.uom = document.getElementById('invItemUom').value.trim();
+        payloadItem.minQuantity = parseInt(document.getElementById('invItemMinQuantity').value) || 0;
+    } else {
+        payloadItem.segment = document.getElementById('invItemSegmentSelect').value;
+        payloadItem.container = document.getElementById('invItemContainerSelect').value;
+        payloadItem.subContainer = document.getElementById('invItemSubContainerSelect').value || '';
+        payloadItem.purchaseDate = document.getElementById('invItemPurchaseDate').value;
+        payloadItem.warrantyDate = document.getElementById('invItemWarrantyDate').value;
+        payloadItem.expiryDate = document.getElementById('invItemExpiryDate').value;
+    }
+
     if (editId) {
-        const idx = appState.inventory.findIndex(i => i.id === editId);
+        var idx = appState.inventory.findIndex(function(i) { return i.id === editId; });
         if (idx !== -1) appState.inventory[idx] = payloadItem;
         mutateState('EDIT_ITEM', { itemId: editId });
     } else {
@@ -2903,7 +3389,7 @@ function commitItemToInventory() {
 
 function setupItemModificationContext(itemId) {
     try {
-        const item = appState.inventory.find(i => i.id === itemId && !i.deletedAt);
+        var item = appState.inventory.find(function(i) { return i.id === itemId && !i.deletedAt; });
         if (!item) { showToast(t('itemNotFound') + itemId, 'error'); return; }
 
         switchTab('tab-register');
@@ -2913,28 +3399,38 @@ function setupItemModificationContext(itemId) {
         document.getElementById('editTargetItemId').value = item.id;
         document.getElementById('invItemName').value = item.name;
         document.getElementById('invItemBrand').value = item.brand || '';
+        document.getElementById('invItemOwnerSelect').value = item.owner || appState.currentUser || 'Default';
         if (item.itemType === 'stock') {
             switchItemType('stock');
             document.getElementById('invItemUom').value = item.uom || '';
-            document.getElementById('invItemQuantity').value = item.quantity || 0;
             document.getElementById('invItemMinQuantity').value = item.minQuantity || 0;
+            clearStockLocationRows();
+            var entries = getStockEntries(item);
+            if (entries.length > 0) {
+                entries.forEach(function(e) {
+                    addStockLocationRow(e);
+                });
+            } else {
+                addStockLocationRow();
+            }
+            updateStockLocationsTotal();
         } else {
             switchItemType('unique');
+            document.getElementById('invItemSegmentSelect').value = item.segment || '';
+            syncInventoryFormContainersDropdown();
+            document.getElementById('invItemContainerSelect').value = item.container || '';
+            syncInventoryFormSubContainersDropdown();
+            document.getElementById('invItemSubContainerSelect').value = item.subContainer || '';
+            document.getElementById('invItemPurchaseDate').value = item.purchaseDate || '';
+            document.getElementById('invItemWarrantyDate').value = item.warrantyDate || '';
+            document.getElementById('invItemExpiryDate').value = item.expiryDate || '';
         }
         setCascadingCategorySelects(item.category);
 
-        document.getElementById('invItemSegmentSelect').value = item.segment;
-
-        syncInventoryFormContainersDropdown();
-        document.getElementById('invItemContainerSelect').value = item.container;
-        syncInventoryFormSubContainersDropdown();
-        document.getElementById('invItemSubContainerSelect').value = item.subContainer || '';
-        document.getElementById('invItemOwnerSelect').value = item.owner || appState.currentUser || 'Default';
-
-        const rawImg = item.imageUrl;
-        const isPlaceholder = (rawImg === 'https://placehold.co/100?text=No+Photo' || !rawImg);
+        var rawImg = item.imageUrl;
+        var isPlaceholder = (rawImg === 'https://placehold.co/100?text=No+Photo' || !rawImg);
         document.getElementById('invItemImageUrl').value = isPlaceholder ? '' : rawImg;
-        const preview = document.getElementById('invItemImagePreview');
+        var preview = document.getElementById('invItemImagePreview');
         if (!isPlaceholder) {
             preview.src = rawImg;
             preview.classList.remove('hidden');
@@ -2947,9 +3443,6 @@ function setupItemModificationContext(itemId) {
         document.getElementById('invItemRemarks').value = item.remarks;
         document.getElementById('invItemAiMetadata').value = item.aiMetadata || '';
         if (item.aiMetadata) { expandAiMetadata(); } else { collapseAiMetadata(); }
-        document.getElementById('invItemPurchaseDate').value = item.purchaseDate || '';
-        document.getElementById('invItemWarrantyDate').value = item.warrantyDate || '';
-        document.getElementById('invItemExpiryDate').value = item.expiryDate || '';
 
         window.scrollTo({ top: 0, behavior: 'smooth' });
         resetFormDirty();
@@ -2971,6 +3464,9 @@ function softClearForNextItem() {
     document.getElementById('invItemPurchaseDate').value = '';
     document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
+    document.getElementById('invItemUom').value = '';
+    document.getElementById('invItemMinQuantity').value = '';
+    clearStockLocationRows();
     switchItemType('unique');
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
@@ -2995,6 +3491,9 @@ function clearAllInventoryFields() {
     document.getElementById('invItemPurchaseDate').value = '';
     document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
+    document.getElementById('invItemUom').value = '';
+    document.getElementById('invItemMinQuantity').value = '';
+    clearStockLocationRows();
     switchItemType('unique');
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
@@ -3022,6 +3521,9 @@ function clearInventoryFormContext() {
     document.getElementById('invItemPurchaseDate').value = '';
     document.getElementById('invItemWarrantyDate').value = '';
     document.getElementById('invItemExpiryDate').value = '';
+    document.getElementById('invItemUom').value = '';
+    document.getElementById('invItemMinQuantity').value = '';
+    clearStockLocationRows();
     switchItemType('unique');
     resetFormDirty();
     var preview = document.getElementById('invItemImagePreview');
@@ -3329,12 +3831,17 @@ function exportLocalDatabasesToExcel() {
             "UOM",
             "Quantity",
             "Min Quantity",
+            "Stock Entries JSON",
             "Image Link Asset",
             "User Remarks Annotation",
             "Last System Entry Update"
         ];
 
         var flatRows = appState.inventory.filter(function(item) { return !item.deletedAt; }).map(function(item) {
+            var stockJson = '';
+            if (item.itemType === 'stock' && item.stockEntries) {
+                stockJson = safeCell(JSON.stringify(item.stockEntries));
+            }
             return {
                 "System ID": safeCell(item.id || ''),
                 "Barcode ID": safeCell(item.barcodeId || ''),
@@ -3351,8 +3858,9 @@ function exportLocalDatabasesToExcel() {
                 "Warranty Date": safeCell(item.warrantyDate || ''),
                 "Expiry Date": safeCell(item.expiryDate || ''),
                 "UOM": item.itemType === 'stock' ? safeCell(item.uom || '') : '',
-                "Quantity": item.itemType === 'stock' ? (item.quantity || 0) : '',
+                "Quantity": item.itemType === 'stock' ? getTotalStockQuantity(item) : '',
                 "Min Quantity": item.itemType === 'stock' ? (item.minQuantity || 0) : '',
+                "Stock Entries JSON": stockJson,
                 "Image Link Asset": safeCell(item.imageUrl || ''),
                 "User Remarks Annotation": safeCell(item.remarks || ''),
                 "Last System Entry Update": safeCell(item.timestamp || '')
@@ -3472,16 +3980,25 @@ function importExcelToLocalDatabases(event) {
                     var existingIdx = appState.inventory.findIndex(function(i) { return i.id === id; });
                     var time = cleanCell(r["Last System Entry Update"]) || new Date().toISOString().replace('T', ' ').substring(0, 16);
                     var nowIso = new Date().toISOString();
+                    var stockEntriesRaw = cleanCell(r["Stock Entries JSON"]) || '';
+                    var stockEntries = [];
+                    if (stockEntriesRaw && itemType === 'stock') {
+                        try { stockEntries = JSON.parse(stockEntriesRaw); } catch(ee) { stockEntries = []; }
+                    }
                     var item = {
                         id: id, name: name, brand: brand, category: category, segment: segment,
                         container: container, subContainer: subContainer, owner: owner,
                         aiMetadata: aiMd, purchaseDate: purDate, warrantyDate: warDate,
                         expiryDate: expDate, itemType: itemType, uom: uom,
                         quantity: quantity, minQuantity: minQuantity, imageUrl: img,
+                        stockEntries: stockEntries,
                         remarks: rem, timestamp: time,
                         createdAt: nowIso, updatedAt: nowIso, deletedAt: null,
                         version: 1, lastModifiedBy: appState.meta.deviceId
                     };
+                    if (itemType === 'stock' && stockEntries.length > 0) {
+                        item.quantity = getTotalStockQuantity(item);
+                    }
                     if (existingIdx !== -1) appState.inventory[existingIdx] = item;
                     else appState.inventory.push(item);
                 });
@@ -3847,17 +4364,24 @@ async function performAISearch() {
     statusEl.innerText = t('aiAnalyzing');
 
     try {
-        const inventoryMetadata = appState.inventory.filter(function(it) { return !it.deletedAt; }).map(item => ({
-            id: item.id,
-            name: item.name,
-            category: item.category,
-            segment: item.segment,
-            container: item.container,
-            subContainer: item.subContainer || '',
-            owner: item.owner || 'Default',
-            remarks: item.remarks,
-            aiMetadata: item.aiMetadata || ''
-        }));
+        const inventoryMetadata = appState.inventory.filter(function(it) { return !it.deletedAt; }).map(function(item) {
+            var seg = item.segment, con = item.container, sub = item.subContainer || '';
+            if (item.itemType === 'stock' && getActiveStockEntries(item).length > 0) {
+                var first = getActiveStockEntries(item)[0];
+                seg = first.segment; con = first.container; sub = first.subContainer || '';
+            }
+            return {
+                id: item.id,
+                name: item.name,
+                category: item.category,
+                segment: seg,
+                container: con,
+                subContainer: sub,
+                owner: item.owner || 'Default',
+                remarks: item.remarks,
+                aiMetadata: item.aiMetadata || ''
+            };
+        });
 
         const userMessage = `Description: "${description}"\n\nInventory Items:\n${JSON.stringify(inventoryMetadata)}\n\nReturn ONLY a JSON array of matching item IDs like ["item_123", "item_456"].`;
 
@@ -4092,6 +4616,7 @@ function migrateLegacyState(state) {
                 item.lastModifiedBy = state.meta.deviceId;
                 migrated = true;
             }
+            if (migrateLegacyStockItem(item)) migrated = true;
         });
     }
 
@@ -4195,6 +4720,9 @@ function syncUIComponents() {
     renderClassificationDirectoryTree();
     renderFilteredInventoryTable();
     renderSpatialMapGrid();
+    if (!document.getElementById('tab-tobuy').classList.contains('hidden-panel')) {
+        renderToBuyList();
+    }
 }
 
 function renderSpatialTreeHierarchy() {
@@ -4298,13 +4826,13 @@ function renderClassificationDirectoryTree() {
 }
 
 function renderFilteredInventoryTable() {
-    const tableBody = document.getElementById('inventoryTableDataRows');
-    const cardList = document.getElementById('inventoryCardListMobile');
-    const query = document.getElementById('filterSearchQuery').value.toLowerCase().trim();
-    const segFilter = document.getElementById('filterSegmentSelect').value;
-    const catFilter = document.getElementById('filterCategorySelect').value;
-    const conFilter = document.getElementById('filterContainerSelect').value;
-    const ownerFilter = document.getElementById('filterOwnerSelect').value;
+    var tableBody = document.getElementById('inventoryTableDataRows');
+    var cardList = document.getElementById('inventoryCardListMobile');
+    var query = document.getElementById('filterSearchQuery').value.toLowerCase().trim();
+    var segFilter = document.getElementById('filterSegmentSelect').value;
+    var catFilter = document.getElementById('filterCategorySelect').value;
+    var conFilter = document.getElementById('filterContainerSelect').value;
+    var ownerFilter = document.getElementById('filterOwnerSelect').value;
 
     var hasFilters = query || segFilter || catFilter || conFilter || ownerFilter || _currentItemTypeFilter !== 'all';
     var clearBtn = document.getElementById('btnClearAllFilters');
@@ -4315,11 +4843,22 @@ function renderFilteredInventoryTable() {
         if (aiFilteredItemIds && !aiFilteredItemIds.includes(item.id)) return false;
         if (_currentItemTypeFilter === 'unique' && item.itemType !== 'unique') return false;
         if (_currentItemTypeFilter === 'stock' && item.itemType !== 'stock') return false;
+        if (item.itemType === 'stock' && isStockItemOutOfStock(item)) return false;
         var matchQuery = item.name.toLowerCase().includes(query) || item.remarks.toLowerCase().includes(query);
-        var matchSeg = !segFilter || item.segment === segFilter;
-        var matchCon = !conFilter || item.container === conFilter;
         var matchCat = !catFilter || item.category === catFilter || item.category.startsWith(catFilter + ' > ');
         var matchOwner = !ownerFilter || (item.owner || 'Default') === ownerFilter;
+        var matchSeg = true;
+        var matchCon = true;
+        if (segFilter || conFilter) {
+            if (item.itemType === 'stock') {
+                var entries = getActiveStockEntries(item);
+                matchSeg = !segFilter || entries.some(function(e) { return e.segment === segFilter; });
+                matchCon = !conFilter || entries.some(function(e) { return e.container === conFilter; });
+            } else {
+                matchSeg = !segFilter || item.segment === segFilter;
+                matchCon = !conFilter || item.container === conFilter;
+            }
+        }
         return matchQuery && matchSeg && matchCon && matchCat && matchOwner;
     });
 
@@ -4341,7 +4880,6 @@ function renderFilteredInventoryTable() {
         return;
     }
 
-    // Desktop table
     targets.forEach(function(item) {
         var tr = document.createElement('tr');
         tr.className = 'hover:bg-slate-50/80 transition-colors';
@@ -4350,14 +4888,26 @@ function renderFilteredInventoryTable() {
         if (!lastSynced || !item.updatedAt || item.updatedAt > lastSynced) {
             syncIndicator = ' <span class="text-[9px] text-amber-500 font-medium" title="Not yet synced to cloud">\u25CF</span>';
         }
+        var stockHtml = '';
+        if (item.itemType === 'stock') {
+            var tot = getTotalStockQuantity(item);
+            var isLow = isStockItemLow(item);
+            stockHtml = '<div class="text-[10px] text-amber-600 font-medium mt-0.5">\uD83D\uDCE6 ' + tot + ' ' + (item.uom || 'pcs') + (isLow ? ' \u26A0\uFE0F Low' : '') + '</div>';
+        }
+        var locHtml = '';
+        if (item.itemType === 'stock') {
+            locHtml = '<div class="font-semibold text-slate-700 text-xs">' + getStockLocationSummary(item) + '</div>';
+        } else {
+            locHtml = '<div class="font-semibold text-slate-700 cursor-pointer hover:text-blue-600" onclick="event.stopPropagation(); filterBy(\'segment\',\'' + (item.segment || '').replace(/'/g, "&#39;") + '\')">' + (item.segment || '') + '  >  ' + (item.container || '') + '</div><div class="text-slate-500 mt-0.5">\uD83D\uDCE6 ' + (item.subContainer || '<span class="text-slate-300 italic">\u2014</span>') + '</div>';
+        }
         tr.innerHTML = '<td class="px-4 py-3 text-center"><img src="' + item.imageUrl + '" class="h-10 w-10 object-cover rounded-md border border-slate-200 mx-auto bg-slate-100" onerror="this.src=\'https://placehold.co/100?text=Error\'"></td>'
             + '<td class="px-4 py-3 cursor-pointer hover:bg-blue-50/50" onclick="showItemDetail(\'' + item.id + '\')"><div class="font-bold text-slate-900 hover:text-blue-600">' + item.name + syncIndicator + '</div>'
             + (item.brand ? '<div class="text-[10px] text-slate-400 mt-0.5">' + item.brand + '</div>' : '')
             + '<div class="text-[10px] text-slate-400 font-mono mt-0.5">ID: ' + item.id + '</div>'
-            + (item.itemType === 'stock' ? '<div class="text-[10px] text-amber-600 font-medium mt-0.5">\uD83D\uDCE6 ' + (item.quantity || 0) + ' ' + (item.uom || 'pcs') + (item.quantity <= item.minQuantity && item.minQuantity > 0 ? ' \u26A0\uFE0F Low' : '') + '</div>' : '')
+            + stockHtml
             + '</td>'
             + '<td class="px-4 py-3"><span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded border border-slate-200 font-medium cursor-pointer hover:bg-blue-50 hover:text-blue-600" onclick="event.stopPropagation(); filterBy(\'category\',\'' + item.category.replace(/'/g, "&#39;") + '\')">' + item.category + '</span></td>'
-            + '<td class="px-4 py-3 text-xs"><div class="font-semibold text-slate-700 cursor-pointer hover:text-blue-600" onclick="event.stopPropagation(); filterBy(\'segment\',\'' + item.segment.replace(/'/g, "&#39;") + '\')">' + item.segment + '  >  ' + item.container + '</div><div class="text-slate-500 mt-0.5">\uD83D\uDCE6 ' + (item.subContainer || '<span class="text-slate-300 italic">\u2014</span>') + '</div></td>'
+            + '<td class="px-4 py-3 text-xs">' + locHtml + '</td>'
             + '<td class="px-4 py-3 text-center"><span class="text-xs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full border border-indigo-100 font-medium cursor-pointer hover:bg-indigo-100" onclick="event.stopPropagation(); filterBy(\'owner\',\'' + (item.owner || 'Default').replace(/'/g, "&#39;") + '\')">' + (item.owner || 'Default') + '</span></td>'
             + '<td class="px-4 py-3 text-xs text-slate-500 max-w-[140px] truncate"><div>' + (item.remarks || '<span class="text-slate-300 italic">\u2014</span>') + '</div>'
             + (item.aiMetadata ? '<div class="text-[10px] text-indigo-400 mt-0.5">\uD83E\uDD16 AI described</div>' : '')
@@ -4366,24 +4916,30 @@ function renderFilteredInventoryTable() {
         tableBody.appendChild(tr);
     });
 
-    // Mobile cards
     if (cardList) {
         targets.forEach(function(item) {
             var card = document.createElement('div');
             card.className = 'inv-card';
             card.setAttribute('onclick', 'showItemDetail(\'' + item.id + '\')');
 
-            var locationParts = [item.segment, item.container];
-            if (item.subContainer) locationParts.push(item.subContainer);
+            var locDisplay = '';
+            if (item.itemType === 'stock') {
+                locDisplay = '<div class="inv-card-location">\uD83D\uDCCD ' + getStockLocationSummary(item) + '</div>';
+            } else {
+                var locationParts = [item.segment, item.container];
+                if (item.subContainer) locationParts.push(item.subContainer);
+                locDisplay = '<div class="inv-card-location">\uD83D\uDCCD ' + locationParts.join(' / ') + '</div>';
+            }
 
             var stockHtml = '';
             if (item.itemType === 'stock') {
-                var isLow = item.quantity <= item.minQuantity && item.minQuantity > 0;
-                stockHtml = '<span class="inv-card-stock ' + (isLow ? 'inv-card-stock-low' : 'inv-card-stock-normal') + '">\uD83D\uDCE6 ' + (item.quantity || 0) + ' ' + (item.uom || 'pcs') + (isLow ? ' \u26A0 Low' : '') + '</span>';
+                var tot = getTotalStockQuantity(item);
+                var isLow = isStockItemLow(item);
+                stockHtml = '<span class="inv-card-stock ' + (isLow ? 'inv-card-stock-low' : 'inv-card-stock-normal') + '">\uD83D\uDCE6 ' + tot + ' ' + (item.uom || 'pcs') + (isLow ? ' \u26A0 Low' : '') + '</span>';
             }
 
             var expiryHtml = '';
-            if (item.expiryDate) {
+            if (item.itemType !== 'stock' && item.expiryDate) {
                 expiryHtml = '<span class="inv-card-expiry">\u23F3 ' + item.expiryDate + '</span>';
             }
 
@@ -4393,7 +4949,7 @@ function renderFilteredInventoryTable() {
                 + '<div class="inv-card-name">' + item.name + '</div>'
                 + (item.brand ? '<div class="inv-card-brand">' + item.brand + '</div>' : '')
                 + '<span class="inv-card-category">' + item.category + '</span>'
-                + '<div class="inv-card-location">\uD83D\uDCCD ' + locationParts.join(' / ') + '</div>'
+                + locDisplay
                 + '<div class="inv-card-meta">'
                 + '<span class="inv-card-owner">\uD83D\uDC64 ' + (item.owner || 'Default') + '</span>'
                 + (stockHtml ? stockHtml : '')
@@ -4406,4 +4962,57 @@ function renderFilteredInventoryTable() {
             cardList.appendChild(card);
         });
     }
+}
+
+function renderToBuyList() {
+    var container = document.getElementById('tobuyListContainer');
+    var metricEl = document.getElementById('tobuyMetricCount');
+    if (!container) return;
+
+    var items = appState.inventory.filter(function(item) {
+        if (item.deletedAt) return false;
+        if (item.itemType !== 'stock') return false;
+        var tot = getTotalStockQuantity(item);
+        return tot <= (item.minQuantity || 0);
+    });
+
+    if (metricEl) metricEl.innerText = items.length + ' items';
+
+    if (items.length === 0) {
+        container.innerHTML = emptyStateHTML(
+            '<path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>',
+            'All stocked up!',
+            'No items need restocking right now.',
+            null, null
+        );
+        return;
+    }
+
+    container.innerHTML = items.map(function(item) {
+        var tot = getTotalStockQuantity(item);
+        var shortage = (item.minQuantity || 0) - tot;
+        var isOut = tot === 0;
+        var badge = isOut ? '<span class="tobuy-badge-out">OUT OF STOCK</span>' : '<span class="tobuy-badge-low">LOW -' + shortage + '</span>';
+        var locSummary = getStockLocationSummary(item);
+        return '<div class="tobuy-card" onclick="showItemDetail(\'' + item.id + '\')">' +
+            '<img src="' + item.imageUrl + '" class="tobuy-img" onerror="this.src=\'https://placehold.co/100?text=Error\'">' +
+            '<div class="tobuy-body">' +
+            '<div class="tobuy-name">' + item.name + (item.brand ? ' <span class="text-xs text-slate-400">' + item.brand + '</span>' : '') + '</div>' +
+            '<div class="tobuy-meta">' +
+            '<span class="text-xs text-slate-500">' + item.category + '</span>' +
+            '<span class="text-xs text-slate-400"> | ' + (item.uom || 'pcs') + ' | min ' + (item.minQuantity || 0) + '</span>' +
+            '</div>' +
+            '<div class="tobuy-meta"><span class="text-xs text-slate-500">' + locSummary + '</span></div>' +
+            '<div class="tobuy-stats">' +
+            badge +
+            '<span class="tobuy-qty">Total: <b>' + tot + '</b></span>' +
+            '</div>' +
+            '</div>' +
+            '<div class="tobuy-actions">' +
+            '<button onclick="event.stopPropagation(); showItemDetail(\'' + item.id + '\')" class="btn btn-xs btn-ghost">View</button>' +
+            '<button onclick="event.stopPropagation(); setupItemModificationContext(\'' + item.id + '\')" class="btn btn-xs btn-primary">Edit</button>' +
+            '<button onclick="event.stopPropagation(); _currentScanItemId=\'' + item.id + '\'; scanStockIn()" class="btn btn-xs btn-success">IN</button>' +
+            '</div>' +
+            '</div>';
+    }).join('');
 }
