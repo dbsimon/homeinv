@@ -3,7 +3,7 @@
  * Data Model (v2)
  * Copyright (c) Westdoor Streetson 2026
  */
-const APP_VERSION = '1.51';
+const APP_VERSION = '1.50';
 
 // ===== Translation System =====
 const LANG = {
@@ -4502,7 +4502,129 @@ function toggleAIPanel() {
    Section 8: View Synchronizers & Structural Render Utilities
    ========================================================================== */
 function saveStateToLocalStorage() {
-    localStorage.setItem('hk_inventory_state', JSON.stringify(appState));
+    try {
+        localStorage.setItem('hk_inventory_state', JSON.stringify(appState));
+    } catch (err) {
+        if (err.name === 'QuotaExceededError' || (err.message || '').toLowerCase().indexOf('quota') !== -1) {
+            console.warn('[saveState] Quota exceeded — attempting auto-recovery');
+            if (saveStateWithRecovery()) {
+                showToast('Storage auto-compacted. Trimmed sync queue; some item images were purged from cache.', 'warning');
+                return;
+            }
+            console.error('[saveState] Recovery failed. Storage is full.');
+            showToast('Storage full. Go to Settings → Advanced and use Compact Storage or Wipe Local Cache.', 'error');
+        } else {
+            console.error('[saveState] Unexpected error:', err);
+            showToast('Save failed: ' + (err.message || 'Unknown error'), 'error');
+        }
+    }
+}
+
+function saveStateWithRecovery() {
+    var origQueue = (appState.syncQueue || []).slice();
+    var imageRestore = {};
+    var recovered = false;
+
+    if (origQueue.length > 10) {
+        appState.syncQueue = origQueue.slice(-10);
+    }
+
+    appState.inventory.forEach(function(item, i) {
+        if (item.imageUrl && item.imageUrl.indexOf('data:image') === 0) {
+            imageRestore[i] = item.imageUrl;
+            item.imageUrl = 'https://placehold.co/100?text=Image+Purged';
+        }
+    });
+
+    if (appState.spatialBackgroundImage && appState.spatialBackgroundImage.indexOf('data:image') === 0) {
+        imageRestore['__bg'] = appState.spatialBackgroundImage;
+        appState.spatialBackgroundImage = null;
+    }
+
+    try {
+        localStorage.setItem('hk_inventory_state', JSON.stringify(appState));
+        recovered = true;
+        console.warn('[saveState] Recovery: queue ' + origQueue.length + '→' + (appState.syncQueue || []).length + ', images stripped: ' + Object.keys(imageRestore).filter(function(k) { return k !== '__bg'; }).length);
+    } catch (e) {
+        appState.syncQueue = origQueue;
+        for (var idx in imageRestore) {
+            if (idx === '__bg') appState.spatialBackgroundImage = imageRestore[idx];
+            else appState.inventory[parseInt(idx)].imageUrl = imageRestore[idx];
+        }
+    }
+
+    return recovered;
+}
+
+function diagnoseStorage() {
+    var totalBytes = 0;
+    var keys = [];
+    for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        var v = localStorage.getItem(k);
+        totalBytes += v ? v.length * 2 : 0; // UTF-16
+        keys.push({ key: k, bytes: v ? v.length * 2 : 0 });
+    }
+    var stateStr = localStorage.getItem('hk_inventory_state') || '';
+    var stateBytes = stateStr.length * 2;
+    var inventoryCount = appState.inventory.length;
+    var queueLen = (appState.syncQueue || []).length;
+    var imageCount = 0;
+    var imageBytes = 0;
+    appState.inventory.forEach(function(item) {
+        if (item.imageUrl && item.imageUrl.indexOf('data:image') === 0) {
+            imageCount++;
+            imageBytes += item.imageUrl.length * 2;
+        }
+    });
+    var report = [
+        '=== Storage Diagnostic ===',
+        'Total localStorage: ' + (totalBytes / 1024 / 1024).toFixed(2) + ' MB (' + totalBytes + ' bytes)',
+        'App state only:     ' + (stateBytes / 1024 / 1024).toFixed(2) + ' MB (' + stateBytes + ' bytes)',
+        'Inventory items:    ' + inventoryCount,
+        'Sync queue entries: ' + queueLen,
+        'Base64 images:      ' + imageCount + ' (' + (imageBytes / 1024).toFixed(1) + ' KB)',
+        'Estimated limit:    ~5 MB (browser-dependent)',
+        ''
+    ];
+    if (imageCount > 0) {
+        report.push('TOP IMAGE HOGS:');
+        var ranked = [];
+        appState.inventory.forEach(function(item, i) {
+            if (item.imageUrl && item.imageUrl.indexOf('data:image') === 0) {
+                ranked.push({ idx: i, name: item.name, kb: (item.imageUrl.length * 2 / 1024) });
+            }
+        });
+        ranked.sort(function(a, b) { return b.kb - a.kb; });
+        ranked.slice(0, 5).forEach(function(r) {
+            report.push('  [' + r.idx + '] ' + r.name + ': ' + r.kb.toFixed(1) + ' KB');
+        });
+    }
+    report.push('');
+    report.push('SUGGESTIONS:');
+    report.push('  - Run compactStorage() to trim sync queue');
+    if (imageCount > 0) report.push('  - Re-upload images as smaller files (jpeg < 100KB)');
+    report.push('  - Remove unused items');
+    report.push('  - Purge Local Cache as last resort');
+    console.log(report.join('\n'));
+    return report.join('\n');
+}
+
+function compactLocalStorage() {
+    var before = (localStorage.getItem('hk_inventory_state') || '').length * 2;
+    var origQueue = (appState.syncQueue || []).slice();
+    appState.syncQueue = (appState.syncQueue || []).slice(-10);
+    try {
+        localStorage.setItem('hk_inventory_state', JSON.stringify(appState));
+        var after = (localStorage.getItem('hk_inventory_state') || '').length * 2;
+        var saved = ((before - after) / 1024).toFixed(1);
+        console.log('[compact] Freed ' + saved + ' KB (sync queue: ' + origQueue.length + '→' + appState.syncQueue.length + ')');
+        showToast('Storage compacted. Freed ~' + saved + ' KB. Sync queue trimmed to last 10.', 'success');
+    } catch (e) {
+        appState.syncQueue = origQueue;
+        console.error('[compact] Failed:', e);
+        showToast('Compaction failed. Try Wipe Local Cache.', 'error');
+    }
 }
 
 function migrateLegacyState(state) {

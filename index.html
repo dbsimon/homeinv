@@ -614,7 +614,11 @@
                             <button onclick="verifyCloudSync()" class="btn btn-sm btn-secondary">Check sync status</button>
                         </div>
                         <p class="text-[10px] text-red-400 mb-2">Destructive: permanently removes all local data.</p>
-                        <button onclick="purgeSystemStorageCache()" class="btn btn-sm btn-danger shadow-sm">Wipe Local Cache</button>
+                        <div class="flex flex-wrap gap-2">
+                            <button onclick="compactLocalStorage()" class="btn btn-sm btn-amber-outline">Compact Storage</button>
+                            <button onclick="diagnoseStorage(); showToast('Diagnostic printed to console (F12).', 'info')" class="btn btn-sm btn-ghost">Diagnose</button>
+                            <button onclick="purgeSystemStorageCache()" class="btn btn-sm btn-danger shadow-sm">Wipe Local Cache</button>
+                        </div>
                     </div>
                 </div>
             </div>
