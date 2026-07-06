@@ -597,9 +597,17 @@ function revokeAllCachedBlobUrls() {
 }
 
 function normalizeDriveUrl(url) {
-    if (!url || url.indexOf('drive.google.com/uc?') === -1) return url;
-    var match = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-    if (match) return 'https://drive.google.com/thumbnail?id=' + match[1] + '&sz=w1280';
+    if (!url) return url;
+    var fileId = null;
+    var matchPath = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (matchPath) fileId = matchPath[1];
+    if (!fileId) {
+        var matchParam = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+        if (matchParam) fileId = matchParam[1];
+    }
+    if (fileId && url.indexOf('drive.google.com') !== -1) {
+        return 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w1280';
+    }
     return url;
 }
 
@@ -730,7 +738,11 @@ function hydrateRemoteImage(item) {
     var fullUrl = normalizeDriveUrl(item.imageUrl);
     var thumbKey = item.imageThumbKey;
     var fullKey = item.imageFullKey;
-    if (thumbUrl && thumbUrl.indexOf('http') === 0 && thumbKey && !_imageBlobUrlCache[thumbKey]) {
+    var isDriveThumb = thumbUrl && thumbUrl.indexOf('drive.google.com/thumbnail') !== -1;
+    var isDriveFull = fullUrl && fullUrl.indexOf('drive.google.com/thumbnail') !== -1;
+    if (isDriveThumb && thumbKey) {
+        _imageBlobUrlCache[thumbKey] = thumbUrl;
+    } else if (thumbUrl && thumbUrl.indexOf('http') === 0 && thumbKey && !_imageBlobUrlCache[thumbKey]) {
         fetch(thumbUrl)
             .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
             .then(function(blob) {
@@ -739,7 +751,9 @@ function hydrateRemoteImage(item) {
             })
             .catch(function(e) { /* silent */ });
     }
-    if (fullUrl && fullUrl.indexOf('http') === 0 && fullKey && !_imageBlobUrlCache[fullKey] && fullUrl !== thumbUrl) {
+    if (isDriveFull && fullKey) {
+        _imageBlobUrlCache[fullKey] = fullUrl;
+    } else if (fullUrl && fullUrl.indexOf('http') === 0 && fullKey && !_imageBlobUrlCache[fullKey] && fullUrl !== thumbUrl) {
         fetch(fullUrl)
             .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
             .then(function(blob) {
@@ -1380,6 +1394,7 @@ window.addEventListener('DOMContentLoaded', () => {
         initializeDefaultTiersIfEmpty();
         applyLanguageToDOM();
         syncUIComponents();
+        updateSyncStatusBadge();
         switchTab('tab-spatial');
         clearActiveNode();
         installIOSZoomFix();
@@ -1693,6 +1708,19 @@ function toggleOverflowMenu(e, btnEl) {
     if (!menu.classList.contains('hidden')) {
         menu.classList.add('hidden');
         return;
+    }
+
+    // Sync mobile user dropdown
+    var mobileUserSel = document.getElementById('headerUserSelectMobile');
+    if (mobileUserSel) {
+        mobileUserSel.innerHTML = (appState.users || ['Default']).map(function(u) {
+            return '<option value="' + u + '"' + (u === appState.currentUser ? ' selected' : '') + '>' + u + '</option>';
+        }).join('');
+    }
+    // Update language button label
+    var langBtns = document.querySelectorAll('#overflowMenu button[onclick*="switchLanguage"]');
+    for (var i = 0; i < langBtns.length; i++) {
+        langBtns[i].textContent = appState.language === 'en' ? '中/EN' : 'EN/中';
     }
 
     var btn = btnEl || (e && e.currentTarget) || (e && e.target && e.target.closest('button'));
@@ -3153,14 +3181,27 @@ function startMarkerDrag(e, marker, seg, con) {
 function handleLayoutBackgroundUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
-
-    compressImageFile(file, 1600, 0.75, function(dataUrl) {
-        appState.spatialBackgroundImage = dataUrl;
+    event.target.value = '';
+    var endpoint = localStorage.getItem('sys_gas_url');
+    showToast('Uploading layout image...', 'info');
+    compressImageFileToBlob(file, 1600, 0.75, 'image/jpeg').then(function(result) {
+        var uploadFn = endpoint
+            ? uploadImageToCloud(result.blob, 'layout_bg_' + Date.now() + '.jpg')
+            : Promise.reject(new Error('No cloud endpoint'));
+        return uploadFn;
+    }).then(function(url) {
+        appState.spatialBackgroundImage = url;
         markMapDirty();
         renderSpatialMapGrid();
-        showToast('Layout image imported \u2014 click Save to keep', 'info');
+        showToast('Layout image uploaded \u2014 click Save to keep', 'info');
+    }).catch(function(err) {
+        compressImageFile(file, 1600, 0.75, function(dataUrl) {
+            appState.spatialBackgroundImage = dataUrl;
+            markMapDirty();
+            renderSpatialMapGrid();
+            showToast('Layout image saved locally only (no cloud configured)', 'info');
+        });
     });
-    event.target.value = '';
 }
 
 function clearLayoutBackground() {
@@ -3803,7 +3844,7 @@ function commitItemToInventory() {
             payloadItem.imageUrl = existing.imageUrl || '';
             payloadItem.imageThumbUrl = existing.imageThumbUrl || '';
         } else if (imageUrl && imageUrl.indexOf('http') === 0) {
-            payloadItem.imageUrl = imageUrl;
+            payloadItem.imageUrl = normalizeDriveUrl(imageUrl);
             payloadItem.imageThumbUrl = '';
             payloadItem.imageSourceType = 'remote';
             payloadItem.imageThumbKey = '';
@@ -3818,7 +3859,7 @@ function commitItemToInventory() {
             payloadItem.imageThumbUrl = existing.imageThumbUrl || '';
         }
     } else if (imageUrl && imageUrl.indexOf('http') === 0) {
-        payloadItem.imageUrl = imageUrl;
+        payloadItem.imageUrl = normalizeDriveUrl(imageUrl);
         payloadItem.imageThumbUrl = '';
         payloadItem.imageSourceType = 'remote';
     } else {
@@ -4144,8 +4185,9 @@ function handleAssetImageUpload(event) {
 function updateImagePreviewFromUrl() {
     const url = document.getElementById('invItemImageUrl').value.trim();
     const preview = document.getElementById('invItemImagePreview');
-    if (url) {
-        preview.src = url;
+    const normalized = normalizeDriveUrl(url);
+    if (normalized) {
+        preview.src = normalized;
         preview.classList.remove('hidden');
         document.getElementById('btnAIAnalyze').style.display = '';
     } else {
@@ -4727,7 +4769,8 @@ async function syncFromCloudWithToast() {
         var json = await resp.json();
 
         if (json && json.segments) {
-            var merged = mergeCloudState(json);
+            mergeCloudPayload(json);
+            syncUIComponents();
             // All pending ops are now reconciled with cloud state
             appState.syncQueue = [];
             saveStateToLocalStorage();
@@ -4753,52 +4796,60 @@ async function syncFromCloudWithToast() {
     btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
 }
 
-function mergeCloudState(cloudState) {
-    if (!cloudState || !cloudState.inventory) return appState;
-
-    var localItems = {};
-    appState.inventory.forEach(function(item) {
-        localItems[item.id] = item;
+function mergeCloudPayload(cloud) {
+    // 1. Users — union merge
+    var localUsers = appState.users || ['Default'];
+    var cloudUsers = (cloud.users && Array.isArray(cloud.users)) ? cloud.users : ['Default'];
+    var mergedUsers = Array.from(new Set(['Default'].concat(localUsers).concat(cloudUsers)));
+    appState.users = mergedUsers;
+    // 2. userEmails — union merge (cloud wins on conflict)
+    var localEmails = appState.userEmails || {};
+    var cloudEmails = cloud.userEmails || {};
+    appState.userEmails = Object.assign({}, localEmails, cloudEmails);
+    // 3. inventory — per-item version merge
+    var localMap = {};
+    (appState.inventory || []).forEach(function(item) { localMap[item.id] = item; });
+    var cloudMap = {};
+    (cloud.inventory || []).forEach(function(item) { cloudMap[item.id] = item; });
+    var allIds = Array.from(new Set(Object.keys(localMap).concat(Object.keys(cloudMap))));
+    appState.inventory = allIds.map(function(id) {
+        var local = localMap[id];
+        var remote = cloudMap[id];
+        if (!local) return remote;
+        if (!remote) return local;
+        if (remote.deletedAt) return remote;
+        if (local.deletedAt && !remote.deletedAt) return remote;
+        var localVer = local.version || 0;
+        var remoteVer = remote.version || 0;
+        if (remoteVer > localVer) return remote;
+        if (localVer > remoteVer) return local;
+        return (local.updatedAt || '') >= (remote.updatedAt || '') ? local : remote;
     });
-
-    var mergedInventory = [];
-    (cloudState.inventory || []).forEach(function(cloudItem) {
-        normalizeImageFields(cloudItem);
-        var localItem = localItems[cloudItem.id];
-        if (!localItem) {
-            mergedInventory.push(cloudItem);
-        } else if (cloudItem.deletedAt) {
-            // Cloud wins — item was deleted remotely
-            mergedInventory.push(cloudItem);
-        } else if (localItem.deletedAt && !cloudItem.deletedAt) {
-            // Local deletion was overridden remotely — keep cloud version
-            mergedInventory.push(cloudItem);
-        } else if ((cloudItem.version || 0) >= (localItem.version || 0)) {
-            // Cloud version is newer or equal — take cloud
-            mergedInventory.push(cloudItem);
-        } else {
-            // Local version is newer — keep local
-            mergedInventory.push(localItem);
-        }
-        delete localItems[cloudItem.id];
-    });
-
-    // Add local-only items that aren't in cloud
-    for (var id in localItems) {
-        mergedInventory.push(localItems[id]);
-    }
-
-    appState.inventory = mergedInventory;
     appState.inventory.forEach(function(item) { normalizeImageFields(item); });
-    appState.segments = cloudState.segments || appState.segments;
-    appState.categories = cloudState.categories || appState.categories;
-    appState.coordinates = cloudState.coordinates || appState.coordinates;
+    // 4. segments — cloud wins if it has >= as many keys as local
+    var localSegCount = Object.keys(appState.segments || {}).length;
+    var cloudSegCount = Object.keys(cloud.segments || {}).length;
+    if (cloudSegCount >= localSegCount) appState.segments = cloud.segments || {};
+    // categories — cloud wins if >= keys
+    var countKeys = function(obj) { return Object.keys(obj || {}).length; };
+    if (countKeys(cloud.categories) >= countKeys(appState.categories)) {
+        appState.categories = cloud.categories || {};
+    }
+    // coordinates — always union merge (more positions is better)
+    appState.coordinates = Object.assign({}, appState.coordinates || {}, cloud.coordinates || {});
+    // spatialBackgroundImage — cloud wins if truthy
+    if (cloud.spatialBackgroundImage) {
+        appState.spatialBackgroundImage = cloud.spatialBackgroundImage;
+    }
+    // 5. Scalar fields — cloud wins
+    if (cloud.reminderDays) appState.reminderDays = cloud.reminderDays;
+    if (cloud.language) appState.language = cloud.language;
+    // meta fields
+    appState.meta = appState.meta || {};
+    if (cloud.meta && cloud.meta.lastServerRevision) {
+        appState.meta.lastServerRevision = cloud.meta.lastServerRevision;
+    }
     appState.meta.lastSyncedAt = new Date().toISOString();
-    appState.meta.lastServerRevision = cloudState.meta ? cloudState.meta.lastServerRevision : null;
-
-    saveStateToLocalStorage();
-    syncUIComponents();
-    return appState;
 }
 
 async function triggerSynchronousCloudFetchPull() {
@@ -4888,7 +4939,8 @@ async function autoPullFromCloudIfPossible() {
         var json = await resp.json();
 
         if (json && json.inventory) {
-            mergeCloudState(json);
+            mergeCloudPayload(json);
+            syncUIComponents();
         }
     } catch(e) {}
 }

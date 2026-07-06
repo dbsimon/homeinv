@@ -900,3 +900,10 @@ thead.sticky th {
 #aiMetadataContent.collapsed textarea {
     display: none;
 }
+
+/* ===== FAB Safe Area Positioning ===== */
+@media (min-width: 768px) {
+    #btnFab {
+        bottom: 24px !important;
+    }
+}
