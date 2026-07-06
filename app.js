@@ -597,24 +597,10 @@ function revokeAllCachedBlobUrls() {
 }
 
 function normalizeDriveUrl(url) {
-  if (!url) return '';
-  url = String(url).trim();
-
-  var id = null;
-  var m = null;
-
-  m = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/i);
-  if (!m) m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/i);
-  if (!m) m = url.match(/\/thumbnail\?(?:[^#]*[&?])?id=([a-zA-Z0-9_-]+)/i);
-  if (!m) m = url.match(/\/uc\?(?:[^#]*[&?])?id=([a-zA-Z0-9_-]+)/i);
-
-  if (m) id = m[1];
-
-  if (id) {
-    return 'https://drive.google.com/uc?export=view&id=' + id;
-  }
-
-  return url;
+    if (!url || url.indexOf('drive.google.com/uc?') === -1) return url;
+    var match = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (match) return 'https://drive.google.com/thumbnail?id=' + match[1] + '&sz=w1280';
+    return url;
 }
 
 function getRenderableImageSrc(item, preferThumb) {
@@ -3701,7 +3687,6 @@ function commitItemToInventory() {
     var name = document.getElementById('invItemName').value.trim();
     var categoryStr = buildCategoryPathFromSelects();
     var imageUrl = document.getElementById('invItemImageUrl').value.trim();
-    var normalizedImageUrl = normalizeDriveUrl(imageUrl);
     var remarks = document.getElementById('invItemRemarks').value.trim();
     var editId = document.getElementById('editTargetItemId').value;
     var now = new Date().toISOString();
@@ -3709,8 +3694,6 @@ function commitItemToInventory() {
     var isStock = document.getElementById('invItemTypeValue').value === 'stock';
     var owner = document.getElementById('invItemOwnerSelect').value || appState.currentUser || 'Default';
 
-
-      
     if (!name || !categoryStr) {
         showToast(t('pleaseComplete'), 'error');
         return;
@@ -3820,13 +3803,13 @@ function commitItemToInventory() {
             payloadItem.imageUrl = existing.imageUrl || '';
             payloadItem.imageThumbUrl = existing.imageThumbUrl || '';
         } else if (imageUrl && imageUrl.indexOf('http') === 0) {
-          payloadItem.imageUrl = normalizedImageUrl;
-          payloadItem.imageThumbUrl = normalizedImageUrl;
-          payloadItem.imageSourceType = 'remote';
-          payloadItem.imageThumbKey = '';
-          payloadItem.imageFullKey = '';
-          payloadItem.imageMeta = null;
-        }else {
+            payloadItem.imageUrl = imageUrl;
+            payloadItem.imageThumbUrl = '';
+            payloadItem.imageSourceType = 'remote';
+            payloadItem.imageThumbKey = '';
+            payloadItem.imageFullKey = '';
+            payloadItem.imageMeta = null;
+        } else {
             payloadItem.imageSourceType = existing.imageSourceType || 'none';
             payloadItem.imageThumbKey = existing.imageThumbKey || '';
             payloadItem.imageFullKey = existing.imageFullKey || '';
@@ -3835,12 +3818,9 @@ function commitItemToInventory() {
             payloadItem.imageThumbUrl = existing.imageThumbUrl || '';
         }
     } else if (imageUrl && imageUrl.indexOf('http') === 0) {
-        payloadItem.imageUrl = normalizedImageUrl;
-        payloadItem.imageThumbUrl = normalizedImageUrl;
+        payloadItem.imageUrl = imageUrl;
+        payloadItem.imageThumbUrl = '';
         payloadItem.imageSourceType = 'remote';
-        payloadItem.imageThumbKey = '';
-        payloadItem.imageFullKey = '';
-        payloadItem.imageMeta = null;
     } else {
         payloadItem.imageUrl = imageUrl || 'https://placehold.co/100?text=No+Photo';
         payloadItem.imageThumbUrl = '';
@@ -4162,19 +4142,17 @@ function handleAssetImageUpload(event) {
 }
 
 function updateImagePreviewFromUrl() {
-  const rawUrl = document.getElementById('invItemImageUrl').value.trim();
-  const url = normalizeDriveUrl(rawUrl);
-  const preview = document.getElementById('invItemImagePreview');
-
-  if (url) {
-    preview.src = url;
-    preview.classList.remove('hidden');
-    document.getElementById('btnAIAnalyze').style.display = '';
-  } else {
-    preview.src = '';
-    preview.classList.add('hidden');
-    document.getElementById('btnAIAnalyze').style.display = 'none';
-  }
+    const url = document.getElementById('invItemImageUrl').value.trim();
+    const preview = document.getElementById('invItemImagePreview');
+    if (url) {
+        preview.src = url;
+        preview.classList.remove('hidden');
+        document.getElementById('btnAIAnalyze').style.display = '';
+    } else {
+        preview.src = '';
+        preview.classList.add('hidden');
+        document.getElementById('btnAIAnalyze').style.display = 'none';
+    }
 }
 
 async function aiAnalyzeImage() {
