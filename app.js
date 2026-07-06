@@ -505,6 +505,18 @@ function idbGetImage(key) {
     });
 }
 
+function idbPutImage(record) {
+    return openImageDb().then(function(db) {
+        return new Promise(function(resolve, reject) {
+            var tx = db.transaction('images', 'readwrite');
+            var store = tx.objectStore('images');
+            var req = store.put(record);
+            req.onsuccess = function() { resolve(record); };
+            req.onerror = function() { reject(req.error); };
+        });
+    });
+}
+
 function idbDeleteImage(key) {
     return openImageDb().then(function(db) {
         return new Promise(function(resolve, reject) {
