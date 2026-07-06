@@ -1,4 +1,4 @@
-# Find My Item — 物件追蹤
+# Find My Item — 物件追蹤 (pending to update)
 
 A single-page home inventory tracking app. Register items by location or by stock quantity, scan barcodes, map container positions, and sync to Google Sheets. No frameworks, no build tools — open `index.html` and it works.
 
