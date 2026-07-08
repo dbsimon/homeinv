@@ -4543,10 +4543,213 @@ function importExcelToLocalDatabases(event) {
 
     function cleanCell(val) {
         if (typeof val !== 'string') return val;
-        // Strip truncation marker: "[TRUNCATED] ... [...orig N chars]"
         var m = val.match(/^\[TRUNCATED\]\s([\s\S]*?)\s\[\u2026orig\s\d+\schars\]$/);
         if (m) return m[1];
         return val;
+    }
+
+    function hasValue(v) {
+        if (v === undefined || v === null) return false;
+        if (typeof v === 'string' && v.trim() === '') return false;
+        return true;
+    }
+
+    function findExistingItemForImport(row) {
+        var sysId = cleanCell(row["System ID"]);
+        if (sysId && typeof sysId === 'string' && sysId.trim()) {
+            var byId = appState.inventory.find(function(i) { return !i.deletedAt && i.id === sysId.trim(); });
+            if (byId) return byId;
+        }
+        var barcode = cleanCell(row["Barcode ID"]);
+        if (barcode && typeof barcode === 'string' && barcode.trim()) {
+            var byBarcode = appState.inventory.find(function(i) { return !i.deletedAt && i.barcodeId === barcode.trim(); });
+            if (byBarcode) return byBarcode;
+        }
+        return null;
+    }
+
+    function validateImportRow(row) {
+        var itemType = cleanCell(row["Item Type"]);
+        if (itemType && typeof itemType === 'string' && itemType.trim()) {
+            var type = itemType.trim().toLowerCase();
+            if (type !== 'unique' && type !== 'stock') {
+                return { valid: false, reason: "Invalid Item Type: '" + itemType + "'. Must be 'unique' or 'stock'." };
+            }
+        }
+        var stockRaw = cleanCell(row["Stock Entries JSON"]);
+        if (hasValue(stockRaw)) {
+            try {
+                var parsed = JSON.parse(String(stockRaw).trim());
+                if (!Array.isArray(parsed)) {
+                    return { valid: false, reason: "Stock Entries JSON must be an array." };
+                }
+            } catch(e) {
+                return { valid: false, reason: "Invalid Stock Entries JSON: " + e.message };
+            }
+        }
+        var qty = cleanCell(row["Quantity"]);
+        if (hasValue(qty) && typeof qty !== 'number') {
+            var qtyNum = Number(String(qty).trim());
+            if (isNaN(qtyNum) || !isFinite(qtyNum) || qtyNum < 0) {
+                return { valid: false, reason: "Invalid Quantity: '" + String(qty) + "'" };
+            }
+        }
+        var minQty = cleanCell(row["Min Quantity"]);
+        if (hasValue(minQty) && typeof minQty !== 'number') {
+            var minQtyNum = Number(String(minQty).trim());
+            if (isNaN(minQtyNum) || !isFinite(minQtyNum) || minQtyNum < 0) {
+                return { valid: false, reason: "Invalid Min Quantity: '" + String(minQty) + "'" };
+            }
+        }
+        var dates = ['Purchase Date', 'Warranty Date', 'Expiry Date'];
+        for (var d = 0; d < dates.length; d++) {
+            var dateVal = cleanCell(row[dates[d]]);
+            if (hasValue(dateVal)) {
+                var parsedDate = new Date(String(dateVal));
+                if (isNaN(parsedDate.getTime())) {
+                    return { valid: false, reason: "Invalid date in '" + dates[d] + "': '" + String(dateVal) + "'" };
+                }
+            }
+        }
+        return { valid: true };
+    }
+
+    function patchInventoryItemFromImport(existingItem, row) {
+        var item = {};
+        for (var k in existingItem) {
+            if (Object.prototype.hasOwnProperty.call(existingItem, k)) {
+                if (k === 'stockEntries' && Array.isArray(existingItem[k])) {
+                    item[k] = existingItem[k].map(function(e) { return Object.assign({}, e); });
+                } else if (typeof existingItem[k] === 'object' && existingItem[k] !== null) {
+                    item[k] = Object.assign({}, existingItem[k]);
+                } else {
+                    item[k] = existingItem[k];
+                }
+            }
+        }
+
+        var itemType = cleanCell(row["Item Type"]);
+        if (hasValue(itemType)) item.itemType = String(itemType).trim().toLowerCase();
+
+        var name = cleanCell(row["Item Name"]);
+        if (hasValue(name)) item.name = String(name);
+
+        var brand = cleanCell(row["Brand"]);
+        if (hasValue(brand)) item.brand = String(brand);
+
+        var category = cleanCell(row["Classification Route"]);
+        if (hasValue(category)) item.category = String(category);
+
+        var segment = cleanCell(row["Segment Zone"]);
+        if (hasValue(segment)) item.segment = String(segment);
+
+        var container = cleanCell(row["Container"]);
+        if (hasValue(container)) item.container = String(container);
+
+        var subContainer = cleanCell(row["Sub-Container"]);
+        if (hasValue(subContainer)) item.subContainer = String(subContainer);
+
+        var owner = cleanCell(row["Owner"]);
+        if (hasValue(owner)) item.owner = String(owner);
+
+        var aiMd = cleanCell(row["AI Metadata"]);
+        if (hasValue(aiMd)) item.aiMetadata = String(aiMd);
+
+        var purDate = cleanCell(row["Purchase Date"]);
+        if (hasValue(purDate)) item.purchaseDate = String(purDate);
+
+        var warDate = cleanCell(row["Warranty Date"]);
+        if (hasValue(warDate)) item.warrantyDate = String(warDate);
+
+        var expDate = cleanCell(row["Expiry Date"]);
+        if (hasValue(expDate)) item.expiryDate = String(expDate);
+
+        var uom = cleanCell(row["UOM"]);
+        if (hasValue(uom)) item.uom = String(uom);
+
+        var quantity = cleanCell(row["Quantity"]);
+        if (hasValue(quantity)) item.quantity = parseInt(quantity) || 0;
+
+        var minQuantity = cleanCell(row["Min Quantity"]);
+        if (hasValue(minQuantity)) item.minQuantity = parseInt(minQuantity) || 0;
+
+        var img = cleanCell(row["Image Link Asset"]);
+        if (hasValue(img)) item.imageUrl = String(img);
+
+        var rem = cleanCell(row["User Remarks Annotation"]);
+        if (hasValue(rem)) item.remarks = String(rem);
+
+        var time = cleanCell(row["Last System Entry Update"]);
+        if (hasValue(time)) item.timestamp = String(time);
+
+        var barcodeId = cleanCell(row["Barcode ID"]);
+        if (hasValue(barcodeId) && !item.barcodeId) {
+            item.barcodeId = String(barcodeId).trim();
+        }
+
+        var stockRaw = cleanCell(row["Stock Entries JSON"]);
+        if (hasValue(stockRaw)) {
+            var stockEntries = [];
+            if (item.itemType === 'stock') {
+                try { stockEntries = JSON.parse(String(stockRaw).trim()); } catch(ee) { stockEntries = []; }
+            }
+            item.stockEntries = stockEntries;
+            if (item.itemType === 'stock' && stockEntries.length > 0) {
+                item.quantity = getTotalStockQuantity(item);
+            }
+        }
+
+        item.updatedAt = new Date().toISOString();
+        item.version = (item.version || 0) + 1;
+        item.lastModifiedBy = appState.meta.deviceId;
+
+        return item;
+    }
+
+    function createNewItemFromImport(row) {
+        var id = generateItemId();
+        var name = cleanCell(row["Item Name"]) || 'Unnamed Imported Asset';
+        var brand = cleanCell(row["Brand"]) || '';
+        var category = cleanCell(row["Classification Route"]) || '';
+        var segment = cleanCell(row["Segment Zone"]) || '';
+        var container = cleanCell(row["Container"]) || '';
+        var subContainer = cleanCell(row["Sub-Container"]) || '';
+        var owner = cleanCell(row["Owner"]) || 'Default';
+        var aiMd = cleanCell(row["AI Metadata"]) || '';
+        var purDate = cleanCell(row["Purchase Date"]) || '';
+        var warDate = cleanCell(row["Warranty Date"]) || '';
+        var expDate = cleanCell(row["Expiry Date"]) || '';
+        var itemType = cleanCell(row["Item Type"]);
+        itemType = (itemType && typeof itemType === 'string' && itemType.trim()) ? String(itemType).trim().toLowerCase() : 'unique';
+        var uom = cleanCell(row["UOM"]) || '';
+        var quantity = parseInt(cleanCell(row["Quantity"])) || 0;
+        var minQuantity = parseInt(cleanCell(row["Min Quantity"])) || 0;
+        var img = cleanCell(row["Image Link Asset"]) || '';
+        var rem = cleanCell(row["User Remarks Annotation"]) || '';
+        var time = cleanCell(row["Last System Entry Update"]) || new Date().toISOString().replace('T', ' ').substring(0, 16);
+        var barcodeId = cleanCell(row["Barcode ID"]) || '';
+        var stockRaw = cleanCell(row["Stock Entries JSON"]) || '';
+        var stockEntries = [];
+        if (stockRaw && itemType === 'stock') {
+            try { stockEntries = JSON.parse(String(stockRaw).trim()); } catch(ee) { stockEntries = []; }
+        }
+        var nowIso = new Date().toISOString();
+        var item = {
+            id: id, name: name, brand: brand, category: category, segment: segment,
+            container: container, subContainer: subContainer, owner: owner,
+            aiMetadata: aiMd, purchaseDate: purDate, warrantyDate: warDate,
+            expiryDate: expDate, itemType: itemType, uom: uom,
+            quantity: quantity, minQuantity: minQuantity, imageUrl: img,
+            stockEntries: stockEntries,
+            remarks: rem, timestamp: time,
+            createdAt: nowIso, updatedAt: nowIso, deletedAt: null,
+            version: 1, lastModifiedBy: appState.meta.deviceId
+        };
+        if (barcodeId) item.barcodeId = String(barcodeId);
+        if (itemType === 'stock' && stockEntries.length > 0) {
+            item.quantity = getTotalStockQuantity(item);
+        }
+        return item;
     }
 
     var reader = new FileReader();
@@ -4556,58 +4759,70 @@ function importExcelToLocalDatabases(event) {
             var workbook = XLSX.read(data, { type: 'array' });
 
             var invSheetName = workbook.SheetNames.find(function(n) { return n === "Inventory Ledger"; }) || workbook.SheetNames[0];
+            var importErrors = [];
+            var patchCount = 0;
+            var newCount = 0;
+            var skipCount = 0;
+
             if (invSheetName && workbook.Sheets[invSheetName]) {
                 var rows = XLSX.utils.sheet_to_json(workbook.Sheets[invSheetName]);
-                rows.forEach(function(r) {
-                    var id = cleanCell(r["System ID"]) || generateItemId();
-                    var name = cleanCell(r["Item Name"]) || 'Unnamed Imported Asset';
-                    var brand = cleanCell(r["Brand"]) || '';
-                    var category = cleanCell(r["Classification Route"]) || 'Foods';
-                    var segment = cleanCell(r["Segment Zone"]) || 'Living Room';
-                    var container = cleanCell(r["Container"]) || cleanCell(r["Sub-Container"]) || 'General Area';
-                    var subContainer = cleanCell(r["Sub-Container"]) || '';
-                    var owner = cleanCell(r["Owner"]) || 'Default';
-                    var aiMd = cleanCell(r["AI Metadata"]) || '';
-                    var purDate = cleanCell(r["Purchase Date"]) || '';
-                    var warDate = cleanCell(r["Warranty Date"]) || '';
-                    var expDate = cleanCell(r["Expiry Date"]) || '';
-                    var itemType = cleanCell(r["Item Type"]) || 'unique';
-                    var uom = cleanCell(r["UOM"]) || '';
-                    var quantity = parseInt(cleanCell(r["Quantity"])) || 0;
-                    var minQuantity = parseInt(cleanCell(r["Min Quantity"])) || 0;
-                    var img = cleanCell(r["Image Link Asset"]) || 'https://placehold.co/100?text=No+Photo';
-                    var rem = cleanCell(r["User Remarks Annotation"]) || '';
-                    var time = cleanCell(r["Last System Entry Update"]) || new Date().toISOString().replace('T', ' ').substring(0, 16);
+                rows.forEach(function(r, rowIdx) {
+                    var rowNum = rowIdx + 2;
 
-                    if (!appState.segments[segment]) appState.segments[segment] = {};
-                    if (!appState.segments[segment][container]) appState.segments[segment][container] = [];
-                    if (subContainer && !appState.segments[segment][container].includes(subContainer)) appState.segments[segment][container].push(subContainer);
-                    if (owner && owner !== 'Default' && !appState.users.includes(owner)) appState.users.push(owner);
+                    var validation = validateImportRow(r);
+                    if (!validation.valid) {
+                        importErrors.push("Row " + rowNum + ": " + validation.reason);
+                        skipCount++;
+                        return;
+                    }
 
-                    var existingIdx = appState.inventory.findIndex(function(i) { return i.id === id; });
-                    var time = cleanCell(r["Last System Entry Update"]) || new Date().toISOString().replace('T', ' ').substring(0, 16);
-                    var nowIso = new Date().toISOString();
-                    var stockEntriesRaw = cleanCell(r["Stock Entries JSON"]) || '';
-                    var stockEntries = [];
-                    if (stockEntriesRaw && itemType === 'stock') {
-                        try { stockEntries = JSON.parse(stockEntriesRaw); } catch(ee) { stockEntries = []; }
+                    var existingItem = findExistingItemForImport(r);
+
+                    if (existingItem) {
+                        var patchedItem = patchInventoryItemFromImport(existingItem, r);
+                        var existingIdx = appState.inventory.findIndex(function(i) { return i.id === existingItem.id; });
+                        if (existingIdx !== -1) {
+                            appState.inventory[existingIdx] = patchedItem;
+                        }
+                        patchCount++;
+
+                        if (patchedItem.segment) {
+                            if (!appState.segments[patchedItem.segment]) appState.segments[patchedItem.segment] = {};
+                            if (patchedItem.container && !appState.segments[patchedItem.segment][patchedItem.container]) {
+                                appState.segments[patchedItem.segment][patchedItem.container] = [];
+                            }
+                            if (patchedItem.subContainer && patchedItem.container && !appState.segments[patchedItem.segment][patchedItem.container].includes(patchedItem.subContainer)) {
+                                appState.segments[patchedItem.segment][patchedItem.container].push(patchedItem.subContainer);
+                            }
+                        }
+                        if (patchedItem.owner && patchedItem.owner !== 'Default' && !appState.users.includes(patchedItem.owner)) {
+                            appState.users.push(patchedItem.owner);
+                        }
+                    } else {
+                        var itemName = cleanCell(r["Item Name"]);
+                        if (!itemName || (typeof itemName === 'string' && !itemName.trim())) {
+                            importErrors.push("Row " + rowNum + ": Missing Item Name for new item.");
+                            skipCount++;
+                            return;
+                        }
+
+                        var newItem = createNewItemFromImport(r);
+                        appState.inventory.push(newItem);
+                        newCount++;
+
+                        if (newItem.segment) {
+                            if (!appState.segments[newItem.segment]) appState.segments[newItem.segment] = {};
+                            if (newItem.container && !appState.segments[newItem.segment][newItem.container]) {
+                                appState.segments[newItem.segment][newItem.container] = [];
+                            }
+                            if (newItem.subContainer && newItem.container && !appState.segments[newItem.segment][newItem.container].includes(newItem.subContainer)) {
+                                appState.segments[newItem.segment][newItem.container].push(newItem.subContainer);
+                            }
+                        }
+                        if (newItem.owner && newItem.owner !== 'Default' && !appState.users.includes(newItem.owner)) {
+                            appState.users.push(newItem.owner);
+                        }
                     }
-                    var item = {
-                        id: id, name: name, brand: brand, category: category, segment: segment,
-                        container: container, subContainer: subContainer, owner: owner,
-                        aiMetadata: aiMd, purchaseDate: purDate, warrantyDate: warDate,
-                        expiryDate: expDate, itemType: itemType, uom: uom,
-                        quantity: quantity, minQuantity: minQuantity, imageUrl: img,
-                        stockEntries: stockEntries,
-                        remarks: rem, timestamp: time,
-                        createdAt: nowIso, updatedAt: nowIso, deletedAt: null,
-                        version: 1, lastModifiedBy: appState.meta.deviceId
-                    };
-                    if (itemType === 'stock' && stockEntries.length > 0) {
-                        item.quantity = getTotalStockQuantity(item);
-                    }
-                    if (existingIdx !== -1) appState.inventory[existingIdx] = item;
-                    else appState.inventory.push(item);
                 });
             }
 
@@ -4637,7 +4852,17 @@ function importExcelToLocalDatabases(event) {
 
             saveStateToLocalStorage();
             syncUIComponents();
-            showToast("Spreadsheet processing successfully parsed.", 'success');
+
+            var summary = [];
+            if (patchCount > 0) summary.push(patchCount + " item(s) updated");
+            if (newCount > 0) summary.push(newCount + " new item(s) added");
+            if (skipCount > 0) summary.push(skipCount + " row(s) skipped");
+            if (summary.length === 0) summary.push("No items processed");
+            showToast("Import: " + summary.join(", "), skipCount > 0 && (patchCount + newCount) > 0 ? 'info' : 'success');
+
+            if (importErrors.length > 0) {
+                showAppAlert("Import Errors — " + skipCount + " row(s) skipped:\n\n" + importErrors.join('\n'));
+            }
         } catch(err) {
             showToast("Error decoding file contents: " + err.message, 'error');
         }
@@ -4791,7 +5016,20 @@ async function syncFromCloudWithToast() {
             _syncConflict = false;
             updateSyncStatusBadge();
             updateSyncBanner();
-            showToast('Synced \u2014 ' + (json.inventory || []).length + ' items', 'success');
+            var summaryParts = [];
+            var stats = appState._lastMergeStats;
+            if (stats) {
+                if (stats.localNewerKept > 0) summaryParts.push(stats.localNewerKept + ' newer local items kept');
+                if (stats.cloudNewerApplied > 0) summaryParts.push(stats.cloudNewerApplied + ' newer cloud items applied');
+                if (stats.cloudOnlyAdded > 0) summaryParts.push(stats.cloudOnlyAdded + ' new cloud items added');
+                if (stats.cloudDeleteWins > 0) summaryParts.push(stats.cloudDeleteWins + ' newer deletions applied');
+                if (stats.localDeleteWins > 0) summaryParts.push(stats.localDeleteWins + ' local deletions kept');
+            }
+            if (summaryParts.length > 0) {
+                showToast('Sync complete: ' + summaryParts.join(', ') + '.', 'success');
+            } else {
+                showToast('Synced \u2014 ' + (json.inventory || []).length + ' items', 'success');
+            }
         } else {
             _syncInProgress = false;
             _syncLastFailed = true;
@@ -4808,6 +5046,46 @@ async function syncFromCloudWithToast() {
     btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
 }
 
+function resolveItemConflict(localItem, cloudItem) {
+    if (!cloudItem) return { item: localItem, resolution: 'local-only' };
+    if (!localItem) return { item: cloudItem, resolution: 'cloud-only' };
+
+    function getTime(item) {
+        if (item.deletedAt) { var d = new Date(item.deletedAt); if (!isNaN(d.getTime())) return d.getTime(); }
+        if (item.updatedAt) { var d = new Date(item.updatedAt); if (!isNaN(d.getTime())) return d.getTime(); }
+        if (item.timestamp) { var d = new Date(item.timestamp); if (!isNaN(d.getTime())) return d.getTime(); }
+        if (item.createdAt) { var d = new Date(item.createdAt); if (!isNaN(d.getTime())) return d.getTime(); }
+        return 0;
+    }
+
+    var localTime = getTime(localItem);
+    var cloudTime = getTime(cloudItem);
+    var localDeleted = !!localItem.deletedAt;
+    var cloudDeleted = !!cloudItem.deletedAt;
+
+    if (cloudDeleted && !localDeleted) {
+        if (cloudTime > localTime) return { item: cloudItem, resolution: 'cloud-delete-wins' };
+        return { item: localItem, resolution: 'local-kept-delete-stale' };
+    }
+    if (localDeleted && !cloudDeleted) {
+        if (localTime > cloudTime) return { item: localItem, resolution: 'local-delete-wins' };
+        return { item: cloudItem, resolution: 'cloud-kept-delete-stale' };
+    }
+
+    if (cloudTime > localTime) return { item: cloudItem, resolution: 'cloud-newer' };
+    if (localTime > cloudTime) return { item: localItem, resolution: 'local-newer' };
+
+    var localVer = localItem.version || 0;
+    var cloudVer = cloudItem.version || 0;
+    if (cloudVer > localVer) return { item: cloudItem, resolution: 'cloud-higher-version' };
+    if (localVer > cloudVer) return { item: localItem, resolution: 'local-higher-version' };
+
+    if (cloudDeleted && !localDeleted) return { item: localItem, resolution: 'local-kept-tie' };
+    if (localDeleted && !cloudDeleted) return { item: cloudItem, resolution: 'cloud-kept-tie' };
+
+    return { item: cloudItem, resolution: 'tied-cloud-preferred' };
+}
+
 function mergeCloudPayload(cloud) {
     // 1. Users — union merge
     var localUsers = appState.users || ['Default'];
@@ -4818,26 +5096,58 @@ function mergeCloudPayload(cloud) {
     var localEmails = appState.userEmails || {};
     var cloudEmails = cloud.userEmails || {};
     appState.userEmails = Object.assign({}, localEmails, cloudEmails);
-    // 3. inventory — per-item version merge
+    // 3. inventory — per-item conflict resolution (latest timestamp wins)
     var localMap = {};
     (appState.inventory || []).forEach(function(item) { localMap[item.id] = item; });
     var cloudMap = {};
     (cloud.inventory || []).forEach(function(item) { cloudMap[item.id] = item; });
     var allIds = Array.from(new Set(Object.keys(localMap).concat(Object.keys(cloudMap))));
+
+    var stats = {
+        localNewerKept: 0,
+        cloudNewerApplied: 0,
+        cloudOnlyAdded: 0,
+        localOnlyKept: 0,
+        cloudDeleteWins: 0,
+        localDeleteWins: 0
+    };
+
     appState.inventory = allIds.map(function(id) {
         var local = localMap[id];
         var remote = cloudMap[id];
-        if (!local) return remote;
-        if (!remote) return local;
-        if (remote.deletedAt) return remote;
-        if (local.deletedAt && !remote.deletedAt) return remote;
-        var localVer = local.version || 0;
-        var remoteVer = remote.version || 0;
-        if (remoteVer > localVer) return remote;
-        if (localVer > remoteVer) return local;
-        return (local.updatedAt || '') >= (remote.updatedAt || '') ? local : remote;
+        var result = resolveItemConflict(local, remote);
+
+        switch (result.resolution) {
+            case 'local-newer':
+            case 'local-higher-version':
+            case 'local-kept-delete-stale':
+            case 'local-kept-tie':
+            case 'local-only':
+                if (remote) stats.localNewerKept++;
+                else stats.localOnlyKept++;
+                break;
+            case 'cloud-newer':
+            case 'cloud-higher-version':
+            case 'cloud-kept-delete-stale':
+            case 'cloud-kept-tie':
+            case 'tied-cloud-preferred':
+            case 'cloud-only':
+                if (local) stats.cloudNewerApplied++;
+                else stats.cloudOnlyAdded++;
+                break;
+            case 'local-delete-wins':
+                stats.localDeleteWins++;
+                break;
+            case 'cloud-delete-wins':
+                stats.cloudDeleteWins++;
+                break;
+        }
+
+        return result.item;
     });
     appState.inventory.forEach(function(item) { normalizeImageFields(item); });
+    appState._lastMergeStats = stats;
+
     // 4. segments — cloud wins if it has >= as many keys as local
     var localSegCount = Object.keys(appState.segments || {}).length;
     var cloudSegCount = Object.keys(cloud.segments || {}).length;
@@ -4982,7 +5292,7 @@ async function performAISearch() {
     const statusEl = document.getElementById('aiSearchStatus');
     btn.disabled = true;
     btn.innerText = 'Searching...';
-    btn.className = 'absolute right-1 top-1 bottom-1 bg-indigo-400 text-white text-xs font-bold px-4 rounded-md ai-searching';
+    btn.classList.add('ai-searching');
     statusEl.classList.remove('hidden');
     statusEl.innerText = t('aiAnalyzing');
 
@@ -5059,7 +5369,7 @@ async function performAISearch() {
 
     btn.disabled = false;
     btn.innerText = 'AI Search';
-    btn.className = 'absolute right-1 top-1 bottom-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 rounded-md transition-colors';
+    btn.classList.remove('ai-searching');
     renderFilteredInventoryTable();
 }
 
