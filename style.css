@@ -252,6 +252,7 @@ textarea, select {
 }
 #syncToast.show {
     transform: translateX(-50%) translateY(0);
+    pointer-events: auto;
 }
 #syncToast.info {
     background: #eff6ff;
