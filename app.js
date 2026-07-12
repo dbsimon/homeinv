@@ -465,6 +465,7 @@ let appState = {
     currentUser: 'Default',
     userEmails: {},
     reminderDays: 30,
+    reminderLog: {},
     language: 'en',
     selectedCategoryNodePath: null,
     activeMappingNode: null,
@@ -2280,6 +2281,7 @@ async function continueStockEntryIn(itemId, entryId) {
         showItemDetail(itemId);
     }
     showToast('Added ' + amt + ' ' + (item.uom || 'pcs'), 'success');
+    setTimeout(function() { triggerReminderCheckThrottled(); }, 1500);
 }
 
 async function continueStockEntryOut(itemId, entryId) {
@@ -2307,6 +2309,7 @@ async function continueStockEntryOut(itemId, entryId) {
         showItemDetail(itemId);
     }
     showToast('Removed ' + amt + ' ' + (item.uom || 'pcs'), 'success');
+    setTimeout(function() { triggerReminderCheckThrottled(); }, 1500);
 }
 
 function openNewStockLocationModal(itemId) {
@@ -2392,6 +2395,7 @@ async function commitNewStockEntryFromModal(itemId) {
         showItemDetail(itemId);
     }
     showToast('Added ' + qty + ' ' + (item.uom || 'pcs') + ' to new location ' + getStockLocationLabel(entry), 'success');
+    setTimeout(function() { triggerReminderCheckThrottled(); }, 1500);
 }
 
 function downloadBarcodeLabel() {
@@ -3922,6 +3926,7 @@ function commitItemToInventory() {
     syncUIComponents();
     showToast('\u{1F4E4} Pending sync', 'success');
     triggerBackgroundSync();
+    setTimeout(function() { triggerReminderCheckThrottled(); }, 2000);
     } catch (err) {
         console.error('[commitItemToInventory] Runtime error:', err);
         showToast('Save failed: ' + (err.message || 'Unknown error'), 'error');
@@ -4954,6 +4959,241 @@ function getSyncPayloadSize() {
     return buildSyncPayload().length;
 }
 
+/* ==========================================================================
+   Section: Reminder Engine — expiry / low-stock email dispatch
+   ========================================================================== */
+var _reminderLastRun = 0;
+var _reminderThrottleMs = 3 * 60 * 60 * 1000;
+
+function daysUntil(dateStr) {
+    if (!dateStr) return null;
+    var d = new Date(dateStr);
+    if (isNaN(d.getTime())) return null;
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    d.setHours(0, 0, 0, 0);
+    return Math.round((d - today) / 86400000);
+}
+
+function getDueReminderItems() {
+    var results = [];
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    var limit = appState.reminderDays || 30;
+
+    appState.inventory.forEach(function(item) {
+        if (item.deletedAt) return;
+
+        var dueTypes = [];
+        var expiryDetails = [];
+
+        if (item.itemType === 'unique') {
+            var daysLeft = daysUntil(item.expiryDate);
+            if (daysLeft !== null && daysLeft <= limit) {
+                dueTypes.push('expiry');
+                expiryDetails.push({
+                    locationLabel: null,
+                    expiryDate: item.expiryDate,
+                    daysLeft: daysLeft
+                });
+            }
+        }
+
+        if (item.itemType === 'stock') {
+            var totalQty = getTotalStockQuantity(item);
+            var minQty = item.minQuantity || 0;
+            if (minQty > 0 && totalQty <= minQty) {
+                dueTypes.push('low_stock');
+            }
+
+            getActiveStockEntries(item).forEach(function(entry) {
+                if (!entry.expiryDate) return;
+                var dl = daysUntil(entry.expiryDate);
+                if (dl !== null && dl <= limit) {
+                    if (dueTypes.indexOf('expiry') === -1) dueTypes.push('expiry');
+                    expiryDetails.push({
+                        entryId: entry.id,
+                        locationLabel: getStockLocationLabel(entry),
+                        expiryDate: entry.expiryDate,
+                        daysLeft: dl
+                    });
+                }
+            });
+        }
+
+        if (dueTypes.length === 0) return;
+
+        var owner = item.owner || 'Default';
+        var ownerEmail = (appState.userEmails && appState.userEmails[owner]) || '';
+
+        results.push({
+            owner: owner,
+            email: ownerEmail,
+            reminderTypes: dueTypes,
+            itemId: item.id,
+            barcodeId: item.barcodeId || '',
+            name: item.name,
+            category: item.category || '',
+            quantity: item.itemType === 'stock' ? getTotalStockQuantity(item) : (item.quantity || 0),
+            minQuantity: item.minQuantity || 0,
+            uom: item.uom || '',
+            expiryDate: item.expiryDate || '',
+            remarks: item.remarks || '',
+            expiryDetails: expiryDetails,
+            stockEntries: item.itemType === 'stock' ? getActiveStockEntries(item) : []
+        });
+    });
+
+    return results;
+}
+
+function makeReminderKey(itemId, type, detailSuffix) {
+    return 'rem::' + type + '::' + itemId + '::' + (detailSuffix || '');
+}
+
+function buildReminderPayload() {
+    if (!appState.reminderLog) appState.reminderLog = {};
+    var log = appState.reminderLog;
+
+    var due = getDueReminderItems();
+    var grouped = {};
+    var warnings = [];
+    var now = new Date().toISOString();
+
+    due.forEach(function(entry) {
+        if (!entry.email) {
+            warnings.push(entry.owner + ' (' + entry.name + ')');
+            return;
+        }
+
+        var dedupeKeys = [];
+        if (entry.reminderTypes.indexOf('expiry') !== -1) {
+            if (entry.expiryDetails.length > 0) {
+                entry.expiryDetails.forEach(function(ed) {
+                    dedupeKeys.push(makeReminderKey(entry.itemId, 'expiry', ed.entryId || 'unique'));
+                });
+            } else {
+                dedupeKeys.push(makeReminderKey(entry.itemId, 'expiry', 'unique'));
+            }
+        }
+        if (entry.reminderTypes.indexOf('low_stock') !== -1) {
+            dedupeKeys.push(makeReminderKey(entry.itemId, 'low', entry.quantity + '_' + entry.minQuantity));
+        }
+
+        var alreadySent = dedupeKeys.every(function(k) { return log[k]; });
+        if (alreadySent) return;
+
+        if (!grouped[entry.email]) {
+            grouped[entry.email] = { email: entry.email, owner: entry.owner, items: [], dedupeKeys: [] };
+        }
+        grouped[entry.email].items.push(entry);
+        grouped[entry.email].dedupeKeys = grouped[entry.email].dedupeKeys.concat(dedupeKeys);
+    });
+
+    return { groups: Object.values(grouped), warnings: warnings };
+}
+
+function sendReminderEmails() {
+    var endpoint = localStorage.getItem('sys_gas_url');
+    var secret = localStorage.getItem('sys_api_pwd');
+    if (!endpoint) return Promise.resolve({ error: 'No GAS endpoint configured.' });
+    if (!secret) return Promise.resolve({ error: 'No API token configured.' });
+
+    var payloadData = buildReminderPayload();
+    if (payloadData.groups.length === 0) {
+        return Promise.resolve({
+            sent: 0,
+            recipients: 0,
+            warnings: payloadData.warnings,
+            message: 'No due reminders found.'
+        });
+    }
+
+    var params = new URLSearchParams();
+    params.append('token', secret);
+    params.append('action', 'SEND_REMINDERS');
+    params.append('timestamp', new Date().toISOString());
+    params.append('deviceId', getDeviceId());
+    params.append('reminderDays', String(appState.reminderDays || 30));
+    params.append('payload', JSON.stringify(payloadData.groups));
+
+    return fetch(endpoint, { method: 'POST', body: params })
+        .then(function(resp) { return resp.json(); })
+        .then(function(result) {
+            if (result && result.success) {
+                if (!appState.reminderLog) appState.reminderLog = {};
+                payloadData.groups.forEach(function(g) {
+                    g.dedupeKeys.forEach(function(k) {
+                        appState.reminderLog[k] = new Date().toISOString();
+                    });
+                });
+                saveStateToLocalStorage();
+                return {
+                    sent: result.sent || 0,
+                    recipients: result.recipients || 0,
+                    warnings: payloadData.warnings,
+                    message: result.sent + ' reminder email(s) sent to ' + result.recipients + ' recipient(s).'
+                };
+            }
+            return { error: result && result.error ? result.error : 'Unknown server error.' };
+        })
+        .catch(function(e) {
+            return { error: 'Network error: ' + e.message };
+        });
+}
+
+function triggerReminderCheckNow() {
+    var now = Date.now();
+    if (now - _reminderLastRun < 5000) {
+        showToast('Please wait before triggering again.', 'info');
+        return;
+    }
+    _reminderLastRun = now;
+
+    var endpoint = localStorage.getItem('sys_gas_url');
+    if (!endpoint) {
+        showToast('Missing Google Script URL. Configure in Cloud Engine settings.', 'error');
+        return;
+    }
+    var secret = localStorage.getItem('sys_api_pwd');
+    if (!secret) {
+        showToast('Missing API token. Configure in Cloud Engine settings.', 'error');
+        return;
+    }
+
+    showToast('Evaluating reminders\u2026', 'info');
+
+    sendReminderEmails().then(function(result) {
+        if (result.error) {
+            showToast('Reminder send failed: ' + result.error, 'error');
+        } else {
+            var msg = result.message;
+            if (result.warnings && result.warnings.length > 0) {
+                msg += ' (' + result.warnings.length + ' item(s) skipped: missing owner email)';
+            }
+            showToast(msg, result.sent > 0 ? 'success' : 'info');
+        }
+    });
+}
+
+function triggerReminderCheckThrottled() {
+    var now = Date.now();
+    if (now - _reminderLastRun < _reminderThrottleMs) return;
+    _reminderLastRun = now;
+
+    var endpoint = localStorage.getItem('sys_gas_url');
+    var secret = localStorage.getItem('sys_api_pwd');
+    if (!endpoint || !secret) return;
+
+    sendReminderEmails().then(function(result) {
+        if (result.error) {
+            console.warn('[reminder] Auto-check failed:', result.error);
+        } else if (result.sent > 0) {
+            console.log('[reminder] Auto-check sent ' + result.sent + ' email(s).');
+        }
+    });
+}
+
 function showToast(message, type) {
     var toast = document.getElementById('syncToast');
     if (!toast) return;
@@ -5005,10 +5245,9 @@ async function syncFromCloudWithToast() {
         var resp = await fetch(endpoint + '?' + params, { method: 'GET' });
         var json = await resp.json();
 
-        if (json && json.segments) {
+            if (json && json.segments) {
             mergeCloudPayload(json);
             syncUIComponents();
-            // All pending ops are now reconciled with cloud state
             appState.syncQueue = [];
             saveStateToLocalStorage();
             _syncInProgress = false;
@@ -5016,6 +5255,7 @@ async function syncFromCloudWithToast() {
             _syncConflict = false;
             updateSyncStatusBadge();
             updateSyncBanner();
+            triggerReminderCheckThrottled();
             var summaryParts = [];
             var stats = appState._lastMergeStats;
             if (stats) {
@@ -5731,6 +5971,10 @@ function migrateLegacyState(state) {
         state.reminderDays = 30;
         migrated = true;
     }
+    if (!state.reminderLog || typeof state.reminderLog !== 'object') {
+        state.reminderLog = {};
+        migrated = true;
+    }
 
     return state;
 }
@@ -5746,6 +5990,7 @@ function restoreStateFromLocalStorage() {
             migrateLegacyDataUrlImages().then(preloadAllIdbImages).then(function() {
                 maybeWarnStoragePressure();
             });
+            setTimeout(function() { triggerReminderCheckThrottled(); }, 5000);
         } catch (e) {
             console.error("Local state compilation damaged.", e);
         }
