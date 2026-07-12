@@ -108,7 +108,67 @@ function dismissInstallToast() {
 window.addEventListener('appinstalled', function() {
   _deferredInstallPrompt = null;
   console.log('[PWA] App installed');
+  dismissInstallGuide();
 });
+
+// ===== PWA Install Guide (shows on first visit for iOS/Android) =====
+function showInstallGuide() {
+  if (window.matchMedia('(display-mode: standalone)').matches) return;
+  if (localStorage.getItem('fmi_install_guide_dismissed')) return;
+
+  var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  var isAndroid = /Android/.test(navigator.userAgent);
+  var isSafari = /Safari/.test(navigator.userAgent) && !/Chrome|CriOS|FxiOS|OPiOS/.test(navigator.userAgent);
+
+  var guide = document.createElement('div');
+  guide.id = 'pwaInstallGuide';
+  guide.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:9995;background:#1e293b;color:#fff;padding:14px 16px calc(14px + env(safe-area-inset-bottom, 0px));font-size:13px;display:flex;align-items:center;gap:12px;box-shadow:0 -4px 16px rgba(0,0,0,0.15);font-family:Inter,sans-serif;';
+
+  var iconSvg = '';
+  var text = '';
+
+  if (isIOS && isSafari) {
+    iconSvg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><rect x="2" y="3" width="20" height="18" rx="2"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>';
+    text = 'Tap <b style="color:#60a5fa">Share</b> then <b style="color:#60a5fa">Add to Home Screen</b> to install this app.';
+  } else if (isAndroid) {
+    iconSvg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>';
+    text = 'Tap <b style="color:#60a5fa">⋮ menu</b> then <b style="color:#60a5fa">Install app</b> to add to your home screen.';
+  } else {
+    text = 'Install this app for quick access — look for the install icon in your browser address bar.';
+    iconSvg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>';
+  }
+
+  guide.innerHTML = iconSvg
+    + '<span style="flex:1;line-height:1.4">' + text + '</span>'
+    + '<button onclick="dismissInstallGuide()" style="background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer;padding:0 4px;line-height:1" title="Dismiss">&times;</button>';
+
+  document.body.appendChild(guide);
+}
+
+function dismissInstallGuide() {
+  var guide = document.getElementById('pwaInstallGuide');
+  if (guide) { guide.remove(); }
+  localStorage.setItem('fmi_install_guide_dismissed', '1');
+}
+
+setTimeout(function() {
+  if (document.getElementById('passwordOverlay') && document.getElementById('passwordOverlay').style.display === 'none') {
+    showInstallGuide();
+  } else {
+    // Wait for login, then show
+    var obs = new MutationObserver(function() {
+      var pw = document.getElementById('passwordOverlay');
+      if (pw && pw.style.display === 'none') {
+        showInstallGuide();
+        obs.disconnect();
+      }
+    });
+    var pwEl = document.getElementById('passwordOverlay');
+    if (pwEl) obs.observe(pwEl, { attributes: true, attributeFilter: ['style'] });
+    else showInstallGuide();
+  }
+}, 3000);
+// ===== End Install Guide =====
 // ===== End PWA Registration =====
 
 // ===== Translation System =====
