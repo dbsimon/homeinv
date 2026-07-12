@@ -5,6 +5,112 @@
  */
 const APP_VERSION = '1.50';
 
+// ===== PWA: Service Worker Registration =====
+var _deferredInstallPrompt = null;
+var _swRegistration = null;
+var _swUpdateWaiting = false;
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('./service-worker.js', { scope: './' })
+      .then(function(reg) {
+        _swRegistration = reg;
+        console.log('[PWA] Service Worker registered. Scope:', reg.scope);
+
+        reg.addEventListener('updatefound', function() {
+          var newWorker = reg.installing;
+          if (!newWorker) return;
+          newWorker.addEventListener('statechange', function() {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              _swUpdateWaiting = true;
+              console.log('[PWA] New service worker waiting. Prompting user to update.');
+              showUpdateToast();
+            }
+          });
+        });
+      })
+      .catch(function(err) {
+        console.warn('[PWA] Service Worker registration failed:', err.message || err);
+      });
+
+    var refreshing = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function() {
+      if (refreshing) return;
+      refreshing = true;
+      console.log('[PWA] Controller changed — reloading');
+      window.location.reload();
+    });
+  });
+}
+
+function showUpdateToast() {
+  var toast = document.getElementById('syncToast');
+  if (!toast) return;
+  toast.innerHTML = '<span style="display:flex;align-items:center;gap:8px">'
+    + '<svg style="width:16px;height:16px;color:#2563eb" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></span>'
+    + '<span>Update available.</span>'
+    + '<button onclick="applyServiceWorkerUpdate()" style="background:#2563eb;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:8px">Refresh</button>'
+    + '<button onclick="dismissUpdateToast()" style="background:#e2e8f0;color:#475569;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:4px">Later</button>'
+    + '</span>';
+  toast.className = 'info';
+  toast.classList.add('show');
+}
+
+function applyServiceWorkerUpdate() {
+  if (_swRegistration && _swRegistration.waiting) {
+    _swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
+  }
+  hideToast();
+}
+
+function dismissUpdateToast() {
+  _swUpdateWaiting = false;
+  hideToast();
+}
+
+window.addEventListener('beforeinstallprompt', function(e) {
+  e.preventDefault();
+  _deferredInstallPrompt = e;
+  console.log('[PWA] Install prompt captured (beforeinstallprompt)');
+  showInstallPrompt();
+});
+
+function showInstallPrompt() {
+  var toast = document.getElementById('syncToast');
+  if (!toast || !_deferredInstallPrompt) return;
+  toast.innerHTML = '<span style="display:flex;align-items:center;gap:8px">'
+    + '<svg style="width:16px;height:16px;color:#2563eb" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/></svg>'
+    + '<span>Install this app?</span>'
+    + '<button onclick="promptInstallApp()" style="background:#2563eb;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:8px">Install</button>'
+    + '<button onclick="dismissInstallToast()" style="background:#e2e8f0;color:#475569;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:4px">Not now</button>'
+    + '</span>';
+  toast.className = 'info';
+  toast.classList.add('show');
+}
+
+function promptInstallApp() {
+  if (!_deferredInstallPrompt) {
+    showToast('Install not available. You can install via browser menu.', 'info');
+    return;
+  }
+  _deferredInstallPrompt.prompt();
+  _deferredInstallPrompt.userChoice.then(function(result) {
+    console.log('[PWA] Install choice:', result.outcome);
+    _deferredInstallPrompt = null;
+    hideToast();
+  });
+}
+
+function dismissInstallToast() {
+  hideToast();
+}
+
+window.addEventListener('appinstalled', function() {
+  _deferredInstallPrompt = null;
+  console.log('[PWA] App installed');
+});
+// ===== End PWA Registration =====
+
 // ===== Translation System =====
 const LANG = {
   en: {

@@ -1,4 +1,4 @@
-# Find My Item — 物件追蹤 (pending to update)
+# Find My Item — 物件追蹤
 
 A single-page home inventory tracking app. Register items by location or by stock quantity, scan barcodes, map container positions, and sync to Google Sheets. No frameworks, no build tools — open `index.html` and it works.
 
@@ -16,7 +16,7 @@ A single-page home inventory tracking app. Register items by location or by stoc
 - **AI-powered search** — semantic item search via DeepSeek API (optional)
 - **AI image analysis** — extract item metadata from uploaded photos (optional)
 - **Google Sheets sync** — push/pull inventory to a GAS web app for cloud backup
-- **Excel export/import** — flat spreadsheet format with stock entries serialized as JSON
+- **Excel export/import** — flat spreadsheet format with non-destructive patching; import updates only provided fields and preserves existing data for matched items
 - **Soft-delete (DROP)** — items are marked `deletedAt` rather than physically removed
 - **Multi-user support** — household members with per-user inventory filtering
 - **Bilingual UI** — English / 繁體中文 toggle
@@ -178,7 +178,7 @@ Old stock items with single-location fields (`segment`, `container`, `subContain
 | `deletedAt` | string | ISO timestamp if soft-deleted, else `null` |
 | `createdAt` | string | ISO creation timestamp |
 | `updatedAt` | string | ISO last-update timestamp |
-| `version` | number | Incrementing version for sync conflict resolution |
+| `version` | number | Incrementing tiebreaker version for sync conflict resolution |
 | `lastModifiedBy` | string | Device ID of last modifier |
 
 ### Segment Hierarchy
@@ -222,7 +222,7 @@ The app pushes and pulls inventory state to a Google Apps Script web app. To con
 5. Set a **Data Stream Transceiver Key** (shared secret between app and GAS).
 6. Press **Commit Network Profile Changes**.
 
-The app uses version-based conflict resolution (`item.version`) and merges inventory arrays. Sync state is shown in the header badge and login screen.
+The app uses timestamp-first conflict resolution (`deletedAt` → `updatedAt` → `timestamp` → `createdAt`) with `version` as a tiebreaker. Each item is resolved independently — a newer local record is never overwritten by an older cloud record, and vice versa. Deletions propagate only when the delete timestamp is newer than the other side's last update.
 
 > **Security note**: the GAS endpoint URL and API token are stored in `localStorage`. Never commit them to version control or share them publicly. This README intentionally omits real credentials.
 
@@ -240,7 +240,16 @@ A second sheet **Spatial Map** exports layout background images and coordinate m
 
 ### Import
 
-Import reads the **Inventory Ledger** sheet. If `Stock Entries JSON` is populated, stock entries are deserialized; otherwise legacy single-location fields are used. New segments, containers, and users are created automatically from imported data.
+Import reads the **Inventory Ledger** sheet. Items are matched to existing inventory by **System ID** first, then by **Barcode ID** as fallback.
+
+**Non-destructive patching rules:**
+- **Matched items**: only non-blank spreadsheet cells update the corresponding field. Blank cells leave the existing value unchanged. Image fields, sync metadata, timestamps, and AI metadata are preserved unless explicitly updated in the row.
+- **New items**: created when no match is found, provided the row has a valid **Item Name**.
+- **Validation**: invalid `Item Type`, malformed `Stock Entries JSON`, non-numeric quantity fields, and unparseable dates cause the row to be skipped with an error. Failed rows do not modify any existing records.
+- **Error reporting**: after import, a summary shows updated/added/skipped counts. A modal lists each failed row number and the specific reason.
+- **Stock Entries JSON**: if populated, stock entries are deserialized; otherwise existing entries are preserved for matched items.
+
+New segments, containers, and users are created automatically from imported data.
 
 ---
 
