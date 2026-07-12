@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Icon Generator — Find My Item</title>
+<style>
+  body { font-family: sans-serif; text-align: center; padding: 40px; background: #f8fafc; }
+  .preview { display: inline-block; margin: 20px; text-align: center; }
+  .preview canvas { border: 1px solid #e2e8f0; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+  .preview p { font-size: 13px; color: #64748b; margin-top: 8px; }
+  a { display: inline-block; margin-top: 6px; padding: 6px 16px; background: #2563eb; color: #fff; text-decoration: none; border-radius: 6px; font-size: 13px; }
+</style></head><body>
+<h2 style="color:#1e293b;">PWA Icon Generator</h2>
+<p style="color:#64748b;font-size:14px;">Right-click each icon → <b>Save image as...</b> → save into the <code>icons/</code> folder.</p>
+<div id="container"></div>
+<script>
+function drawIcon(ctx, size, maskable) {
+  var s = size;
+  var r = Math.round(s * 0.215);
+  var pad = maskable ? Math.round(s * 0.08) : 0;
+  var inner = s - pad * 2;
+
+  // background
+  ctx.fillStyle = '#2563eb';
+  ctx.beginPath();
+  ctx.moveTo(pad + r, pad);
+  ctx.lineTo(pad + inner - r, pad);
+  ctx.quadraticCurveTo(pad + inner, pad, pad + inner, pad + r);
+  ctx.lineTo(pad + inner, pad + inner - r);
+  ctx.quadraticCurveTo(pad + inner, pad + inner, pad + inner - r, pad + inner);
+  ctx.lineTo(pad + r, pad + inner);
+  ctx.quadraticCurveTo(pad, pad + inner, pad, pad + inner - r);
+  ctx.lineTo(pad, pad + r);
+  ctx.quadraticCurveTo(pad, pad, pad + r, pad);
+  ctx.fill();
+
+  // inner glow border
+  var bw = Math.max(2, Math.round(s * 0.012));
+  var br2 = Math.round(s * 0.203);
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = bw;
+  ctx.beginPath();
+  ctx.moveTo(pad + bw + br2, pad + bw);
+  ctx.lineTo(pad + inner - bw - br2, pad + bw);
+  ctx.quadraticCurveTo(pad + inner - bw, pad + bw, pad + inner - bw, pad + bw + br2);
+  ctx.lineTo(pad + inner - bw, pad + inner - bw - br2);
+  ctx.quadraticCurveTo(pad + inner - bw, pad + inner - bw, pad + inner - bw - br2, pad + inner - bw);
+  ctx.lineTo(pad + bw + br2, pad + inner - bw);
+  ctx.quadraticCurveTo(pad + bw, pad + inner - bw, pad + bw, pad + inner - bw - br2);
+  ctx.lineTo(pad + bw, pad + bw + br2);
+  ctx.quadraticCurveTo(pad + bw, pad + bw, pad + bw + br2, pad + bw);
+  ctx.stroke();
+
+  // document
+  var docX = pad + Math.round(s * 0.205);
+  var docY = pad + Math.round(s * 0.18);
+  var docW = Math.round(s * 0.57);
+  var docH = Math.round(s * 0.66);
+  var docR = Math.round(s * 0.055);
+  var headerH = Math.round(s * 0.137);
+
+  // white document body
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.moveTo(docX + docR, docY);
+  ctx.lineTo(docX + docW - docR, docY);
+  ctx.quadraticCurveTo(docX + docW, docY, docX + docW, docY + docR);
+  ctx.lineTo(docX + docW, docY + docH - docR);
+  ctx.quadraticCurveTo(docX + docW, docY + docH, docX + docW - docR, docY + docH);
+  ctx.lineTo(docX + docR, docY + docH);
+  ctx.quadraticCurveTo(docX, docY + docH, docX, docY + docH - docR);
+  ctx.lineTo(docX, docY + docR);
+  ctx.quadraticCurveTo(docX, docY, docX + docR, docY);
+  ctx.fill();
+
+  // header band
+  ctx.fillStyle = 'rgba(37,99,235,0.12)';
+  ctx.beginPath();
+  ctx.moveTo(docX + docR, docY);
+  ctx.lineTo(docX + docW - docR, docY);
+  ctx.quadraticCurveTo(docX + docW, docY, docX + docW, docY + docR);
+  ctx.lineTo(docX + docW, docY + headerH);
+  ctx.lineTo(docX, docY + headerH);
+  ctx.lineTo(docX, docY + docR);
+  ctx.quadraticCurveTo(docX, docY, docX + docR, docY);
+  ctx.fill();
+
+  // header bottom line
+  ctx.fillStyle = 'rgba(37,99,235,0.12)';
+  ctx.fillRect(docX, docY + headerH + Math.round(s * 0.008), docW, Math.round(s * 0.047));
+
+  // folded corner
+  var foldSize = Math.round(s * 0.098);
+  ctx.fillStyle = '#e2e8f0';
+  ctx.beginPath();
+  ctx.moveTo(docX + docW, docY);
+  ctx.lineTo(docX + docW, docY + foldSize);
+  ctx.lineTo(docX + docW - foldSize, docY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(37,99,235,0.15)';
+  ctx.lineWidth = Math.max(1, Math.round(s * 0.004));
+  ctx.beginPath();
+  ctx.moveTo(docX + docW, docY);
+  ctx.lineTo(docX + docW, docY + foldSize);
+  ctx.lineTo(docX + docW - foldSize, docY);
+  ctx.closePath();
+  ctx.stroke();
+
+  // checklist rows
+  var rows = [
+    { yOff: Math.round(s * 0.195), wRatio: 0.95, op: 0.6 },
+    { yOff: Math.round(s * 0.273), wRatio: 0.95, op: 0.35 },
+    { yOff: Math.round(s * 0.352), wRatio: 0.77, op: 0.25 },
+    { yOff: Math.round(s * 0.430), wRatio: 0.86, op: 0.18 },
+    { yOff: Math.round(s * 0.508), wRatio: 0.68, op: 0.12 }
+  ];
+  var lineH = Math.round(s * 0.027);
+  var lineX = docX + Math.round(s * 0.062);
+  rows.forEach(function(r) {
+    var lineW = Math.round(docW * 0.85 * r.wRatio);
+    var y = docY + r.yOff;
+    ctx.fillStyle = 'rgba(37,99,235,' + r.op + ')';
+    ctx.beginPath();
+    ctx.moveTo(lineX + Math.round(lineH / 2), y);
+    ctx.lineTo(lineX + lineW - Math.round(lineH / 2), y);
+    ctx.quadraticCurveTo(lineX + lineW, y, lineX + lineW, y + Math.round(lineH / 2));
+    ctx.lineTo(lineX + lineW, y + lineH - Math.round(lineH / 2));
+    ctx.quadraticCurveTo(lineX + lineW, y + lineH, lineX + lineW - Math.round(lineH / 2), y + lineH);
+    ctx.lineTo(lineX + Math.round(lineH / 2), y + lineH);
+    ctx.quadraticCurveTo(lineX, y + lineH, lineX, y + lineH - Math.round(lineH / 2));
+    ctx.lineTo(lineX, y + Math.round(lineH / 2));
+    ctx.quadraticCurveTo(lineX, y, lineX + Math.round(lineH / 2), y);
+    ctx.fill();
+  });
+
+  // checkmark circles (row 1 and row 2)
+  var circles = [
+    { yOff: Math.round(s * 0.196), alpha: 1 },
+    { yOff: Math.round(s * 0.274), alpha: 0.6 }
+  ];
+  var cx2 = docX + Math.round(s * 0.019);
+  var cr = Math.round(s * 0.027);
+  circles.forEach(function(c) {
+    var cy2 = docY + c.yOff;
+    ctx.fillStyle = 'rgba(37,99,235,' + c.alpha + ')';
+    ctx.beginPath();
+    ctx.arc(cx2 + cr, cy2 + Math.round(lineH / 2), cr, 0, Math.PI * 2);
+    ctx.fill();
+
+    // checkmark
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = Math.max(1.5, Math.round(s * 0.0065));
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx2 + cr - Math.round(cr * 0.42), cy2 + Math.round(lineH / 2));
+    ctx.lineTo(cx2 + cr - Math.round(cr * 0.08), cy2 + Math.round(lineH / 2) + Math.round(cr * 0.32));
+    ctx.lineTo(cx2 + cr + Math.round(cr * 0.48), cy2 + Math.round(lineH / 2) - Math.round(cr * 0.38));
+    ctx.stroke();
+  });
+}
+
+var sizes = [
+  { label: '192x192 (any)', size: 192, maskable: false, filename: 'icon-192.png' },
+  { label: '512x512 (any)', size: 512, maskable: false, filename: 'icon-512.png' },
+  { label: '512x512 (maskable)', size: 512, maskable: true, filename: 'icon-512-maskable.png' }
+];
+
+var container = document.getElementById('container');
+sizes.forEach(function(spec) {
+  var canvas = document.createElement('canvas');
+  canvas.width = spec.size;
+  canvas.height = spec.size;
+  var ctx = canvas.getContext('2d');
+  drawIcon(ctx, spec.size, spec.maskable);
+
+  var div = document.createElement('div');
+  div.className = 'preview';
+  div.appendChild(canvas);
+  var label = document.createElement('p');
+  label.textContent = spec.label;
+  div.appendChild(label);
+
+  var a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = spec.filename;
+  a.textContent = 'Download ' + spec.filename;
+  div.appendChild(a);
+
+  container.appendChild(div);
+});
+</script>
+</body></html>

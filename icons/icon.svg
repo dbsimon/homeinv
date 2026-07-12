@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <clipPath id="border">
+      <rect x="0" y="0" width="512" height="512" rx="110"/>
+    </clipPath>
+  </defs>
+  <!-- Background -->
+  <rect x="0" y="0" width="512" height="512" rx="110" fill="#2563eb"/>
+  <!-- Inner glow -->
+  <rect x="8" y="8" width="496" height="496" rx="104" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="6"/>
+  <!-- White highlight arc -->
+  <ellipse cx="180" cy="130" rx="280" ry="200" fill="rgba(255,255,255,0.06)" transform="rotate(-15 180 130)"/>
+  <!-- Document body (white) -->
+  <rect x="110" y="100" width="292" height="340" rx="28" fill="white"/>
+  <!-- Document header bar -->
+  <rect x="110" y="100" width="292" height="70" rx="28" fill="rgba(37,99,235,0.12)"/>
+  <rect x="110" y="142" width="292" height="28" fill="rgba(37,99,235,0.12)"/>
+  <!-- Folded corner -->
+  <polygon points="402,100 402,150 352,100" fill="#e2e8f0" stroke="rgba(37,99,235,0.15)" stroke-width="2"/>
+  <!-- Checklist lines -->
+  <rect x="148" y="200" width="210" height="14" rx="7" fill="#2563eb" opacity="0.6"/>
+  <rect x="148" y="240" width="210" height="14" rx="7" fill="#2563eb" opacity="0.35"/>
+  <rect x="148" y="280" width="170" height="14" rx="7" fill="#2563eb" opacity="0.25"/>
+  <rect x="148" y="320" width="190" height="14" rx="7" fill="#2563eb" opacity="0.18"/>
+  <rect x="148" y="360" width="150" height="14" rx="7" fill="#2563eb" opacity="0.12"/>
+  <!-- Checkmark circles -->
+  <circle cx="136" cy="207" r="14" fill="#2563eb"/>
+  <polyline points="129,207 134,212 143,201" fill="none" stroke="white" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="136" cy="247" r="14" fill="#2563eb" opacity="0.6"/>
+  <polyline points="129,247 134,252 143,241" fill="none" stroke="white" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
