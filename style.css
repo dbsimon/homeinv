@@ -53,9 +53,17 @@ body {
 
 /* Safe area considerations for modern iOS devices */
 .pb-safe-area {
+    padding-bottom: constant(safe-area-inset-bottom, 0.5rem);
     padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
 }
 .pt-safe-area {
+    padding-top: constant(safe-area-inset-top, 0px);
+    padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* Push sticky headers below Dynamic Island / notch in iOS standalone mode */
+body > header.sticky {
+    padding-top: constant(safe-area-inset-top, 0px);
     padding-top: env(safe-area-inset-top, 0px);
 }
 
