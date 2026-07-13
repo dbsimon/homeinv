@@ -46,14 +46,19 @@ if ('serviceWorker' in navigator) {
 function showUpdateToast() {
   var toast = document.getElementById('syncToast');
   if (!toast) return;
-  toast.innerHTML = '<span style="display:flex;align-items:center;gap:8px">'
-    + '<svg style="width:16px;height:16px;color:#2563eb" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></span>'
-    + '<span>Update available.</span>'
-    + '<button onclick="applyServiceWorkerUpdate()" style="background:#2563eb;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:8px">Refresh</button>'
-    + '<button onclick="dismissUpdateToast()" style="background:#e2e8f0;color:#475569;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:4px">Later</button>'
-    + '</span>';
+  clearTimeout(toast._timer);
+  toast.style.whiteSpace = 'normal';
+  toast.style.pointerEvents = 'auto';
   toast.className = 'info';
+  toast.innerHTML = '<span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    + '<svg style="width:16px;height:16px;color:#2563eb;flex-shrink:0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></span>'
+    + '<span style="flex-shrink:0">Update available.</span>'
+    + '<button id="swRefreshBtn" style="background:#2563eb;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:8px;flex-shrink:0">Refresh</button>'
+    + '<button id="swLaterBtn" style="background:#e2e8f0;color:#475569;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:4px;flex-shrink:0">Later</button>'
+    + '</span>';
   toast.classList.add('show');
+  document.getElementById('swRefreshBtn').addEventListener('click', applyServiceWorkerUpdate);
+  document.getElementById('swLaterBtn').addEventListener('click', dismissUpdateToast);
 }
 
 function applyServiceWorkerUpdate() {
@@ -78,14 +83,19 @@ window.addEventListener('beforeinstallprompt', function(e) {
 function showInstallPrompt() {
   var toast = document.getElementById('syncToast');
   if (!toast || !_deferredInstallPrompt) return;
-  toast.innerHTML = '<span style="display:flex;align-items:center;gap:8px">'
-    + '<svg style="width:16px;height:16px;color:#2563eb" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/></svg>'
-    + '<span>Install this app?</span>'
-    + '<button onclick="promptInstallApp()" style="background:#2563eb;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:8px">Install</button>'
-    + '<button onclick="dismissInstallToast()" style="background:#e2e8f0;color:#475569;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:4px">Not now</button>'
-    + '</span>';
+  clearTimeout(toast._timer);
+  toast.style.whiteSpace = 'normal';
+  toast.style.pointerEvents = 'auto';
   toast.className = 'info';
+  toast.innerHTML = '<span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    + '<svg style="width:16px;height:16px;color:#2563eb;flex-shrink:0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/></svg>'
+    + '<span style="flex-shrink:0">Install this app?</span>'
+    + '<button id="installPromptBtn" style="background:#2563eb;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:8px;flex-shrink:0">Install</button>'
+    + '<button id="installDismissBtn" style="background:#e2e8f0;color:#475569;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-left:4px;flex-shrink:0">Not now</button>'
+    + '</span>';
   toast.classList.add('show');
+  document.getElementById('installPromptBtn').addEventListener('click', promptInstallApp);
+  document.getElementById('installDismissBtn').addEventListener('click', dismissInstallToast);
 }
 
 function promptInstallApp() {
@@ -5363,6 +5373,9 @@ function triggerReminderCheckThrottled() {
 function showToast(message, type) {
     var toast = document.getElementById('syncToast');
     if (!toast) return;
+    toast.style.whiteSpace = '';
+    toast.style.pointerEvents = '';
+    clearTimeout(toast._timer);
     var icon = '';
     if (type === 'info') icon = '<span class="toast-spinner"></span>';
     else if (type === 'success') icon = '<svg class="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>';
@@ -5371,7 +5384,6 @@ function showToast(message, type) {
     toast.innerHTML = icon + ' <span>' + message + '</span>';
     toast.classList.add('show');
     if (type === 'success' || type === 'error' || type === 'info') {
-        clearTimeout(toast._timer);
         toast._timer = setTimeout(function() {
             toast.classList.remove('show');
         }, 2500);
