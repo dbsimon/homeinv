@@ -181,6 +181,35 @@ setTimeout(function() {
 // ===== End Install Guide =====
 // ===== End PWA Registration =====
 
+// ===== iOS Safe Area Fix — applies safe-area-inset-top to sticky headers via JS =====
+function applySafeAreaPadding() {
+  var testPad = 'env(safe-area-inset-top, 0px)';
+  var probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;padding-top:' + testPad + ';z-index:-1';
+  document.body.appendChild(probe);
+  var safeTop = getComputedStyle(probe).paddingTop;
+  document.body.removeChild(probe);
+
+  if (!safeTop || safeTop === '0px') {
+    safeTop = 'constant(safe-area-inset-top, 0px)';
+    probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;padding-top:' + safeTop + ';z-index:-1';
+    document.body.appendChild(probe);
+    safeTop = getComputedStyle(probe).paddingTop;
+    document.body.removeChild(probe);
+  }
+
+  var inset = parseFloat(safeTop);
+  if (!inset || inset <= 0) return;
+
+  var px = inset + 'px';
+  var headers = document.querySelectorAll('body > header.sticky');
+  headers.forEach(function(h) {
+    h.style.paddingTop = px;
+  });
+}
+// ===== End iOS Safe Area Fix =====
+
 // ===== Translation System =====
 const LANG = {
   en: {
@@ -1592,6 +1621,11 @@ window.addEventListener('DOMContentLoaded', () => {
         installFocusTraps();
         installMapDragListeners();
         updateLoginSyncStatus();
+        requestAnimationFrame(function() {
+          requestAnimationFrame(function() {
+            applySafeAreaPadding();
+          });
+        });
     } catch (e) {
         alert('Init error: ' + e.message + ' (line ' + e.lineNumber + ')');
         console.error(e);
