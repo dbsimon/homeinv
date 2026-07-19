@@ -131,7 +131,7 @@
                 <h1 class="text-sm font-bold tracking-tight text-slate-900 truncate" data-i18n="appTitle">Find My Item</h1>
             </div>
             <div class="flex items-center gap-1.5 flex-shrink-0">
-                <span id="syncBannerMobile" class="text-[10px] font-medium whitespace-nowrap cursor-pointer" onclick="syncFromCloudWithToast()" title="Tap to sync"></span>
+                <span id="syncBannerMobile" class="text-[10px] font-medium whitespace-nowrap cursor-pointer" onclick="syncNow()" title="Tap to sync"></span>
                 <button onclick="toggleOverflowMenu(event, this)" class="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors flex-shrink-0" aria-label="Menu">
                     <svg class="h-5 w-5 text-slate-600" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
                 </button>
@@ -150,7 +150,7 @@
             <div class="flex items-center gap-2 flex-shrink-0">
                 <select id="headerUserSelect" onchange="switchCurrentUser(this.value)" class="text-xs border border-slate-200 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none bg-slate-50 text-slate-700 font-medium max-w-[100px]"></select>
                 <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en')" class="text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md px-2 py-1.5 text-slate-600 font-medium transition-colors flex-shrink-0">中/EN</button>
-                <button id="btnHeaderSyncNow" onclick="syncFromCloudWithToast()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1.5 text-blue-600 font-medium transition-colors flex-shrink-0"><span>↻</span></button>
+                <button id="btnHeaderSyncNow" onclick="syncNow()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1.5 text-blue-600 font-medium transition-colors flex-shrink-0"><span>↻</span></button>
                 <span id="syncBannerDesktop" class="text-[10px] text-slate-400 font-medium hidden lg:inline"></span>
             </div>
         </div>
@@ -849,17 +849,9 @@
             </div>
         </div>
         <div class="mobile-only border-t border-slate-100 my-0.5"></div>
-        <button onclick="triggerSynchronousCloudBackupPush(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
-            <svg class="h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
-            Upload now
-        </button>
-        <button onclick="syncFromCloudWithToast(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
-            <svg class="h-4 w-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/></svg>
-            Restore from cloud
-        </button>
-        <button onclick="verifyCloudSync(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
-            <svg class="h-4 w-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-            Check sync status
+        <button onclick="syncNow(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
+            <svg class="h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Sync now
         </button>
         <div class="border-t border-slate-100 my-1"></div>
         <button onclick="exportLocalDatabasesToExcel(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">

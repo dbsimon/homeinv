@@ -1344,9 +1344,20 @@ function parseCoordKey(key) {
 // All state changes MUST flow through mutateState().
 // It handles: state update -> localStorage persist -> sync queue -> sync UI badge
 function mutateState(actionType, metadata) {
+    appState.meta = appState.meta || {};
+    appState.meta.lastLocalChangeAt = new Date().toISOString();
+    appState.meta.lastChangeBy = appState.meta.deviceId || getDeviceId();
     saveStateToLocalStorage();
     enqueueSyncAction(actionType, metadata);
     updateSyncStatusBadge();
+}
+
+function stampNow(obj) {
+    if (!obj || typeof obj !== 'object') return obj;
+    var now = new Date().toISOString();
+    obj.updatedAt = now;
+    obj.updatedBy = appState.meta.deviceId || getDeviceId();
+    return obj;
 }
 
 function enqueueSyncAction(actionType, metadata) {
@@ -1398,7 +1409,7 @@ function updateSyncAlertRow() {
     } else if (_syncConflict) {
         row.className = 'rounded-lg p-3 mb-4 text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 cursor-pointer';
         row.innerHTML = '\u26A0\uFE0F <u>Data conflict detected. Tap to pull cloud data & resolve.</u>';
-        row.onclick = function() { syncFromCloudWithToast(); };
+        row.onclick = function() { syncNow(); };
         row.classList.remove('hidden');
     } else if (appState.meta.lastSyncedAt) {
         row.className = 'rounded-lg p-3 mb-4 text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200';
@@ -1757,7 +1768,7 @@ function updateLoginSyncStatus() {
         case 'conflict':
             card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center cursor-pointer';
             msg = 'Conflict \u2014 tap Sync to resolve';
-            card.onclick = function() { syncFromCloudWithToast(); };
+            card.onclick = function() { syncNow(); };
             break;
         case 'pending':
             card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center';
@@ -5122,26 +5133,24 @@ function commitCloudSystemCredentials() {
     showToast('Local infrastructure access profile updated.', 'success');
 }
 
-async function triggerSynchronousCloudBackupPush() {
+async function triggerSynchronousCloudBackupPush(baseRevision) {
     const endpoint = localStorage.getItem('sys_gas_url');
     const secret = localStorage.getItem('sys_api_pwd');
-    if(!endpoint) { return; }
-
-    _syncInProgress = true;
-    _syncPendingCount = (appState.syncQueue || []).length;
-    updateSyncBanner();
+    if(!endpoint) { return { success: false, error: 'No endpoint' }; }
 
     try {
         var opsToSend = (appState.syncQueue || []).slice();
         var stateJson = buildSyncPayload();
 
-        // Use URL-encoded form body for GAS compatibility (no CORS preflight)
         var params = new URLSearchParams();
         params.append('token', secret);
         params.append('action', 'SYNC_PUSH');
         params.append('payload', stateJson);
         params.append('operations', JSON.stringify(opsToSend));
         params.append('clientRevision', appState.meta.lastServerRevision || '');
+        if (baseRevision !== undefined && baseRevision !== null) {
+            params.append('baseRevision', String(baseRevision));
+        }
 
         var resp = await fetch(endpoint, {
             method: 'POST',
@@ -5155,21 +5164,26 @@ async function triggerSynchronousCloudBackupPush() {
             appState.meta.lastSyncedAt = new Date().toISOString();
             appState.meta.lastServerRevision = result.revision || null;
             appState.syncQueue = [];
-            _syncInProgress = false;
             _syncLastFailed = false;
             _syncConflict = false;
             updateSyncStatusBadge();
+            return { success: true, revision: result.revision };
+        } else if (result && result.errorType === 'revision_mismatch') {
+            return {
+                success: false,
+                conflict: true,
+                currentRevision: result.currentRevision,
+                error: result.message || 'Revision mismatch'
+            };
         } else {
-            _syncInProgress = false;
             _syncLastFailed = true;
             updateSyncStatusBadge();
-            showToast('Push failed: ' + (result && result.error ? result.error : 'unknown'), 'error');
+            return { success: false, error: (result && result.error) || 'unknown' };
         }
     } catch (e) {
-        _syncInProgress = false;
         _syncLastFailed = true;
         updateSyncStatusBadge();
-        showToast('Push failed: ' + e.message, 'error');
+        return { success: false, error: e.message };
     }
 }
 
@@ -5449,37 +5463,111 @@ function hideToast() {
     if (toast) toast.classList.remove('show');
 }
 
-async function syncFromCloudWithToast() {
+async function syncNow(opts) {
+    opts = opts || {};
+    var interactive = opts.interactive !== false;
+
     var btns = document.querySelectorAll('.btn-sync-refresh');
     btns.forEach(function(b) { b.classList.add('btn-syncing'); });
+    if (interactive) showToast('Syncing\u2026', 'info');
 
-    showToast('Syncing\u2026', 'info');
+    var endpoint = localStorage.getItem('sys_gas_url');
+    var secret = localStorage.getItem('sys_api_pwd');
+    if (!endpoint) {
+        if (interactive) showToast(t('missingEndpointShort'), 'error');
+        btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+        return;
+    }
+
+    if (_syncInProgress) {
+        if (interactive) showToast('Sync already in progress', 'info');
+        btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+        return;
+    }
+
+    _syncInProgress = true;
+    updateSyncStatusBadge();
 
     try {
-        var endpoint = localStorage.getItem('sys_gas_url');
-        var secret = localStorage.getItem('sys_api_pwd');
-        if (!endpoint) {
-            showToast(t('missingEndpointShort'), 'error');
+        // ── Phase 1: Fetch latest cloud state ────────────────────────────────
+        var cloudState = await getCloudState(secret, endpoint);
+        if (!cloudState) {
+            _syncInProgress = false;
+            _syncLastFailed = true;
+            updateSyncStatusBadge();
+            if (interactive) showToast('Sync failed \u2014 server unreachable', 'error');
             btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
             return;
         }
 
-        _syncInProgress = true;
-        updateSyncStatusBadge();
-
-        // Push pending changes first, then pull
+        var cloudRev = cloudState.meta && cloudState.meta.lastServerRevision;
+        var localRev = appState.meta.lastServerRevision;
         var hasPending = (appState.syncQueue && appState.syncQueue.length > 0);
-        if (hasPending) {
-            await triggerSynchronousCloudBackupPush();
-        }
+        var attemptedPush = false;
 
-        var params = 'token=' + encodeURIComponent(secret) + '&action=SYNC_PULL';
-        var resp = await fetch(endpoint + '?' + params, { method: 'GET' });
-        var json = await resp.json();
-
-            if (json && json.segments) {
-            mergeCloudPayload(json);
-            syncUIComponents();
+        // ── Phase 2: Decide action based on revision comparison ──────────────
+        if (hasPending && cloudRev && cloudRev > (localRev || 0)) {
+            // Local has pending changes AND cloud has advanced.
+            // Rebase local changes onto cloud, then push with CAS.
+            var merged = mergeCloudPayloadToMemory(cloudState);
+            showToast('Rebased local changes onto latest cloud state', 'info');
+            appState.syncQueue = appState.syncQueue || [];
+            saveStateToLocalStorage();
+            var pushResult = await triggerSynchronousCloudBackupPush(cloudRev);
+            attemptedPush = true;
+            if (pushResult && pushResult.success) {
+                applySyncSuccess(interactive, cloudState);
+            } else if (pushResult && pushResult.conflict) {
+                // Conflict after rebase – retry once
+                var retryCloud = await getCloudState(secret, endpoint);
+                if (retryCloud) {
+                    mergeCloudPayloadToMemory(retryCloud);
+                    saveStateToLocalStorage();
+                    var retryPush = await triggerSynchronousCloudBackupPush(retryCloud.meta && retryCloud.meta.lastServerRevision);
+                    if (retryPush && retryPush.success) {
+                        applySyncSuccess(interactive, retryCloud);
+                    } else {
+                        _syncConflict = true;
+                        _syncInProgress = false;
+                        updateSyncStatusBadge();
+                        updateSyncBanner();
+                        if (interactive) showToast('Sync conflict \u2014 another device edited. Please sync again.', 'error');
+                    }
+                }
+            } else {
+                _syncInProgress = false;
+                if (interactive) showToast('Push failed \u2014 ' + (pushResult && pushResult.error || 'unknown'), 'error');
+            }
+        } else if (hasPending && (!cloudRev || cloudRev === localRev || cloudRev <= (localRev || 0))) {
+            // Only local has changes, server hasn't advanced. Push with CAS.
+            var base = localRev || 0;
+            var directPush = await triggerSynchronousCloudBackupPush(base);
+            attemptedPush = true;
+            if (directPush && directPush.success) {
+                applySyncSuccess(interactive, cloudState);
+            } else if (directPush && directPush.conflict) {
+                // Server advanced since we last looked – rebase and retry
+                var latestCloud = await getCloudState(secret, endpoint);
+                if (latestCloud) {
+                    mergeCloudPayloadToMemory(latestCloud);
+                    saveStateToLocalStorage();
+                    var retry = await triggerSynchronousCloudBackupPush(latestCloud.meta && latestCloud.meta.lastServerRevision);
+                    if (retry && retry.success) {
+                        applySyncSuccess(interactive, latestCloud);
+                    } else {
+                        _syncConflict = true;
+                        _syncInProgress = false;
+                        updateSyncStatusBadge();
+                        if (interactive) showToast('Sync conflict \u2014 please try again.', 'error');
+                    }
+                }
+            } else {
+                _syncInProgress = false;
+                if (interactive) showToast('Push failed \u2014 ' + (directPush && directPush.error || 'unknown'), 'error');
+            }
+        } else if (!hasPending && cloudRev && cloudRev > (localRev || 0)) {
+            // Only cloud has changes – pull and apply.
+            mergeCloudPayloadToMemory(cloudState);
             appState.syncQueue = [];
             saveStateToLocalStorage();
             _syncInProgress = false;
@@ -5487,35 +5575,149 @@ async function syncFromCloudWithToast() {
             _syncConflict = false;
             updateSyncStatusBadge();
             updateSyncBanner();
+            syncUIComponents();
             triggerReminderCheckThrottled();
-            var summaryParts = [];
-            var stats = appState._lastMergeStats;
-            if (stats) {
-                if (stats.localNewerKept > 0) summaryParts.push(stats.localNewerKept + ' newer local items kept');
-                if (stats.cloudNewerApplied > 0) summaryParts.push(stats.cloudNewerApplied + ' newer cloud items applied');
-                if (stats.cloudOnlyAdded > 0) summaryParts.push(stats.cloudOnlyAdded + ' new cloud items added');
-                if (stats.cloudDeleteWins > 0) summaryParts.push(stats.cloudDeleteWins + ' newer deletions applied');
-                if (stats.localDeleteWins > 0) summaryParts.push(stats.localDeleteWins + ' local deletions kept');
-            }
-            if (summaryParts.length > 0) {
-                showToast('Sync complete: ' + summaryParts.join(', ') + '.', 'success');
-            } else {
-                showToast('Synced \u2014 ' + (json.inventory || []).length + ' items', 'success');
-            }
+            if (interactive) showToast('Synced \u2014 ' + ((cloudState.inventory || []).length) + ' items', 'success');
         } else {
+            // Both sides match.
             _syncInProgress = false;
-            _syncLastFailed = true;
+            _syncLastFailed = false;
+            _syncConflict = false;
             updateSyncStatusBadge();
-            showToast('Sync failed \u2014 no data received', 'error');
+            updateSyncBanner();
+            if (interactive) showToast('Already up to date', 'info');
+        }
+
+        // Ensure syncQueue is cleared if push succeeded
+        if (attemptedPush && !_syncConflict && !_syncLastFailed) {
+            appState.syncQueue = [];
+            saveStateToLocalStorage();
         }
     } catch (e) {
         _syncInProgress = false;
         _syncLastFailed = true;
         updateSyncStatusBadge();
-        showToast('Sync failed \u2014 server unreachable', 'error');
+        if (interactive) showToast('Sync error \u2014 ' + e.message, 'error');
     }
 
     btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+}
+
+function applySyncSuccess(interactive, cloudState) {
+    _syncInProgress = false;
+    _syncLastFailed = false;
+    _syncConflict = false;
+    appState.syncQueue = [];
+    saveStateToLocalStorage();
+    updateSyncStatusBadge();
+    updateSyncBanner();
+    syncUIComponents();
+    triggerReminderCheckThrottled();
+    if (interactive) showToast('Synced \u2014 ' + ((cloudState && cloudState.inventory || []).length) + ' items', 'success');
+}
+
+async function getCloudState(secret, endpoint) {
+    try {
+        var params = 'token=' + encodeURIComponent(secret) + '&action=SYNC_PULL';
+        var resp = await fetch(endpoint + '?' + params, { method: 'GET' });
+        var json = await resp.json();
+        if (json && json.segments) {
+            json.meta = json.meta || {};
+            return json;
+        }
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * Merges cloud payload into appState in-memory (does NOT save to localStorage or update UI).
+ * Returns stats about the merge.
+ */
+function mergeCloudPayloadToMemory(cloud) {
+    if (!cloud) return null;
+    // 1. Users — union merge
+    var localUsers = appState.users || ['Default'];
+    var cloudUsers = (cloud.users && Array.isArray(cloud.users)) ? cloud.users : ['Default'];
+    var mergedUsers = Array.from(new Set(['Default'].concat(localUsers).concat(cloudUsers)));
+    appState.users = mergedUsers;
+    // 2. userEmails — union merge
+    var localEmails = appState.userEmails || {};
+    var cloudEmails = cloud.userEmails || {};
+    appState.userEmails = Object.assign({}, localEmails, cloudEmails);
+    // 3. inventory — per-item conflict resolution by updatedAt
+    var localMap = {};
+    (appState.inventory || []).forEach(function(item) { localMap[item.id] = item; });
+    var cloudMap = {};
+    (cloud.inventory || []).forEach(function(item) { cloudMap[item.id] = item; });
+    var allIds = Array.from(new Set(Object.keys(localMap).concat(Object.keys(cloudMap))));
+    var stats = { localNewerKept: 0, cloudNewerApplied: 0, cloudOnlyAdded: 0, localOnlyKept: 0, cloudDeleteWins: 0, localDeleteWins: 0 };
+    appState.inventory = allIds.map(function(id) {
+        var local = localMap[id];
+        var remote = cloudMap[id];
+        var result = resolveItemConflict(local, remote);
+        switch (result.resolution) {
+            case 'local-newer': case 'local-higher-version': case 'local-kept-delete-stale': case 'local-kept-tie': case 'local-only':
+                if (remote) stats.localNewerKept++; else stats.localOnlyKept++; break;
+            case 'cloud-newer': case 'cloud-higher-version': case 'cloud-kept-delete-stale': case 'cloud-kept-tie': case 'tied-cloud-preferred': case 'cloud-only':
+                if (local) stats.cloudNewerApplied++; else stats.cloudOnlyAdded++; break;
+            case 'local-delete-wins': stats.localDeleteWins++; break;
+            case 'cloud-delete-wins': stats.cloudDeleteWins++; break;
+        }
+        return result.item;
+    });
+    appState.inventory.forEach(function(item) { normalizeImageFields(item); });
+    appState._lastMergeStats = stats;
+
+    // 4. segments — deep union merge
+    var mergedSegments = {};
+    var localSeg = appState.segments || {};
+    var cloudSeg = cloud.segments || {};
+    var allSegKeys = Object.keys(localSeg).concat(Object.keys(cloudSeg)).filter(function(v, i, a) { return a.indexOf(v) === i; });
+    allSegKeys.forEach(function(segKey) {
+        var localContainers = localSeg[segKey] || {};
+        var cloudContainers = cloudSeg[segKey] || {};
+        var allConKeys = Object.keys(localContainers).concat(Object.keys(cloudContainers)).filter(function(v, i, a) { return a.indexOf(v) === i; });
+        mergedSegments[segKey] = {};
+        allConKeys.forEach(function(conKey) {
+            var localSubs = localContainers[conKey] || [];
+            var cloudSubs = cloudContainers[conKey] || [];
+            var mergedSubs = localSubs.concat(cloudSubs).filter(function(v, i, a) { return a.indexOf(v) === i; });
+            mergedSegments[segKey][conKey] = mergedSubs;
+        });
+    });
+    appState.segments = mergedSegments;
+    // 5. categories — deep recursive union merge
+    function deepMergeCategories(localCat, cloudCat) {
+        var merged = {};
+        var allKeys = Object.keys(localCat || {}).concat(Object.keys(cloudCat || {})).filter(function(v, i, a) { return a.indexOf(v) === i; });
+        allKeys.forEach(function(key) {
+            if (localCat && localCat.hasOwnProperty(key) && cloudCat && cloudCat.hasOwnProperty(key)) {
+                merged[key] = deepMergeCategories(localCat[key], cloudCat[key]);
+            } else if (cloudCat && cloudCat.hasOwnProperty(key)) {
+                merged[key] = cloudCat[key];
+            } else {
+                merged[key] = localCat[key];
+            }
+        });
+        return merged;
+    }
+    appState.categories = deepMergeCategories(appState.categories || {}, cloud.categories || {});
+    // 6. coordinates — union merge
+    appState.coordinates = Object.assign({}, appState.coordinates || {}, cloud.coordinates || {});
+    // 7. spatialBackgroundImage — keep if newer side has it
+    if (cloud.spatialBackgroundImage) appState.spatialBackgroundImage = cloud.spatialBackgroundImage;
+    // 8. scalar fields — keep cloud values
+    if (cloud.reminderDays) appState.reminderDays = cloud.reminderDays;
+    if (cloud.language) appState.language = cloud.language;
+    // 9. meta — track server revision
+    appState.meta = appState.meta || {};
+    if (cloud.meta && cloud.meta.lastServerRevision) {
+        appState.meta.lastServerRevision = cloud.meta.lastServerRevision;
+    }
+    appState.meta.lastSyncedAt = new Date().toISOString();
+    return stats;
 }
 
 function resolveItemConflict(localItem, cloudItem) {
@@ -5558,121 +5760,10 @@ function resolveItemConflict(localItem, cloudItem) {
     return { item: cloudItem, resolution: 'tied-cloud-preferred' };
 }
 
-function mergeCloudPayload(cloud) {
-    // 1. Users — union merge
-    var localUsers = appState.users || ['Default'];
-    var cloudUsers = (cloud.users && Array.isArray(cloud.users)) ? cloud.users : ['Default'];
-    var mergedUsers = Array.from(new Set(['Default'].concat(localUsers).concat(cloudUsers)));
-    appState.users = mergedUsers;
-    // 2. userEmails — union merge (cloud wins on conflict)
-    var localEmails = appState.userEmails || {};
-    var cloudEmails = cloud.userEmails || {};
-    appState.userEmails = Object.assign({}, localEmails, cloudEmails);
-    // 3. inventory — per-item conflict resolution (latest timestamp wins)
-    var localMap = {};
-    (appState.inventory || []).forEach(function(item) { localMap[item.id] = item; });
-    var cloudMap = {};
-    (cloud.inventory || []).forEach(function(item) { cloudMap[item.id] = item; });
-    var allIds = Array.from(new Set(Object.keys(localMap).concat(Object.keys(cloudMap))));
 
-    var stats = {
-        localNewerKept: 0,
-        cloudNewerApplied: 0,
-        cloudOnlyAdded: 0,
-        localOnlyKept: 0,
-        cloudDeleteWins: 0,
-        localDeleteWins: 0
-    };
-
-    appState.inventory = allIds.map(function(id) {
-        var local = localMap[id];
-        var remote = cloudMap[id];
-        var result = resolveItemConflict(local, remote);
-
-        switch (result.resolution) {
-            case 'local-newer':
-            case 'local-higher-version':
-            case 'local-kept-delete-stale':
-            case 'local-kept-tie':
-            case 'local-only':
-                if (remote) stats.localNewerKept++;
-                else stats.localOnlyKept++;
-                break;
-            case 'cloud-newer':
-            case 'cloud-higher-version':
-            case 'cloud-kept-delete-stale':
-            case 'cloud-kept-tie':
-            case 'tied-cloud-preferred':
-            case 'cloud-only':
-                if (local) stats.cloudNewerApplied++;
-                else stats.cloudOnlyAdded++;
-                break;
-            case 'local-delete-wins':
-                stats.localDeleteWins++;
-                break;
-            case 'cloud-delete-wins':
-                stats.cloudDeleteWins++;
-                break;
-        }
-
-        return result.item;
-    });
-    appState.inventory.forEach(function(item) { normalizeImageFields(item); });
-    appState._lastMergeStats = stats;
-
-    // 4. segments — deep union merge (preserve both local and cloud structure)
-    var mergedSegments = {};
-    var localSeg = appState.segments || {};
-    var cloudSeg = cloud.segments || {};
-    var allSegKeys = Object.keys(localSeg).concat(Object.keys(cloudSeg)).filter(function(v, i, a) { return a.indexOf(v) === i; });
-    allSegKeys.forEach(function(segKey) {
-        var localContainers = localSeg[segKey] || {};
-        var cloudContainers = cloudSeg[segKey] || {};
-        var allConKeys = Object.keys(localContainers).concat(Object.keys(cloudContainers)).filter(function(v, i, a) { return a.indexOf(v) === i; });
-        mergedSegments[segKey] = {};
-        allConKeys.forEach(function(conKey) {
-            var localSubs = localContainers[conKey] || [];
-            var cloudSubs = cloudContainers[conKey] || [];
-            var mergedSubs = localSubs.concat(cloudSubs).filter(function(v, i, a) { return a.indexOf(v) === i; });
-            mergedSegments[segKey][conKey] = mergedSubs;
-        });
-    });
-    appState.segments = mergedSegments;
-    // 5. categories — deep recursive union merge
-    function deepMergeCategories(localCat, cloudCat) {
-        var merged = {};
-        var allKeys = Object.keys(localCat || {}).concat(Object.keys(cloudCat || {})).filter(function(v, i, a) { return a.indexOf(v) === i; });
-        allKeys.forEach(function(key) {
-            if (localCat && localCat.hasOwnProperty(key) && cloudCat && cloudCat.hasOwnProperty(key)) {
-                merged[key] = deepMergeCategories(localCat[key], cloudCat[key]);
-            } else if (cloudCat && cloudCat.hasOwnProperty(key)) {
-                merged[key] = cloudCat[key];
-            } else {
-                merged[key] = localCat[key];
-            }
-        });
-        return merged;
-    }
-    appState.categories = deepMergeCategories(appState.categories || {}, cloud.categories || {});
-    // coordinates — always union merge (more positions is better)
-    appState.coordinates = Object.assign({}, appState.coordinates || {}, cloud.coordinates || {});
-    // spatialBackgroundImage — cloud wins if truthy
-    if (cloud.spatialBackgroundImage) {
-        appState.spatialBackgroundImage = cloud.spatialBackgroundImage;
-    }
-    // 5. Scalar fields — cloud wins
-    if (cloud.reminderDays) appState.reminderDays = cloud.reminderDays;
-    if (cloud.language) appState.language = cloud.language;
-    // meta fields
-    appState.meta = appState.meta || {};
-    if (cloud.meta && cloud.meta.lastServerRevision) {
-        appState.meta.lastServerRevision = cloud.meta.lastServerRevision;
-    }
-    appState.meta.lastSyncedAt = new Date().toISOString();
-}
 
 async function triggerSynchronousCloudFetchPull() {
-    syncFromCloudWithToast();
+    syncNow({ interactive: true });
 }
 
 async function verifyCloudSync() {
@@ -5752,16 +5843,28 @@ async function autoPullFromCloudIfPossible() {
     var secret = localStorage.getItem('sys_api_pwd');
     if (!endpoint) return;
 
+    var hasPending = (appState.syncQueue && appState.syncQueue.length > 0);
+    // Never auto-pull if local has pending changes – let syncNow() handle it.
+    if (hasPending) return;
+
     try {
         var params = 'token=' + encodeURIComponent(secret) + '&action=SYNC_PULL';
         var resp = await fetch(endpoint + '?' + params, { method: 'GET' });
         var json = await resp.json();
 
         if (json && json.inventory) {
-            mergeCloudPayload(json);
-            syncUIComponents();
-            appState.syncQueue = [];
-            saveStateToLocalStorage();
+            var cloudRev = json.meta && json.meta.lastServerRevision;
+            var localRev = appState.meta.lastServerRevision;
+            // Only apply if cloud is actually newer than local
+            if (cloudRev && (!localRev || cloudRev > localRev)) {
+                mergeCloudPayloadToMemory(json);
+                syncUIComponents();
+                appState.syncQueue = [];
+                saveStateToLocalStorage();
+                _syncLastFailed = false;
+                _syncConflict = false;
+                updateSyncStatusBadge();
+            }
         }
     } catch(e) {}
 }
