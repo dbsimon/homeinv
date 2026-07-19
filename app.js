@@ -5635,9 +5635,45 @@ async function syncNow(opts) {
             syncUIComponents(); triggerReminderCheckThrottled();
             if (interactive) showToast('Synced \u2014 ' + ((cloudState.inventory || []).length) + ' items', 'success');
         } else {
-            _syncInProgress = false; _syncLastFailed = false; _syncConflict = false;
-            updateSyncStatusBadge(); updateSyncBanner();
-            if (interactive) showToast('Already up to date', 'info');
+            // Revisions match but check if local has more structural data than cloud.
+            // This catches the case where a background push cleared syncQueue but
+            // the data never reached the server (network glitch, server error, etc).
+            var localHasExtra = (preSyncSnap.segCount > cloudSnap.segCount ||
+                                 preSyncSnap.catCount > cloudSnap.catCount ||
+                                 preSyncSnap.conCount > cloudSnap.conCount ||
+                                 preSyncSnap.subCount > cloudSnap.subCount);
+            if (localHasExtra) {
+                console.log('[syncNow] local has ' + (preSyncSnap.segCount - cloudSnap.segCount) +
+                    ' extra segments — forcing push');
+                // Enqueue a structural reconcile action and push
+                enqueueSyncAction('STRUCTURAL_RECONCILE', { reason: 'local-extra' });
+                appState.syncQueue = appState.syncQueue || [];
+                var base = localRev != null ? localRev : 0;
+                var reconcilePush = await triggerSynchronousCloudBackupPush(base);
+                if (reconcilePush && reconcilePush.success) {
+                    applySyncSuccess(interactive, cloudState);
+                } else if (reconcilePush && reconcilePush.conflict) {
+                    var latestCloud = await getCloudState(secret, endpoint);
+                    if (latestCloud) {
+                        mergeCloudPayloadToMemory(latestCloud);
+                        var retry = await triggerSynchronousCloudBackupPush(latestCloud.meta && latestCloud.meta.lastServerRevision);
+                        if (retry && retry.success) {
+                            applySyncSuccess(interactive, latestCloud);
+                        } else {
+                            _syncConflict = true; _syncInProgress = false;
+                            updateSyncStatusBadge();
+                            if (interactive) showToast('Sync conflict — please try again.', 'error');
+                        }
+                    }
+                } else {
+                    _syncInProgress = false;
+                    if (interactive) showToast('Push failed — retry later.', 'error');
+                }
+            } else {
+                _syncInProgress = false; _syncLastFailed = false; _syncConflict = false;
+                updateSyncStatusBadge(); updateSyncBanner();
+                if (interactive) showToast('Already up to date', 'info');
+            }
         }
 
         if (attemptedPush && !_syncConflict && !_syncLastFailed) {
