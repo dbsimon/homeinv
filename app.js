@@ -2856,6 +2856,7 @@ function addSegmentNode() {
                 appState.activeMappingNode.segment = sName;
             }
             mutateState('RENAME_SEGMENT', { oldName: oldName, newName: sName });
+            triggerBackgroundSync();
             syncUIComponents();
             var count = 0;
             appState.inventory.forEach(function(it) { if (it.segment === sName) count++; });
@@ -2870,6 +2871,7 @@ function addSegmentNode() {
     if (!appState.segments[sName]) {
         appState.segments[sName] = {};
         mutateState('ADD_SEGMENT', { name: sName });
+        triggerBackgroundSync();
         syncUIComponents();
         document.getElementById('newSegmentName').value = '';
     }
@@ -2927,6 +2929,7 @@ function addContainerNode() {
             document.getElementById('activeMappingContainerNode').innerText = newSeg + ' > ' + newName;
         }
         mutateState('RENAME_CONTAINER', { oldSeg: oldSeg, oldName: oldName, newSeg: newSeg, newName: newName });
+        triggerBackgroundSync();
         syncUIComponents();
         showToast('Updated: ' + oldSeg + ' > ' + oldName + ' → ' + newSeg + ' > ' + newName, 'success');
         clearEditingState();
@@ -2937,6 +2940,7 @@ function addContainerNode() {
     if (!appState.segments[segment][cName]) {
         appState.segments[segment][cName] = [];
         mutateState('ADD_CONTAINER', { segment: segment, name: cName });
+        triggerBackgroundSync();
         syncUIComponents();
         document.getElementById('newContainerName').value = '';
     }
@@ -3003,6 +3007,7 @@ function addSubContainerNode() {
             document.getElementById('activeMappingContainerNode').innerText = newSeg + ' > ' + newCon + ' > ' + newName;
         }
         mutateState('RENAME_SUB_CONTAINER', { oldSeg: oldSeg, oldCon: oldCon, oldName: oldName, newSeg: newSeg, newCon: newCon, newName: newName });
+        triggerBackgroundSync();
         syncUIComponents();
         showToast('Updated: ' + oldSeg + ' > ' + oldCon + ' > ' + oldName + ' → ' + newSeg + ' > ' + newCon + ' > ' + newName, 'success');
         clearEditingState();
@@ -3014,6 +3019,7 @@ function addSubContainerNode() {
     if (!appState.segments[segment][container].includes(scName)) {
         appState.segments[segment][container].push(scName);
         mutateState('ADD_SUB_CONTAINER', { segment: segment, container: container, name: scName });
+        triggerBackgroundSync();
         syncUIComponents();
         document.getElementById('newSubContainerName').value = '';
     }
@@ -3109,6 +3115,7 @@ async function deleteSegmentNode(seg) {
         document.getElementById('btnClearActiveNode').classList.add('hidden');
     }
     mutateState('DELETE_SEGMENT', { name: seg });
+    triggerBackgroundSync();
     syncUIComponents();
 }
 
@@ -3127,6 +3134,7 @@ async function deleteContainerNode(seg, con) {
         document.getElementById('btnClearActiveNode').classList.add('hidden');
     }
     mutateState('DELETE_CONTAINER', { segment: seg, name: con });
+    triggerBackgroundSync();
     syncUIComponents();
 }
 
@@ -3144,6 +3152,7 @@ async function deleteSubContainerNode(seg, con, sub) {
         document.getElementById('btnClearActiveNode').classList.add('hidden');
     }
     mutateState('DELETE_SUB_CONTAINER', { segment: seg, container: con, name: sub });
+    triggerBackgroundSync();
     syncUIComponents();
 }
 
@@ -3207,6 +3216,7 @@ function saveLayoutMap() {
     var badge = document.getElementById('mapUnsavedBadge');
     if (badge) badge.classList.add('hidden');
     showToast('Layout saved', 'success');
+    triggerSynchronousCloudBackupPush();
 }
 
 function markClassesDirty() {
@@ -3230,6 +3240,7 @@ function saveClassification() {
         var label = btn.querySelector('.btn-label');
         if (label) label.innerText = 'Save';
     }
+    triggerSynchronousCloudBackupPush();
 }
 
 function selectNodeForAssets(seg, con, sub) {
@@ -3293,6 +3304,7 @@ function renderSpatialMapGrid() {
                     var yPercent = Math.round((sc.y / sc.vpH) * 100);
                     appState.coordinates[nodeKey] = { x: xPercent, y: yPercent };
                     markMapDirty();
+                    mutateState('UPDATE_COORDINATE', { key: nodeKey });
                     renderSpatialMapGrid();
                     placed = true;
                 }
@@ -3395,6 +3407,7 @@ function startMarkerDrag(e, marker, seg, con) {
             var key = buildCoordKey(seg, con, '');
             appState.coordinates[key] = { x: Math.round(leftPct), y: Math.round(topPct) };
             markMapDirty();
+            mutateState('UPDATE_COORDINATE', { key: key });
         }
     }
 
@@ -3418,12 +3431,14 @@ function handleLayoutBackgroundUpload(event) {
     }).then(function(url) {
         appState.spatialBackgroundImage = url;
         markMapDirty();
+        mutateState('UPDATE_BACKGROUND_IMAGE', {});
         renderSpatialMapGrid();
         showToast('Layout image uploaded \u2014 click Save to keep', 'info');
     }).catch(function(err) {
         compressImageFile(file, 1600, 0.75, function(dataUrl) {
             appState.spatialBackgroundImage = dataUrl;
             markMapDirty();
+            mutateState('UPDATE_BACKGROUND_IMAGE', {});
             renderSpatialMapGrid();
             showToast('Layout image saved locally only (no cloud configured)', 'info');
         });
@@ -3433,6 +3448,7 @@ function handleLayoutBackgroundUpload(event) {
 function clearLayoutBackground() {
     appState.spatialBackgroundImage = null;
     markMapDirty();
+    mutateState('UPDATE_BACKGROUND_IMAGE', {});
     renderSpatialMapGrid();
     showToast('Layout background image removed', 'info');
 }
@@ -3564,6 +3580,8 @@ function createClassificationNode() {
     if (targetParentMap && !targetParentMap[nodeName]) {
         targetParentMap[nodeName] = {};
         markClassesDirty();
+        mutateState('ADD_CATEGORY', { name: nodeName });
+        triggerBackgroundSync();
         syncUIComponents();
         document.getElementById('newCategoryNodeName').value = '';
         resetCategorySelectionContext();
@@ -3587,6 +3605,8 @@ async function deleteSelectedCategoryNode() {
     if (targetParentMap && targetParentMap[targetNodeKey]) {
         delete targetParentMap[targetNodeKey];
         markClassesDirty();
+        mutateState('DELETE_CATEGORY', { name: targetNodeKey });
+        triggerBackgroundSync();
         syncUIComponents();
         resetCategorySelectionContext();
     }
@@ -5600,15 +5620,40 @@ function mergeCloudPayload(cloud) {
     appState.inventory.forEach(function(item) { normalizeImageFields(item); });
     appState._lastMergeStats = stats;
 
-    // 4. segments — cloud wins if it has >= as many keys as local
-    var localSegCount = Object.keys(appState.segments || {}).length;
-    var cloudSegCount = Object.keys(cloud.segments || {}).length;
-    if (cloudSegCount >= localSegCount) appState.segments = cloud.segments || {};
-    // categories — cloud wins if >= keys
-    var countKeys = function(obj) { return Object.keys(obj || {}).length; };
-    if (countKeys(cloud.categories) >= countKeys(appState.categories)) {
-        appState.categories = cloud.categories || {};
+    // 4. segments — deep union merge (preserve both local and cloud structure)
+    var mergedSegments = {};
+    var localSeg = appState.segments || {};
+    var cloudSeg = cloud.segments || {};
+    var allSegKeys = Object.keys(localSeg).concat(Object.keys(cloudSeg)).filter(function(v, i, a) { return a.indexOf(v) === i; });
+    allSegKeys.forEach(function(segKey) {
+        var localContainers = localSeg[segKey] || {};
+        var cloudContainers = cloudSeg[segKey] || {};
+        var allConKeys = Object.keys(localContainers).concat(Object.keys(cloudContainers)).filter(function(v, i, a) { return a.indexOf(v) === i; });
+        mergedSegments[segKey] = {};
+        allConKeys.forEach(function(conKey) {
+            var localSubs = localContainers[conKey] || [];
+            var cloudSubs = cloudContainers[conKey] || [];
+            var mergedSubs = localSubs.concat(cloudSubs).filter(function(v, i, a) { return a.indexOf(v) === i; });
+            mergedSegments[segKey][conKey] = mergedSubs;
+        });
+    });
+    appState.segments = mergedSegments;
+    // 5. categories — deep recursive union merge
+    function deepMergeCategories(localCat, cloudCat) {
+        var merged = {};
+        var allKeys = Object.keys(localCat || {}).concat(Object.keys(cloudCat || {})).filter(function(v, i, a) { return a.indexOf(v) === i; });
+        allKeys.forEach(function(key) {
+            if (localCat && localCat.hasOwnProperty(key) && cloudCat && cloudCat.hasOwnProperty(key)) {
+                merged[key] = deepMergeCategories(localCat[key], cloudCat[key]);
+            } else if (cloudCat && cloudCat.hasOwnProperty(key)) {
+                merged[key] = cloudCat[key];
+            } else {
+                merged[key] = localCat[key];
+            }
+        });
+        return merged;
     }
+    appState.categories = deepMergeCategories(appState.categories || {}, cloud.categories || {});
     // coordinates — always union merge (more positions is better)
     appState.coordinates = Object.assign({}, appState.coordinates || {}, cloud.coordinates || {});
     // spatialBackgroundImage — cloud wins if truthy
@@ -5715,6 +5760,8 @@ async function autoPullFromCloudIfPossible() {
         if (json && json.inventory) {
             mergeCloudPayload(json);
             syncUIComponents();
+            appState.syncQueue = [];
+            saveStateToLocalStorage();
         }
     } catch(e) {}
 }
