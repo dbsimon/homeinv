@@ -5138,6 +5138,16 @@ async function triggerSynchronousCloudBackupPush(baseRevision) {
     const secret = localStorage.getItem('sys_api_pwd');
     if(!endpoint) { return { success: false, error: 'No endpoint' }; }
 
+    var segKeysBefore = Object.keys(appState.segments || {}).length;
+    console.log('[push] start baseRev=' + (baseRevision !== undefined ? baseRevision : 'none') +
+        ' segs=' + segKeysBefore + ' queue=' + (appState.syncQueue || []).length);
+
+    // Guard: background pushes (no baseRevision) must not run during active syncNow.
+    if (baseRevision === undefined && _syncInProgress) {
+        console.log('[push] skipped – sync already in progress');
+        return { success: false, error: 'sync in progress' };
+    }
+
     try {
         var opsToSend = (appState.syncQueue || []).slice();
         var stateJson = buildSyncPayload();
@@ -5191,6 +5201,7 @@ async function triggerBackgroundSync() {
     var endpoint = localStorage.getItem('sys_gas_url');
     if (!endpoint) return;
     setTimeout(async function() {
+        if (_syncInProgress) return;
         await triggerSynchronousCloudBackupPush();
     }, 500);
 }
@@ -5488,8 +5499,14 @@ async function syncNow(opts) {
     _syncInProgress = true;
     updateSyncStatusBadge();
 
+    // Snapshot pending state BEFORE any async work, to survive
+    // concurrent background pushes that might clear syncQueue mid-sync.
+    var pendingSnapshot = (appState.syncQueue || []).slice();
+    var hasPending = pendingSnapshot.length > 0;
+    var segKeysBefore = Object.keys(appState.segments || {}).length;
+    var catKeysBefore = countCategoryKeys(appState.categories);
+
     try {
-        // ── Phase 1: Fetch latest cloud state ────────────────────────────────
         var cloudState = await getCloudState(secret, endpoint);
         if (!cloudState) {
             _syncInProgress = false;
@@ -5502,23 +5519,35 @@ async function syncNow(opts) {
 
         var cloudRev = cloudState.meta && cloudState.meta.lastServerRevision;
         var localRev = appState.meta.lastServerRevision;
-        var hasPending = (appState.syncQueue && appState.syncQueue.length > 0);
+        var cloudSegKeys = Object.keys(cloudState.segments || {}).length;
+        var cloudCatKeys = countCategoryKeys(cloudState.categories);
+
+        console.log('[syncNow] local segs=' + segKeysBefore + ' cats=' + catKeysBefore +
+            ' pending=' + hasPending + ' localRev=' + (localRev || 0) +
+            ' cloud segs=' + cloudSegKeys + ' cats=' + cloudCatKeys + ' cloudRev=' + (cloudRev || 0));
+
+        // Restore pending snapshot — a concurrent triggerBackgroundSync push may
+        // have cleared appState.syncQueue while we were awaiting getCloudState.
+        if (hasPending) {
+            appState.syncQueue = pendingSnapshot;
+        }
+
         var attemptedPush = false;
 
-        // ── Phase 2: Decide action based on revision comparison ──────────────
-        if (hasPending && cloudRev && cloudRev > (localRev || 0)) {
+        // Phase 2: Decide action based on revision comparison.
+        // Use explicit null checks — cloudRev can legitimately be 0.
+        if (hasPending && cloudRev != null && cloudRev > (localRev || 0)) {
             // Local has pending changes AND cloud has advanced.
-            // Rebase local changes onto cloud, then push with CAS.
-            var merged = mergeCloudPayloadToMemory(cloudState);
-            showToast('Rebased local changes onto latest cloud state', 'info');
-            appState.syncQueue = appState.syncQueue || [];
+            mergeCloudPayloadToMemory(cloudState);
+            console.log('[syncNow] rebase: merged segs=' + Object.keys(appState.segments).length +
+                ' cats=' + countCategoryKeys(appState.categories));
             saveStateToLocalStorage();
+            if (interactive) showToast('Rebased onto latest cloud', 'info');
             var pushResult = await triggerSynchronousCloudBackupPush(cloudRev);
             attemptedPush = true;
             if (pushResult && pushResult.success) {
                 applySyncSuccess(interactive, cloudState);
             } else if (pushResult && pushResult.conflict) {
-                // Conflict after rebase – retry once
                 var retryCloud = await getCloudState(secret, endpoint);
                 if (retryCloud) {
                     mergeCloudPayloadToMemory(retryCloud);
@@ -5538,15 +5567,15 @@ async function syncNow(opts) {
                 _syncInProgress = false;
                 if (interactive) showToast('Push failed \u2014 ' + (pushResult && pushResult.error || 'unknown'), 'error');
             }
-        } else if (hasPending && (!cloudRev || cloudRev === localRev || cloudRev <= (localRev || 0))) {
-            // Only local has changes, server hasn't advanced. Push with CAS.
-            var base = localRev || 0;
+        } else if (hasPending && (cloudRev == null || cloudRev === localRev || cloudRev <= (localRev || 0))) {
+            // Only local has changes; cloud hasn't advanced.
+            var base = localRev != null ? localRev : 0;
             var directPush = await triggerSynchronousCloudBackupPush(base);
             attemptedPush = true;
             if (directPush && directPush.success) {
                 applySyncSuccess(interactive, cloudState);
             } else if (directPush && directPush.conflict) {
-                // Server advanced since we last looked – rebase and retry
+                // Server advanced since fetch – rebase and retry once.
                 var latestCloud = await getCloudState(secret, endpoint);
                 if (latestCloud) {
                     mergeCloudPayloadToMemory(latestCloud);
@@ -5565,9 +5594,11 @@ async function syncNow(opts) {
                 _syncInProgress = false;
                 if (interactive) showToast('Push failed \u2014 ' + (directPush && directPush.error || 'unknown'), 'error');
             }
-        } else if (!hasPending && cloudRev && cloudRev > (localRev || 0)) {
-            // Only cloud has changes – pull and apply.
+        } else if (!hasPending && cloudRev != null && cloudRev > (localRev || 0)) {
+            // Only cloud has changes – pull and apply safely.
             mergeCloudPayloadToMemory(cloudState);
+            console.log('[syncNow] pull-only: merged segs=' + Object.keys(appState.segments).length +
+                ' cats=' + countCategoryKeys(appState.categories));
             appState.syncQueue = [];
             saveStateToLocalStorage();
             _syncInProgress = false;
@@ -5579,7 +5610,7 @@ async function syncNow(opts) {
             triggerReminderCheckThrottled();
             if (interactive) showToast('Synced \u2014 ' + ((cloudState.inventory || []).length) + ' items', 'success');
         } else {
-            // Both sides match.
+            // Both sides match or no-op.
             _syncInProgress = false;
             _syncLastFailed = false;
             _syncConflict = false;
@@ -5588,7 +5619,6 @@ async function syncNow(opts) {
             if (interactive) showToast('Already up to date', 'info');
         }
 
-        // Ensure syncQueue is cleared if push succeeded
         if (attemptedPush && !_syncConflict && !_syncLastFailed) {
             appState.syncQueue = [];
             saveStateToLocalStorage();
@@ -5600,7 +5630,18 @@ async function syncNow(opts) {
         if (interactive) showToast('Sync error \u2014 ' + e.message, 'error');
     }
 
+    console.log('[syncNow] done: segs=' + Object.keys(appState.segments || {}).length +
+        ' cats=' + countCategoryKeys(appState.categories) +
+        ' queue=' + (appState.syncQueue || []).length);
+
     btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+}
+
+function countCategoryKeys(cat) {
+    if (!cat || typeof cat !== 'object') return 0;
+    var count = 0;
+    Object.keys(cat).forEach(function(k) { count += 1 + countCategoryKeys(cat[k]); });
+    return count;
 }
 
 function applySyncSuccess(interactive, cloudState) {
@@ -5717,6 +5758,8 @@ function mergeCloudPayloadToMemory(cloud) {
         appState.meta.lastServerRevision = cloud.meta.lastServerRevision;
     }
     appState.meta.lastSyncedAt = new Date().toISOString();
+    console.log('[mergeCloudPayloadToMemory] result segs=' + Object.keys(appState.segments).length +
+        ' cats=' + (typeof countCategoryKeys === 'function' ? countCategoryKeys(appState.categories) : '?'));
     return stats;
 }
 
