@@ -5633,6 +5633,9 @@ async function syncNow(opts) {
     console.log('[syncNow] done: segs=' + Object.keys(appState.segments || {}).length +
         ' cats=' + countCategoryKeys(appState.categories) +
         ' queue=' + (appState.syncQueue || []).length);
+    if (Object.keys(appState.segments || {}).length < segKeysBefore) {
+        console.error('[syncNow] SEGMENT LOSS: ' + segKeysBefore + '→' + Object.keys(appState.segments).length);
+    }
 
     btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
 }
@@ -5645,6 +5648,9 @@ function countCategoryKeys(cat) {
 }
 
 function applySyncSuccess(interactive, cloudState) {
+    var segsBefore = Object.keys(appState.segments || {}).length;
+    var catsBefore = countCategoryKeys(appState.categories);
+
     _syncInProgress = false;
     _syncLastFailed = false;
     _syncConflict = false;
@@ -5653,6 +5659,15 @@ function applySyncSuccess(interactive, cloudState) {
     updateSyncStatusBadge();
     updateSyncBanner();
     syncUIComponents();
+
+    var segsAfter = Object.keys(appState.segments || {}).length;
+    var catsAfter = countCategoryKeys(appState.categories);
+    if (segsAfter < segsBefore || catsAfter < catsBefore) {
+        console.error('[applySyncSuccess] STRUCTURAL DATA LOSS: segs ' + segsBefore + '→' + segsAfter + ' cats ' + catsBefore + '→' + catsAfter);
+    }
+    console.log('[applySyncSuccess] segs=' + segsAfter + ' cats=' + catsAfter +
+        ' rev=' + (appState.meta.lastServerRevision || 0));
+
     triggerReminderCheckThrottled();
     if (interactive) showToast('Synced \u2014 ' + ((cloudState && cloudState.inventory || []).length) + ' items', 'success');
 }
@@ -5678,6 +5693,8 @@ async function getCloudState(secret, endpoint) {
  */
 function mergeCloudPayloadToMemory(cloud) {
     if (!cloud) return null;
+    var segsBefore = Object.keys(appState.segments || {}).length;
+    var catsBefore = countCategoryKeys(appState.categories);
     // 1. Users — union merge
     var localUsers = appState.users || ['Default'];
     var cloudUsers = (cloud.users && Array.isArray(cloud.users)) ? cloud.users : ['Default'];
@@ -5758,8 +5775,14 @@ function mergeCloudPayloadToMemory(cloud) {
         appState.meta.lastServerRevision = cloud.meta.lastServerRevision;
     }
     appState.meta.lastSyncedAt = new Date().toISOString();
-    console.log('[mergeCloudPayloadToMemory] result segs=' + Object.keys(appState.segments).length +
-        ' cats=' + (typeof countCategoryKeys === 'function' ? countCategoryKeys(appState.categories) : '?'));
+
+    var segsAfter = Object.keys(appState.segments).length;
+    var catsAfter = countCategoryKeys(appState.categories);
+    if (segsAfter < segsBefore || catsAfter < catsBefore) {
+        console.error('[mergeCloudPayloadToMemory] STRUCTURAL DATA LOSS: segs ' + segsBefore + '→' + segsAfter + ' cats ' + catsBefore + '→' + catsAfter);
+    }
+    console.log('[mergeCloudPayloadToMemory] result segs=' + segsAfter +
+        ' cats=' + catsAfter);
     return stats;
 }
 
