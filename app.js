@@ -1346,6 +1346,12 @@ function parseCoordKey(key) {
 // lastPushedSnapshotVersion. Dirty detection uses version comparison,
 // not queue length.
 
+// ===== Deep Clone Helper ======================================================
+function deepCloneJsonSafe(value) {
+    if (value === undefined || value === null) return value;
+    try { return JSON.parse(JSON.stringify(value)); } catch(e) { return value; }
+}
+
 function buildPersistedStateSnapshot(state) {
     state = state || {};
     var snap = {};
@@ -1358,19 +1364,25 @@ function buildPersistedStateSnapshot(state) {
         localSnapshotVersion: state.meta.localSnapshotVersion || 0,
         lastPushedSnapshotVersion: state.meta.lastPushedSnapshotVersion || 0
     } : { deviceId: getDeviceId(), lastSyncedAt: null, lastServerRevision: null, localSnapshotVersion: 0, lastPushedSnapshotVersion: 0 };
-    snap.syncQueue = (state.syncQueue || []).slice();
-    snap.segments = state.segments || {};
-    snap.coordinates = state.coordinates || {};
-    snap.categories = state.categories || {};
-    snap.inventory = (state.inventory || []).slice();
-    snap.users = (state.users || []).slice();
+    snap.syncQueue = deepCloneJsonSafe(state.syncQueue || []);
+    snap.segments = deepCloneJsonSafe(state.segments || {});
+    snap.coordinates = deepCloneJsonSafe(state.coordinates || {});
+    snap.categories = deepCloneJsonSafe(state.categories || {});
+    snap.inventory = deepCloneJsonSafe(state.inventory || []);
+    snap.users = deepCloneJsonSafe(state.users || ['Default']);
     snap.currentUser = state.currentUser || 'Default';
-    snap.userEmails = Object.assign({}, state.userEmails || {});
+    snap.userEmails = deepCloneJsonSafe(state.userEmails || {});
     snap.reminderDays = state.reminderDays || 30;
-    snap.reminderLog = Object.assign({}, state.reminderLog || {});
+    snap.reminderLog = deepCloneJsonSafe(state.reminderLog || {});
     snap.language = state.language || 'en';
     snap.spatialBackgroundImage = state.spatialBackgroundImage || null;
     return snap;
+}
+
+function buildCloudSyncPayload(state) {
+    var payload = buildPersistedStateSnapshot(state);
+    payload.syncQueue = [];
+    return payload;
 }
 
 function hasUnsyncedSnapshot(state) {
@@ -5553,6 +5565,11 @@ async function syncNow(opts) {
     var pendingQueue = (appState.syncQueue || []).slice();
     logStructureSnapshot('preSync', preSyncSnap);
     updateSyncDebugOverlay('preSync', preSyncSnap);
+    // Verify no shared references between snapshot and live state
+    var testSnap = buildPersistedStateSnapshot(appState);
+    console.log('[syncNow] snap.segments === appState.segments: ' + (testSnap.segments === appState.segments));
+    console.log('[syncNow] snap.coordinates === appState.coordinates: ' + (testSnap.coordinates === appState.coordinates));
+    console.log('[syncNow] snap.categories === appState.categories: ' + (testSnap.categories === appState.categories));
     // Persist now so any concurrent background push sees the latest state
     saveStateToLocalStorage();
 
@@ -5734,6 +5751,8 @@ function applyPushSuccess(interactive, pushedSnapshotVersion) {
     appState.meta.lastSyncedAt = new Date().toISOString();
     saveStateToLocalStorage();
     updateSyncStatusBadge(); updateSyncBanner();
+    var bedroomCons = (appState.segments && appState.segments.Bedroom) ? Object.keys(appState.segments.Bedroom).join(',') : '(none)';
+    console.log('[applyPushSuccess] Bedroom containers: [' + bedroomCons + ']');
     syncUIComponents();
     triggerReminderCheckThrottled();
     if (interactive) showToast('Synced \u2014 ' + (appState.inventory || []).length + ' items', 'success');
@@ -6003,6 +6022,11 @@ function mergeCloudPayloadToMemory(cloud) {
     if (!cloud) return null;
     var segsBefore = Object.keys(appState.segments || {}).length;
     var catsBefore = countCategoryKeys(appState.categories);
+
+    // Debug: trace specific container through merge
+    var localBedroomCons = (appState.segments && appState.segments.Bedroom) ? Object.keys(appState.segments.Bedroom).join(',') : '(none)';
+    var cloudBedroomCons = (cloud.segments && cloud.segments.Bedroom) ? Object.keys(cloud.segments.Bedroom).join(',') : '(none)';
+    console.log('[merge] Bedroom containers — local: [' + localBedroomCons + '] cloud: [' + cloudBedroomCons + ']');
     // 1. Users — union merge
     var localUsers = appState.users || ['Default'];
     var cloudUsers = (cloud.users && Array.isArray(cloud.users)) ? cloud.users : ['Default'];
@@ -6070,6 +6094,9 @@ function mergeCloudPayloadToMemory(cloud) {
         return merged;
     }
     appState.categories = deepMergeCategories(appState.categories || {}, cloud.categories || {});
+    // Debug: verify Bedroom containers survived merge
+    var mergedBedroomCons = (appState.segments && appState.segments.Bedroom) ? Object.keys(appState.segments.Bedroom).join(',') : '(none)';
+    console.log('[merge] after merge — Bedroom containers: [' + mergedBedroomCons + ']');
     // 6. coordinates — union merge
     appState.coordinates = Object.assign({}, appState.coordinates || {}, cloud.coordinates || {});
     // 7. spatialBackgroundImage — keep if newer side has it
