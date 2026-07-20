@@ -1340,25 +1340,62 @@ function parseCoordKey(key) {
     return { segment: parts[0], container: parts[1], subContainer: parts[2] || '' };
 }
 
+// ===== Snapshot-Based Persistence ============================================
+// Local appState is the canonical source of truth for structural data.
+// Every mutation increments localSnapshotVersion. Successful push sets
+// lastPushedSnapshotVersion. Dirty detection uses version comparison,
+// not queue length.
+
+function buildPersistedStateSnapshot(state) {
+    state = state || {};
+    var snap = {};
+    snap.meta = state.meta ? {
+        deviceId: state.meta.deviceId,
+        lastSyncedAt: state.meta.lastSyncedAt,
+        lastServerRevision: state.meta.lastServerRevision,
+        lastLocalChangeAt: state.meta.lastLocalChangeAt,
+        lastChangeBy: state.meta.lastChangeBy,
+        localSnapshotVersion: state.meta.localSnapshotVersion || 0,
+        lastPushedSnapshotVersion: state.meta.lastPushedSnapshotVersion || 0
+    } : { deviceId: getDeviceId(), lastSyncedAt: null, lastServerRevision: null, localSnapshotVersion: 0, lastPushedSnapshotVersion: 0 };
+    snap.syncQueue = (state.syncQueue || []).slice();
+    snap.segments = state.segments || {};
+    snap.coordinates = state.coordinates || {};
+    snap.categories = state.categories || {};
+    snap.inventory = (state.inventory || []).slice();
+    snap.users = (state.users || []).slice();
+    snap.currentUser = state.currentUser || 'Default';
+    snap.userEmails = Object.assign({}, state.userEmails || {});
+    snap.reminderDays = state.reminderDays || 30;
+    snap.reminderLog = Object.assign({}, state.reminderLog || {});
+    snap.language = state.language || 'en';
+    snap.spatialBackgroundImage = state.spatialBackgroundImage || null;
+    return snap;
+}
+
+function hasUnsyncedSnapshot(state) {
+    if (!state || !state.meta) return false;
+    var localVer = state.meta.localSnapshotVersion || 0;
+    var pushedVer = state.meta.lastPushedSnapshotVersion || 0;
+    if (localVer > pushedVer) return true;
+    var hasQueue = (state.syncQueue && state.syncQueue.length > 0);
+    return hasQueue;
+}
+
 // ===== Unified Mutation Entry Point =====
 // All state changes MUST flow through mutateState().
-// It handles: state update -> localStorage persist -> sync queue -> sync UI badge
 function mutateState(actionType, metadata) {
     appState.meta = appState.meta || {};
     appState.meta.lastLocalChangeAt = new Date().toISOString();
     appState.meta.lastChangeBy = appState.meta.deviceId || getDeviceId();
-    appState.meta.localChangeSeq = (appState.meta.localChangeSeq || 0) + 1;
+    appState.meta.localSnapshotVersion = (appState.meta.localSnapshotVersion || 0) + 1;
     enqueueSyncAction(actionType, metadata);
     saveStateToLocalStorage();
     updateSyncStatusBadge();
 }
 
 function hasUnsyncedLocalChanges(state) {
-    if (!state) return false;
-    var hasQueue = (state.syncQueue && state.syncQueue.length > 0);
-    var seqGap = (state.meta && state.meta.localChangeSeq || 0) > (state.meta && state.meta.lastSyncedChangeSeq || 0);
-    var timeGap = (state.meta && state.meta.lastLocalChangeAt || '') > (state.meta && state.meta.lastSyncedAt || '');
-    return hasQueue || seqGap || timeGap;
+    return hasUnsyncedSnapshot(state);
 }
 
 function stampNow(obj) {
@@ -5513,7 +5550,7 @@ async function syncNow(opts) {
     // Snapshot local state BEFORE any async work.
     var preSyncSnap = collectStructureSnapshot(appState);
     var isDirty = hasUnsyncedLocalChanges(appState);
-    var localChangeSeq = appState.meta.localChangeSeq || 0;
+    var localVer = appState.meta.localSnapshotVersion || 0;
     var pendingQueue = (appState.syncQueue || []).slice();
     logStructureSnapshot('preSync', preSyncSnap);
     updateSyncDebugOverlay('preSync', preSyncSnap);
@@ -5559,11 +5596,11 @@ async function syncNow(opts) {
             }
             saveStateToLocalStorage();
             if (interactive) showToast('Rebased onto latest cloud', 'info');
-            var prePushSeq = appState.meta.localChangeSeq || 0;
+            var prePushVer = appState.meta.localSnapshotVersion || 0;
             var pushResult = await triggerSynchronousCloudBackupPush(cloudRev);
             attemptedPush = true;
             if (pushResult && pushResult.success) {
-                applyPushSuccess(interactive, prePushSeq);
+                applyPushSuccess(interactive, prePushVer);
             } else if (pushResult && pushResult.conflict) {
                 var retryCloud = await getCloudState(secret, endpoint);
                 if (retryCloud) {
@@ -5576,10 +5613,10 @@ async function syncNow(opts) {
                         return;
                     }
                     saveStateToLocalStorage();
-                    var rSeq = appState.meta.localChangeSeq || 0;
+                    var rVer = appState.meta.localSnapshotVersion || 0;
                     var rPush = await triggerSynchronousCloudBackupPush(retryCloud.meta && retryCloud.meta.lastServerRevision);
                     if (rPush && rPush.success) {
-                        applyPushSuccess(interactive, rSeq);
+                        applyPushSuccess(interactive, rVer);
                     } else {
                         _syncConflict = true; _syncInProgress = false;
                         updateSyncStatusBadge(); updateSyncBanner();
@@ -5592,7 +5629,7 @@ async function syncNow(opts) {
             }
         } else if (isDirty && (cloudRev == null || cloudRev === localRev || cloudRev <= (localRev || 0))) {
             var base = localRev != null ? localRev : 0;
-            var prePushSeq = appState.meta.localChangeSeq || 0;
+            var prePushVer = appState.meta.localSnapshotVersion || 0;
             var directPush = await triggerSynchronousCloudBackupPush(base);
             attemptedPush = true;
             if (directPush && directPush.success) {
@@ -5604,7 +5641,7 @@ async function syncNow(opts) {
                     btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
                     return;
                 }
-                applyPushSuccess(interactive, prePushSeq);
+                applyPushSuccess(interactive, prePushVer);
             } else if (directPush && directPush.conflict) {
                 var latestCloud = await getCloudState(secret, endpoint);
                 if (latestCloud) {
@@ -5617,9 +5654,9 @@ async function syncNow(opts) {
                         return;
                     }
                     saveStateToLocalStorage();
-                    var rSeq = appState.meta.localChangeSeq || 0;
+                    var rVer = appState.meta.localSnapshotVersion || 0;
                     var retry = await triggerSynchronousCloudBackupPush(latestCloud.meta && latestCloud.meta.lastServerRevision);
-                    if (retry && retry.success) { applyPushSuccess(interactive, rSeq); }
+                    if (retry && retry.success) { applyPushSuccess(interactive, rVer); }
                     else { _syncConflict = true; _syncInProgress = false; updateSyncStatusBadge();
                         if (interactive) showToast('Sync conflict.', 'error'); }
                 }
@@ -5640,7 +5677,7 @@ async function syncNow(opts) {
                 return;
             }
             appState.syncQueue = [];
-            appState.meta.lastSyncedChangeSeq = appState.meta.localChangeSeq || 0;
+            appState.meta.lastPushedSnapshotVersion = appState.meta.localSnapshotVersion || 0;
             saveStateToLocalStorage();
             _syncInProgress = false; _syncLastFailed = false; _syncConflict = false;
             updateSyncStatusBadge(); updateSyncBanner();
@@ -5656,10 +5693,10 @@ async function syncNow(opts) {
                 console.log('[syncNow] forcing push — local extra segs=' +
                     (preSyncSnap.segCount - cloudSnap.segCount) + ' dirty=' + isDirty);
                 var fBase = localRev != null ? localRev : 0;
-                var fSeq = appState.meta.localChangeSeq || 0;
+                var fVer = appState.meta.localSnapshotVersion || 0;
                 var forcePush = await triggerSynchronousCloudBackupPush(fBase);
                 if (forcePush && forcePush.success) {
-                    applyPushSuccess(interactive, fSeq);
+                    applyPushSuccess(interactive, fVer);
                 } else {
                     _syncInProgress = false;
                     if (interactive) showToast('Push failed — retry later.', 'error');
@@ -5691,10 +5728,10 @@ async function syncNow(opts) {
     btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
 }
 
-function applyPushSuccess(interactive, pushedLocalChangeSeq) {
+function applyPushSuccess(interactive, pushedSnapshotVersion) {
     _syncInProgress = false; _syncLastFailed = false; _syncConflict = false;
     appState.syncQueue = [];
-    appState.meta.lastSyncedChangeSeq = pushedLocalChangeSeq;
+    appState.meta.lastPushedSnapshotVersion = pushedSnapshotVersion;
     appState.meta.lastSyncedAt = new Date().toISOString();
     saveStateToLocalStorage();
     updateSyncStatusBadge(); updateSyncBanner();
@@ -5875,27 +5912,7 @@ function updateSyncDebugOverlay(stage, snap, extra) {
 function normalizeStateForSync(state) {
     // FORENSIC SAFETY: never prune empty structural nodes during sync payload.
     // Empty segments, containers, sub-containers, and categories ARE valid user data.
-    var out = {};
-    out.meta = state.meta ? {
-        deviceId: state.meta.deviceId,
-        lastSyncedAt: state.meta.lastSyncedAt,
-        lastServerRevision: state.meta.lastServerRevision,
-        lastLocalChangeAt: state.meta.lastLocalChangeAt,
-        lastChangeBy: state.meta.lastChangeBy
-    } : { deviceId: getDeviceId(), lastSyncedAt: null, lastServerRevision: null };
-    out.syncQueue = (state.syncQueue || []).slice();
-    out.segments = state.segments || {};
-    out.coordinates = state.coordinates || {};
-    out.categories = state.categories || {};
-    out.inventory = (state.inventory || []).slice();
-    out.users = (state.users || []).slice();
-    out.currentUser = state.currentUser || 'Default';
-    out.userEmails = Object.assign({}, state.userEmails || {});
-    out.reminderDays = state.reminderDays || 30;
-    out.reminderLog = Object.assign({}, state.reminderLog || {});
-    out.language = state.language || 'en';
-    out.spatialBackgroundImage = state.spatialBackgroundImage || null;
-    return out;
+    return buildPersistedStateSnapshot(state);
 }
 
 function applyMergedState(mergedState, revision) {
@@ -6570,12 +6587,12 @@ function migrateLegacyState(state) {
         state.meta.lastServerRevision = null;
         migrated = true;
     }
-    if (state.meta.localChangeSeq === undefined) {
-        state.meta.localChangeSeq = 0;
+    if (state.meta.localSnapshotVersion === undefined) {
+        state.meta.localSnapshotVersion = 0;
         migrated = true;
     }
-    if (state.meta.lastSyncedChangeSeq === undefined) {
-        state.meta.lastSyncedChangeSeq = 0;
+    if (state.meta.lastPushedSnapshotVersion === undefined) {
+        state.meta.lastPushedSnapshotVersion = 0;
         migrated = true;
     }
     if (state.meta.lastLocalChangeAt === undefined) {
