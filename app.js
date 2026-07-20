@@ -1347,9 +1347,18 @@ function mutateState(actionType, metadata) {
     appState.meta = appState.meta || {};
     appState.meta.lastLocalChangeAt = new Date().toISOString();
     appState.meta.lastChangeBy = appState.meta.deviceId || getDeviceId();
-    saveStateToLocalStorage();
+    appState.meta.localChangeSeq = (appState.meta.localChangeSeq || 0) + 1;
     enqueueSyncAction(actionType, metadata);
+    saveStateToLocalStorage();
     updateSyncStatusBadge();
+}
+
+function hasUnsyncedLocalChanges(state) {
+    if (!state) return false;
+    var hasQueue = (state.syncQueue && state.syncQueue.length > 0);
+    var seqGap = (state.meta && state.meta.localChangeSeq || 0) > (state.meta && state.meta.lastSyncedChangeSeq || 0);
+    var timeGap = (state.meta && state.meta.lastLocalChangeAt || '') > (state.meta && state.meta.lastSyncedAt || '');
+    return hasQueue || seqGap || timeGap;
 }
 
 function stampNow(obj) {
@@ -2882,7 +2891,7 @@ function addSegmentNode() {
 
     if (!appState.segments[sName]) {
         appState.segments[sName] = {};
-        mutateState('ADD_SEGMENT', { name: sName });
+        mutateState('ADD_SEGMENT', { entity: 'segment', action: 'create', path: sName, segment: sName });
         triggerBackgroundSync();
         syncUIComponents();
         document.getElementById('newSegmentName').value = '';
@@ -2951,7 +2960,7 @@ function addContainerNode() {
     if (!appState.segments[segment]) appState.segments[segment] = {};
     if (!appState.segments[segment][cName]) {
         appState.segments[segment][cName] = [];
-        mutateState('ADD_CONTAINER', { segment: segment, name: cName });
+        mutateState('ADD_CONTAINER', { entity: 'container', action: 'create', path: segment + ' > ' + cName, segment: segment, container: cName });
         triggerBackgroundSync();
         syncUIComponents();
         document.getElementById('newContainerName').value = '';
@@ -3030,7 +3039,7 @@ function addSubContainerNode() {
     if (!appState.segments[segment][container]) appState.segments[segment][container] = [];
     if (!appState.segments[segment][container].includes(scName)) {
         appState.segments[segment][container].push(scName);
-        mutateState('ADD_SUB_CONTAINER', { segment: segment, container: container, name: scName });
+        mutateState('ADD_SUB_CONTAINER', { entity: 'subContainer', action: 'create', path: segment + ' > ' + container + ' > ' + scName, segment: segment, container: container, subContainer: scName });
         triggerBackgroundSync();
         syncUIComponents();
         document.getElementById('newSubContainerName').value = '';
@@ -3592,7 +3601,7 @@ function createClassificationNode() {
     if (targetParentMap && !targetParentMap[nodeName]) {
         targetParentMap[nodeName] = {};
         markClassesDirty();
-        mutateState('ADD_CATEGORY', { name: nodeName });
+        mutateState('ADD_CATEGORY', { entity: 'category', action: 'create', name: nodeName });
         triggerBackgroundSync();
         syncUIComponents();
         document.getElementById('newCategoryNodeName').value = '';
@@ -5501,20 +5510,21 @@ async function syncNow(opts) {
     _syncInProgress = true;
     updateSyncStatusBadge();
 
-    // ══ STAGE 0 — snapshot local state ════════════════════════════════════════
-    var pendingSnapshot = (appState.syncQueue || []).slice();
-    var hasPending = pendingSnapshot.length > 0;
+    // Snapshot local state BEFORE any async work.
     var preSyncSnap = collectStructureSnapshot(appState);
+    var isDirty = hasUnsyncedLocalChanges(appState);
+    var localChangeSeq = appState.meta.localChangeSeq || 0;
+    var pendingQueue = (appState.syncQueue || []).slice();
     logStructureSnapshot('preSync', preSyncSnap);
     updateSyncDebugOverlay('preSync', preSyncSnap);
+    // Persist now so any concurrent background push sees the latest state
+    saveStateToLocalStorage();
 
     try {
-        // ══ STAGE 1 — pull cloud ══════════════════════════════════════════════
         var cloudState = await getCloudState(secret, endpoint);
         if (!cloudState) {
             updateSyncDebugOverlay('pull-fail', preSyncSnap, 'cloud unreachable');
-            _syncInProgress = false;
-            _syncLastFailed = true;
+            _syncInProgress = false; _syncLastFailed = true;
             updateSyncStatusBadge();
             if (interactive) showToast('Sync failed \u2014 server unreachable', 'error');
             btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
@@ -5524,37 +5534,36 @@ async function syncNow(opts) {
         logStructureSnapshot('cloudPull', cloudSnap);
         updateSyncDebugOverlay('cloudPull', cloudSnap);
 
-        // Restore pending snapshot — background push may have cleared queue.
-        if (hasPending) { appState.syncQueue = pendingSnapshot; }
+        // Restore queue snapshot if background push cleared it
+        appState.syncQueue = pendingQueue;
 
         var cloudRev = cloudState.meta && cloudState.meta.lastServerRevision;
         var localRev = appState.meta.lastServerRevision;
         var attemptedPush = false;
 
         console.log('[syncNow] local segs=' + preSyncSnap.segCount + ' cats=' + preSyncSnap.catCount +
-            ' pending=' + hasPending + ' localRev=' + (localRev || 0) +
+            ' dirty=' + isDirty + ' localRev=' + (localRev || 0) +
             ' cloud segs=' + cloudSnap.segCount + ' cats=' + cloudSnap.catCount + ' cloudRev=' + (cloudRev || 0));
 
-        // ══ STAGE 2 — decide action ════════════════════════════════════════════
-        if (hasPending && cloudRev != null && cloudRev > (localRev || 0)) {
+        if (isDirty && cloudRev != null && cloudRev > (localRev || 0)) {
             mergeCloudPayloadToMemory(cloudState);
             var rebaseSnap = collectStructureSnapshot(appState);
             logStructureSnapshot('afterRebase', rebaseSnap);
             updateSyncDebugOverlay('afterRebase', rebaseSnap);
             if (!assertNoStructuralLoss(preSyncSnap, rebaseSnap, 'rebase')) {
                 _syncInProgress = false; _syncLastFailed = true;
-                appState.syncQueue = pendingSnapshot; saveStateToLocalStorage();
-                updateSyncStatusBadge();
-                if (interactive) showToast('Sync blocked: structural data would be lost. Local changes preserved.', 'error');
+                saveStateToLocalStorage(); updateSyncStatusBadge();
+                if (interactive) showToast('Sync blocked: structural data would be lost.', 'error');
                 btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
                 return;
             }
             saveStateToLocalStorage();
             if (interactive) showToast('Rebased onto latest cloud', 'info');
+            var prePushSeq = appState.meta.localChangeSeq || 0;
             var pushResult = await triggerSynchronousCloudBackupPush(cloudRev);
             attemptedPush = true;
             if (pushResult && pushResult.success) {
-                applySyncSuccess(interactive, cloudState);
+                applyPushSuccess(interactive, prePushSeq);
             } else if (pushResult && pushResult.conflict) {
                 var retryCloud = await getCloudState(secret, endpoint);
                 if (retryCloud) {
@@ -5562,39 +5571,40 @@ async function syncNow(opts) {
                     if (!assertNoStructuralLoss(preSyncSnap, collectStructureSnapshot(appState), 'retry-merge')) {
                         _syncInProgress = false; _syncConflict = true;
                         updateSyncStatusBadge();
-                        if (interactive) showToast('Sync blocked on retry — structural loss detected.', 'error');
+                        if (interactive) showToast('Sync blocked on retry.', 'error');
                         btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
                         return;
                     }
                     saveStateToLocalStorage();
-                    var retryPush = await triggerSynchronousCloudBackupPush(retryCloud.meta && retryCloud.meta.lastServerRevision);
-                    if (retryPush && retryPush.success) {
-                        applySyncSuccess(interactive, retryCloud);
+                    var rSeq = appState.meta.localChangeSeq || 0;
+                    var rPush = await triggerSynchronousCloudBackupPush(retryCloud.meta && retryCloud.meta.lastServerRevision);
+                    if (rPush && rPush.success) {
+                        applyPushSuccess(interactive, rSeq);
                     } else {
                         _syncConflict = true; _syncInProgress = false;
                         updateSyncStatusBadge(); updateSyncBanner();
-                        if (interactive) showToast('Sync conflict \u2014 another device edited. Please sync again.', 'error');
+                        if (interactive) showToast('Sync conflict \u2014 please sync again.', 'error');
                     }
                 }
             } else {
                 _syncInProgress = false;
                 if (interactive) showToast('Push failed \u2014 ' + (pushResult && pushResult.error || 'unknown'), 'error');
             }
-        } else if (hasPending && (cloudRev == null || cloudRev === localRev || cloudRev <= (localRev || 0))) {
+        } else if (isDirty && (cloudRev == null || cloudRev === localRev || cloudRev <= (localRev || 0))) {
             var base = localRev != null ? localRev : 0;
+            var prePushSeq = appState.meta.localChangeSeq || 0;
             var directPush = await triggerSynchronousCloudBackupPush(base);
             attemptedPush = true;
             if (directPush && directPush.success) {
                 var postPushSnap = collectStructureSnapshot(appState);
                 if (!assertNoStructuralLoss(preSyncSnap, postPushSnap, 'afterPush')) {
                     _syncInProgress = false; _syncLastFailed = true;
-                    appState.syncQueue = pendingSnapshot;
                     updateSyncStatusBadge();
                     if (interactive) showToast('Sync blocked: structures lost during push.', 'error');
                     btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
                     return;
                 }
-                applySyncSuccess(interactive, cloudState);
+                applyPushSuccess(interactive, prePushSeq);
             } else if (directPush && directPush.conflict) {
                 var latestCloud = await getCloudState(secret, endpoint);
                 if (latestCloud) {
@@ -5602,21 +5612,22 @@ async function syncNow(opts) {
                     if (!assertNoStructuralLoss(preSyncSnap, collectStructureSnapshot(appState), 'conflict-rebase')) {
                         _syncInProgress = false; _syncConflict = true;
                         updateSyncStatusBadge();
-                        if (interactive) showToast('Sync blocked — structural loss on conflict resolution.', 'error');
+                        if (interactive) showToast('Sync blocked.', 'error');
                         btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
                         return;
                     }
                     saveStateToLocalStorage();
+                    var rSeq = appState.meta.localChangeSeq || 0;
                     var retry = await triggerSynchronousCloudBackupPush(latestCloud.meta && latestCloud.meta.lastServerRevision);
-                    if (retry && retry.success) { applySyncSuccess(interactive, latestCloud); }
+                    if (retry && retry.success) { applyPushSuccess(interactive, rSeq); }
                     else { _syncConflict = true; _syncInProgress = false; updateSyncStatusBadge();
-                        if (interactive) showToast('Sync conflict \u2014 please try again.', 'error'); }
+                        if (interactive) showToast('Sync conflict.', 'error'); }
                 }
             } else {
                 _syncInProgress = false;
-                if (interactive) showToast('Push failed \u2014 ' + (directPush && directPush.error || 'unknown'), 'error');
+                if (interactive) showToast('Push failed.', 'error');
             }
-        } else if (!hasPending && cloudRev != null && cloudRev > (localRev || 0)) {
+        } else if (!isDirty && cloudRev != null && cloudRev > (localRev || 0)) {
             mergeCloudPayloadToMemory(cloudState);
             var pullSnap = collectStructureSnapshot(appState);
             logStructureSnapshot('afterPull', pullSnap);
@@ -5629,42 +5640,26 @@ async function syncNow(opts) {
                 return;
             }
             appState.syncQueue = [];
+            appState.meta.lastSyncedChangeSeq = appState.meta.localChangeSeq || 0;
             saveStateToLocalStorage();
             _syncInProgress = false; _syncLastFailed = false; _syncConflict = false;
             updateSyncStatusBadge(); updateSyncBanner();
             syncUIComponents(); triggerReminderCheckThrottled();
             if (interactive) showToast('Synced \u2014 ' + ((cloudState.inventory || []).length) + ' items', 'success');
         } else {
-            // Revisions match but check if local has more structural data than cloud.
-            // This catches the case where a background push cleared syncQueue but
-            // the data never reached the server (network glitch, server error, etc).
+            // Revisions match — check for structural reconciliation
             var localHasExtra = (preSyncSnap.segCount > cloudSnap.segCount ||
                                  preSyncSnap.catCount > cloudSnap.catCount ||
                                  preSyncSnap.conCount > cloudSnap.conCount ||
                                  preSyncSnap.subCount > cloudSnap.subCount);
-            if (localHasExtra) {
-                console.log('[syncNow] local has ' + (preSyncSnap.segCount - cloudSnap.segCount) +
-                    ' extra segments — forcing push');
-                // Enqueue a structural reconcile action and push
-                enqueueSyncAction('STRUCTURAL_RECONCILE', { reason: 'local-extra' });
-                appState.syncQueue = appState.syncQueue || [];
-                var base = localRev != null ? localRev : 0;
-                var reconcilePush = await triggerSynchronousCloudBackupPush(base);
-                if (reconcilePush && reconcilePush.success) {
-                    applySyncSuccess(interactive, cloudState);
-                } else if (reconcilePush && reconcilePush.conflict) {
-                    var latestCloud = await getCloudState(secret, endpoint);
-                    if (latestCloud) {
-                        mergeCloudPayloadToMemory(latestCloud);
-                        var retry = await triggerSynchronousCloudBackupPush(latestCloud.meta && latestCloud.meta.lastServerRevision);
-                        if (retry && retry.success) {
-                            applySyncSuccess(interactive, latestCloud);
-                        } else {
-                            _syncConflict = true; _syncInProgress = false;
-                            updateSyncStatusBadge();
-                            if (interactive) showToast('Sync conflict — please try again.', 'error');
-                        }
-                    }
+            if (localHasExtra || isDirty) {
+                console.log('[syncNow] forcing push — local extra segs=' +
+                    (preSyncSnap.segCount - cloudSnap.segCount) + ' dirty=' + isDirty);
+                var fBase = localRev != null ? localRev : 0;
+                var fSeq = appState.meta.localChangeSeq || 0;
+                var forcePush = await triggerSynchronousCloudBackupPush(fBase);
+                if (forcePush && forcePush.success) {
+                    applyPushSuccess(interactive, fSeq);
                 } else {
                     _syncInProgress = false;
                     if (interactive) showToast('Push failed — retry later.', 'error');
@@ -5677,7 +5672,6 @@ async function syncNow(opts) {
         }
 
         if (attemptedPush && !_syncConflict && !_syncLastFailed) {
-            appState.syncQueue = [];
             saveStateToLocalStorage();
         }
     } catch (e) {
@@ -5690,12 +5684,23 @@ async function syncNow(opts) {
     logStructureSnapshot('postSync', postSnap);
     updateSyncDebugOverlay('done', postSnap);
     if (postSnap.segCount < preSyncSnap.segCount || postSnap.catCount < preSyncSnap.catCount) {
-        console.error('[syncNow] SEGMENT/CATEGORY LOSS: segs ' + preSyncSnap.segCount + '→' + postSnap.segCount +
-            ' cats ' + preSyncSnap.catCount + '→' + postSnap.catCount +
-            ' preKeys=' + preSyncSnap.segKeysSorted + ' postKeys=' + postSnap.segKeysSorted);
+        console.error('[syncNow] STRUCTURE LOSS: segs ' + preSyncSnap.segCount + '→' + postSnap.segCount +
+            ' cats ' + preSyncSnap.catCount + '→' + postSnap.catCount);
     }
 
     btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+}
+
+function applyPushSuccess(interactive, pushedLocalChangeSeq) {
+    _syncInProgress = false; _syncLastFailed = false; _syncConflict = false;
+    appState.syncQueue = [];
+    appState.meta.lastSyncedChangeSeq = pushedLocalChangeSeq;
+    appState.meta.lastSyncedAt = new Date().toISOString();
+    saveStateToLocalStorage();
+    updateSyncStatusBadge(); updateSyncBanner();
+    syncUIComponents();
+    triggerReminderCheckThrottled();
+    if (interactive) showToast('Synced \u2014 ' + (appState.inventory || []).length + ' items', 'success');
 }
 
 function countCategoryKeys(cat) {
@@ -6563,6 +6568,18 @@ function migrateLegacyState(state) {
     }
     if (state.meta.lastServerRevision === undefined) {
         state.meta.lastServerRevision = null;
+        migrated = true;
+    }
+    if (state.meta.localChangeSeq === undefined) {
+        state.meta.localChangeSeq = 0;
+        migrated = true;
+    }
+    if (state.meta.lastSyncedChangeSeq === undefined) {
+        state.meta.lastSyncedChangeSeq = 0;
+        migrated = true;
+    }
+    if (state.meta.lastLocalChangeAt === undefined) {
+        state.meta.lastLocalChangeAt = null;
         migrated = true;
     }
 
