@@ -5254,8 +5254,7 @@ async function triggerBackgroundSync() {
 }
 
 function buildSyncPayload() {
-    var normalized = normalizeStateForSync(appState);
-    return JSON.stringify(normalized);
+    return JSON.stringify(appState);
 }
 
 function getSyncPayloadSize() {
