@@ -887,8 +887,8 @@ function saveUploadedImageToIndexedDb(file, itemId) {
 }
 
 function uploadImageToCloud(blob, fileName) {
-    var endpoint = localStorage.getItem('sys_gas_url');
-    var secret = localStorage.getItem('sys_api_pwd');
+    var endpoint = localStorage.getItem('sysgasurl') || localStorage.getItem('sys_gas_url');
+    var secret = localStorage.getItem('sysapipwd') || localStorage.getItem('sys_api_pwd');
     if (!endpoint) return Promise.reject(new Error('Cloud sync not configured. Set API URL in Settings.'));
     return blobToDataUrl(blob).then(function(dataUrl) {
         var b64 = dataUrl.split(',')[1];
@@ -1686,9 +1686,7 @@ window.addEventListener('DOMContentLoaded', () => {
         switchTab('tab-spatial');
         clearActiveNode();
         installIOSZoomFix();
-        // STARTUP SYNC: pull cloud version, merge, push if dirty — before user edits.
-        // Shows a blocking overlay until the check completes.
-        startupVersionCheckAndSync();
+        autoPullFromCloudIfPossible();
         installFormDirtyListener();
         installFocusTraps();
         installMapDragListeners();
@@ -5234,9 +5232,7 @@ async function triggerSynchronousCloudBackupPush(baseRevision) {
         if (result && result.success) {
             appState.meta.lastSyncedAt = new Date().toISOString();
             appState.meta.lastServerRevision = result.revision || null;
-            appState.meta.lastPushedSnapshotVersion = appState.meta.localSnapshotVersion || 0;
             appState.syncQueue = [];
-            saveStateToLocalStorage(); // persist updated revision metadata immediately
             _syncLastFailed = false;
             _syncConflict = false;
             updateSyncStatusBadge();
@@ -5270,10 +5266,7 @@ async function triggerBackgroundSync() {
 }
 
 function buildSyncPayload() {
-    // Use clean cloud snapshot: strips syncQueue and deep-clones to avoid
-    // accidental shared-reference mutations during serialization.
-    var snap = buildCloudSyncPayload(appState);
-    return JSON.stringify(snap);
+    return JSON.stringify(appState);
 }
 
 function getSyncPayloadSize() {
@@ -6248,12 +6241,12 @@ function triggerAutoCloudSyncIfPossible() {
 
 async function autoPullFromCloudIfPossible() {
     var endpoint = localStorage.getItem('sys_gas_url');
-    var secret   = localStorage.getItem('sys_api_pwd');
+    var secret = localStorage.getItem('sys_api_pwd');
     if (!endpoint) return;
 
-    // Startup sync handles the initial version check.
-    // Periodic auto-pull only runs after startupVersionCheckAndSync() completes.
-    if (!_startupSyncComplete) return;
+    var hasPending = (appState.syncQueue && appState.syncQueue.length > 0);
+    // Never auto-pull if local has pending changes – let syncNow() handle it.
+    if (hasPending) return;
 
     try {
         var params = 'token=' + encodeURIComponent(secret) + '&action=SYNC_PULL';
@@ -6261,12 +6254,10 @@ async function autoPullFromCloudIfPossible() {
         var json = await resp.json();
 
         if (json && json.inventory) {
-            var cloudRev  = (json.meta && json.meta.lastServerRevision) || 0;
-            var localRev  = appState.meta.lastServerRevision || 0;
-            var hasPending = (appState.syncQueue && appState.syncQueue.length > 0);
-
-            if (cloudRev > localRev || hasPending) {
-                // Always merge first — never blind-overwrite local with cloud
+            var cloudRev = json.meta && json.meta.lastServerRevision;
+            var localRev = appState.meta.lastServerRevision;
+            // Only apply if cloud is actually newer than local
+            if (cloudRev != null && (!localRev || cloudRev > localRev)) {
                 var preSnap = collectStructureSnapshot(appState);
                 mergeCloudPayloadToMemory(json);
                 var postSnap = collectStructureSnapshot(appState);
@@ -6275,37 +6266,17 @@ async function autoPullFromCloudIfPossible() {
                     return;
                 }
                 syncUIComponents();
-
-                if (hasPending || hasUnsyncedLocalChanges(appState)) {
-                    // Push merged state back so cloud stays ahead of all devices
-                    saveStateToLocalStorage();
-                    triggerSynchronousCloudBackupPush(cloudRev).then(function(result) {
-                        if (result && result.success) {
-                            appState.meta.lastServerRevision = result.revision || (cloudRev + 1);
-                            appState.meta.lastSyncedAt = new Date().toISOString();
-                            appState.meta.lastPushedSnapshotVersion = appState.meta.localSnapshotVersion || 0;
-                            appState.syncQueue = [];
-                            saveStateToLocalStorage();
-                            _syncLastFailed = false; _syncConflict = false;
-                            updateSyncStatusBadge();
-                            updateSyncDebugOverlay('autoPull-push-done', collectStructureSnapshot(appState));
-                        }
-                    }).catch(function() {});
-                } else {
-                    appState.syncQueue = [];
-                    appState.meta.lastServerRevision = cloudRev;
-                    appState.meta.lastSyncedAt = new Date().toISOString();
-                    appState.meta.lastPushedSnapshotVersion = appState.meta.localSnapshotVersion || 0;
-                    saveStateToLocalStorage();
-                    _syncLastFailed = false;
-                    _syncConflict = false;
-                    updateSyncStatusBadge();
-                    updateSyncDebugOverlay('autoPull-done', postSnap);
-                }
+                appState.syncQueue = [];
+                saveStateToLocalStorage();
+                _syncLastFailed = false;
+                _syncConflict = false;
+                updateSyncStatusBadge();
+                updateSyncDebugOverlay('autoPull-done', postSnap);
             }
         }
-    } catch(e) { console.warn('[autoPull] Error:', e); }
+    } catch(e) {}
 }
+
 function normalizeAllItemImageFields() {
     (appState.inventory || []).forEach(function(item) { normalizeImageFields(item); });
 }
@@ -6504,193 +6475,6 @@ function toggleAIPanel() {
 /* ==========================================================================
    Section 8: View Synchronizers & Structural Render Utilities
    ========================================================================== */
-// ============================================================
-// STARTUP SYNC GUARD
-// Blocks UI with a full-screen overlay while the app checks the
-// cloud version, merges any newer cloud data, and pushes local
-// dirty changes — before the user can make any edits.
-// ============================================================
-var _startupSyncComplete = false;
-
-function showStartupSyncBanner() {
-    if (document.getElementById('startupSyncBanner')) return;
-    var banner = document.createElement('div');
-    banner.id = 'startupSyncBanner';
-    banner.setAttribute('role', 'status');
-    banner.setAttribute('aria-live', 'polite');
-    banner.style.cssText = (
-        'position:fixed;top:0;left:0;right:0;bottom:0;z-index:100000;' +
-        'background:rgba(15,23,42,0.80);display:flex;flex-direction:column;' +
-        'align-items:center;justify-content:center;gap:12px;' +
-        'font-family:Inter,system-ui,sans-serif;'
-    );
-    banner.innerHTML = (
-        '<div style="background:#1e293b;border-radius:14px;padding:30px 40px;' +
-        'text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.5);max-width:340px;width:90%;">' +
-        '<div id="startupSyncIcon" style="font-size:32px;margin-bottom:10px;">&#x1F504;</div>' +
-        '<div style="color:#f8fafc;font-size:15px;font-weight:600;margin-bottom:6px;">' +
-        'Checking Cloud Version…</div>' +
-        '<div id="startupSyncMsg" style="color:#94a3b8;font-size:12px;line-height:1.5;">' +
-        'Pulling latest data before you make changes.</div>' +
-        '</div>'
-    );
-    document.body.appendChild(banner);
-}
-
-function updateStartupSyncMsg(msg, icon) {
-    var el = document.getElementById('startupSyncMsg');
-    var ic = document.getElementById('startupSyncIcon');
-    if (el) el.innerText = msg;
-    if (ic && icon) ic.innerHTML = icon;
-}
-
-function dismissStartupSyncBanner() {
-    _startupSyncComplete = true;
-    var banner = document.getElementById('startupSyncBanner');
-    if (banner) {
-        banner.style.transition = 'opacity 0.35s ease';
-        banner.style.opacity = '0';
-        setTimeout(function() {
-            if (banner.parentNode) banner.parentNode.removeChild(banner);
-        }, 380);
-    }
-}
-
-async function startupVersionCheckAndSync() {
-    var endpoint = localStorage.getItem('sys_gas_url');
-    var secret   = localStorage.getItem('sys_api_pwd');
-
-    if (!endpoint) {
-        // No cloud configured — unlock UI immediately.
-        dismissStartupSyncBanner();
-        return;
-    }
-
-    showStartupSyncBanner();
-
-    try {
-        updateStartupSyncMsg('Fetching cloud revision…');
-        var params = 'token=' + encodeURIComponent(secret || '') + '&action=SYNC_PULL';
-        var resp      = await fetch(endpoint + '?' + params, { method: 'GET' });
-        var cloudState = await resp.json();
-
-        if (!cloudState || !cloudState.inventory) {
-            updateStartupSyncMsg('Cloud unreachable — using local data.');
-            setTimeout(dismissStartupSyncBanner, 1800);
-            return;
-        }
-
-        var cloudRev = (cloudState.meta && cloudState.meta.lastServerRevision) || 0;
-        var localRev = (appState.meta && appState.meta.lastServerRevision)     || 0;
-        var hasDirty = hasUnsyncedLocalChanges(appState);
-
-        console.log('[startupSync] cloudRev=' + cloudRev +
-            ' localRev=' + localRev + ' dirty=' + hasDirty);
-
-        if (cloudRev > localRev || hasDirty) {
-            updateStartupSyncMsg('Merging cloud data…');
-
-            // Pull first: merge cloud into local (per-item by updatedAt — local-newer items win)
-            var preSnap = collectStructureSnapshot(appState);
-            mergeCloudPayloadToMemory(cloudState);
-            var postSnap = collectStructureSnapshot(appState);
-
-            if (!assertNoStructuralLoss(preSnap, postSnap, 'startupPull')) {
-                updateStartupSyncMsg(
-                    '⚠️  Merge safety check failed — local data preserved.',
-                    '⚠️'
-                );
-                setTimeout(dismissStartupSyncBanner, 2800);
-                return;
-            }
-
-            saveStateToLocalStorage();
-            syncUIComponents();
-
-            // Push merged state if we have local changes newer than cloud
-            if (hasDirty || hasUnsyncedLocalChanges(appState)) {
-                updateStartupSyncMsg('Pushing local changes…');
-                var pushResult = await triggerSynchronousCloudBackupPush(cloudRev);
-
-                if (pushResult && pushResult.success) {
-                    var newRev = pushResult.revision || (cloudRev + 1);
-                    appState.meta.lastServerRevision = newRev;
-                    appState.meta.lastSyncedAt       = new Date().toISOString();
-                    appState.meta.lastPushedSnapshotVersion = appState.meta.localSnapshotVersion || 0;
-                    appState.syncQueue = [];
-                    saveStateToLocalStorage();
-                    updateSyncStatusBadge();
-                    updateStartupSyncMsg(
-                        '✅ Synced — ' + ((cloudState.inventory || []).length) + ' items',
-                        '✅'
-                    );
-
-                } else if (pushResult && pushResult.conflict) {
-                    // Cloud moved ahead between our pull and push — re-pull then retry push once
-                    updateStartupSyncMsg('Conflict detected, re-pulling…');
-                    try {
-                        var resp2  = await fetch(endpoint + '?' + params, { method: 'GET' });
-                        var cloud2 = await resp2.json();
-                        if (cloud2 && cloud2.inventory) {
-                            mergeCloudPayloadToMemory(cloud2);
-                            saveStateToLocalStorage();
-                            var rRev  = (cloud2.meta && cloud2.meta.lastServerRevision) || cloudRev;
-                            var rPush = await triggerSynchronousCloudBackupPush(rRev);
-                            if (rPush && rPush.success) {
-                                appState.meta.lastServerRevision = rPush.revision || (rRev + 1);
-                                appState.meta.lastSyncedAt = new Date().toISOString();
-                                appState.meta.lastPushedSnapshotVersion =
-                                    appState.meta.localSnapshotVersion || 0;
-                                appState.syncQueue = [];
-                                saveStateToLocalStorage();
-                                updateSyncStatusBadge();
-                                updateStartupSyncMsg('✅ Synced after retry.', '✅');
-                            } else {
-                                _syncConflict = true;
-                                updateSyncStatusBadge();
-                                updateStartupSyncMsg(
-                                    '⚠️  Sync conflict — tap Sync to resolve.',
-                                    '⚠️'
-                                );
-                            }
-                        }
-                    } catch(e2) {
-                        console.warn('[startupSync] retry failed:', e2);
-                    }
-
-                } else {
-                    _syncLastFailed = true;
-                    updateSyncStatusBadge();
-                    updateStartupSyncMsg(
-                        '❌ Push failed: ' + ((pushResult && pushResult.error) || 'unknown'),
-                        '❌'
-                    );
-                }
-
-            } else {
-                // No local dirty state — mark synced without pushing
-                appState.meta.lastServerRevision = cloudRev;
-                appState.meta.lastSyncedAt       = new Date().toISOString();
-                appState.meta.lastPushedSnapshotVersion = appState.meta.localSnapshotVersion || 0;
-                appState.syncQueue = [];
-                saveStateToLocalStorage();
-                updateSyncStatusBadge();
-                updateStartupSyncMsg('✅ Up to date.', '✅');
-            }
-
-        } else {
-            // Local revision is current
-            updateStartupSyncMsg('✅ Already up to date.', '✅');
-        }
-
-    } catch(e) {
-        console.warn('[startupSync] Failed:', e);
-        updateStartupSyncMsg('Cloud check failed — using local data.');
-    }
-
-    setTimeout(dismissStartupSyncBanner, 1400);
-}
-
 function saveStateToLocalStorage() {
     try {
         localStorage.setItem('hk_inventory_state', JSON.stringify(appState));
