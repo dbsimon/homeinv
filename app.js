@@ -1186,6 +1186,7 @@ let aiFilteredItemIds = null;
 let editingNode = null; // { type: 'segment'|'container'|'subContainer', segment, container?, subContainer?, oldName }
 let _mapDirty = false;
 let _classesDirty = false;
+let _locationsDirty = false;
 let _formDirty = false;
 var _mapZoom = 1;
 var _mapPanX = 0;
@@ -2977,7 +2978,9 @@ function addSegmentNode() {
                 appState.activeMappingNode.segment = sName;
             }
             mutateState('RENAME_SEGMENT', { oldName: oldName, newName: sName });
-            triggerBackgroundSync();
+            markLocationsDirty();
+            saveStateToLocalStorage();
+            updateSyncStatusBadge();
             syncUIComponents();
             var count = 0;
             appState.inventory.forEach(function(it) { if (it.segment === sName) count++; });
@@ -2992,7 +2995,9 @@ function addSegmentNode() {
     if (!appState.segments[sName]) {
         appState.segments[sName] = {};
         mutateState('ADD_SEGMENT', { entity: 'segment', action: 'create', path: sName, segment: sName });
-        triggerBackgroundSync();
+        markLocationsDirty();
+        saveStateToLocalStorage();
+        updateSyncStatusBadge();
         syncUIComponents();
         document.getElementById('newSegmentName').value = '';
     }
@@ -3050,7 +3055,9 @@ function addContainerNode() {
             document.getElementById('activeMappingContainerNode').innerText = newSeg + ' > ' + newName;
         }
         mutateState('RENAME_CONTAINER', { oldSeg: oldSeg, oldName: oldName, newSeg: newSeg, newName: newName });
-        triggerBackgroundSync();
+        markLocationsDirty();
+        saveStateToLocalStorage();
+        updateSyncStatusBadge();
         syncUIComponents();
         showToast('Updated: ' + oldSeg + ' > ' + oldName + ' → ' + newSeg + ' > ' + newName, 'success');
         clearEditingState();
@@ -3236,7 +3243,9 @@ async function deleteSegmentNode(seg) {
         document.getElementById('btnClearActiveNode').classList.add('hidden');
     }
     mutateState('DELETE_SEGMENT', { name: seg });
-    triggerBackgroundSync();
+    markLocationsDirty();
+    saveStateToLocalStorage();
+    updateSyncStatusBadge();
     syncUIComponents();
 }
 
@@ -3255,7 +3264,9 @@ async function deleteContainerNode(seg, con) {
         document.getElementById('btnClearActiveNode').classList.add('hidden');
     }
     mutateState('DELETE_CONTAINER', { segment: seg, name: con });
-    triggerBackgroundSync();
+    markLocationsDirty();
+    saveStateToLocalStorage();
+    updateSyncStatusBadge();
     syncUIComponents();
 }
 
@@ -3351,8 +3362,12 @@ function markClassesDirty() {
     }
 }
 
+
+function markLocationsDirty() {
+    _locationsDirty = true;
+}
+
 function saveClassification() {
-    mutateState('SAVE_CLASSIFICATION', {});
     _classesDirty = false;
     var btn = document.getElementById('btnSaveClassification');
     if (btn) {
@@ -3361,7 +3376,8 @@ function saveClassification() {
         var label = btn.querySelector('.btn-label');
         if (label) label.innerText = 'Save';
     }
-    syncNow({ interactive: false }).catch(function() {});
+    saveStateToLocalStorage();
+    updateSyncStatusBadge();
 }
 function selectNodeForAssets(seg, con, sub) {
     appState.activeMappingNode = { segment: seg, container: con || null, subContainer: sub || null };
@@ -3701,7 +3717,8 @@ function createClassificationNode() {
         targetParentMap[nodeName] = {};
         markClassesDirty();
         mutateState('ADD_CATEGORY', { entity: 'category', action: 'create', name: nodeName });
-        triggerBackgroundSync();
+        saveStateToLocalStorage();
+        updateSyncStatusBadge();
         syncUIComponents();
         document.getElementById('newCategoryNodeName').value = '';
         resetCategorySelectionContext();
@@ -3726,7 +3743,8 @@ async function deleteSelectedCategoryNode() {
         delete targetParentMap[targetNodeKey];
         markClassesDirty();
         mutateState('DELETE_CATEGORY', { name: targetNodeKey });
-        triggerBackgroundSync();
+        saveStateToLocalStorage();
+        updateSyncStatusBadge();
         syncUIComponents();
         resetCategorySelectionContext();
     }
@@ -5583,13 +5601,11 @@ function hideToast() {
     if (toast) toast.classList.remove('show');
 }
 
-function flushPendingStructureChangesBeforeSync() {
+function commitPendingStructureChanges() {
     var changed = false;
 
     if (typeof _classesDirty !== 'undefined' && _classesDirty) {
-        mutateState('SAVE_CLASSIFICATION', { source: 'top-sync' });
         _classesDirty = false;
-
         var btn = document.getElementById('btnSaveClassification');
         if (btn) {
             btn.classList.remove('btn-warning');
@@ -5600,10 +5616,17 @@ function flushPendingStructureChangesBeforeSync() {
         changed = true;
     }
 
-    if (changed) saveStateToLocalStorage();
+    if (typeof _locationsDirty !== 'undefined' && _locationsDirty) {
+        _locationsDirty = false;
+        changed = true;
+    }
+
+    if (changed) {
+        saveStateToLocalStorage();
+        updateSyncStatusBadge();
+    }
     return changed;
 }
-
 async function syncNow(opts) {
     opts = opts || {};
     var interactive = opts.interactive !== false;
@@ -5629,7 +5652,7 @@ async function syncNow(opts) {
     _syncConflict = false;
     updateSyncStatusBadge();
     saveStateToLocalStorage();
-    flushPendingStructureChangesBeforeSync();
+    commitPendingStructureChanges();
 
     try {
         if (hasUnsyncedLocalChanges(appState)) {
@@ -5649,7 +5672,11 @@ async function syncNow(opts) {
                 throw new Error((pushResult && pushResult.error) || 'Push failed');
             }
 
-            applyPushSuccess(false, pushedSnapshotVersion);
+            appState.meta.lastPushedSnapshotVersion = pushedSnapshotVersion;
+            appState.meta.lastSyncedAt = new Date().toISOString();
+            if (pushResult.revision != null) appState.meta.lastServerRevision = pushResult.revision;
+            appState.syncQueue = [];
+            saveStateToLocalStorage();
         }
 
         var cloud = await getCloudState(secret, endpoint);
