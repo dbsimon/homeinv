@@ -3361,9 +3361,8 @@ function saveClassification() {
         var label = btn.querySelector('.btn-label');
         if (label) label.innerText = 'Save';
     }
-    triggerSynchronousCloudBackupPush();
+    syncNow({ interactive: false }).catch(function() {});
 }
-
 function selectNodeForAssets(seg, con, sub) {
     appState.activeMappingNode = { segment: seg, container: con || null, subContainer: sub || null };
     var label = seg;
@@ -5310,12 +5309,11 @@ async function triggerSynchronousCloudBackupPush(baseRevision) {
 async function triggerBackgroundSync() {
     var endpoint = localStorage.getItem('sys_gas_url');
     if (!endpoint) return;
-    setTimeout(async function() {
+    setTimeout(function() {
         if (_syncInProgress) return;
-        await triggerSynchronousCloudBackupPush();
-    }, 500);
+        syncNow({ interactive: false }).catch(function() {});
+    }, 300);
 }
-
 function buildSyncPayload() {
     return JSON.stringify(buildCloudSyncPayload(appState));
 }
@@ -5585,6 +5583,27 @@ function hideToast() {
     if (toast) toast.classList.remove('show');
 }
 
+function flushPendingStructureChangesBeforeSync() {
+    var changed = false;
+
+    if (typeof _classesDirty !== 'undefined' && _classesDirty) {
+        mutateState('SAVE_CLASSIFICATION', { source: 'top-sync' });
+        _classesDirty = false;
+
+        var btn = document.getElementById('btnSaveClassification');
+        if (btn) {
+            btn.classList.remove('btn-warning');
+            btn.classList.add('btn-secondary');
+            var label = btn.querySelector('.btn-label');
+            if (label) label.innerText = 'Save';
+        }
+        changed = true;
+    }
+
+    if (changed) saveStateToLocalStorage();
+    return changed;
+}
+
 async function syncNow(opts) {
     opts = opts || {};
     var interactive = opts.interactive !== false;
@@ -5610,6 +5629,7 @@ async function syncNow(opts) {
     _syncConflict = false;
     updateSyncStatusBadge();
     saveStateToLocalStorage();
+    flushPendingStructureChangesBeforeSync();
 
     try {
         if (hasUnsyncedLocalChanges(appState)) {
