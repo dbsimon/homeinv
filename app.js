@@ -1389,25 +1389,31 @@ function buildCloudSyncPayload(state) {
 function replaceLocalStateWithCloud(cloud) {
     if (!cloud) return;
     var localDeviceId = (appState && appState.meta && appState.meta.deviceId) || getDeviceId();
+    var currentLocalVersion = (appState && appState.meta && appState.meta.localSnapshotVersion) || 0;
+    var currentSelectedCategoryNodePath = appState && appState.selectedCategoryNodePath ? deepCloneJsonSafe(appState.selectedCategoryNodePath) : null;
+    var currentActiveMappingNode = appState && appState.activeMappingNode ? deepCloneJsonSafe(appState.activeMappingNode) : null;
     var snapshot = buildPersistedStateSnapshot(cloud);
     snapshot = migrateLegacyState(snapshot);
     snapshot.meta = snapshot.meta || {};
     snapshot.meta.deviceId = localDeviceId;
     snapshot.meta.lastSyncedAt = new Date().toISOString();
     snapshot.meta.lastServerRevision = (cloud.meta && cloud.meta.lastServerRevision != null) ? cloud.meta.lastServerRevision : (snapshot.meta.lastServerRevision || 0);
-    snapshot.meta.localSnapshotVersion = snapshot.meta.localSnapshotVersion || 0;
-    snapshot.meta.lastPushedSnapshotVersion = snapshot.meta.localSnapshotVersion || 0;
+    snapshot.meta.localSnapshotVersion = Math.max(snapshot.meta.localSnapshotVersion || 0, currentLocalVersion);
+    snapshot.meta.lastPushedSnapshotVersion = snapshot.meta.localSnapshotVersion;
     snapshot.syncQueue = [];
+    snapshot.selectedCategoryNodePath = currentSelectedCategoryNodePath;
+    snapshot.activeMappingNode = currentActiveMappingNode;
     appState = snapshot;
     normalizeAllItemImageFields();
     if (typeof _formDirty !== 'undefined') _formDirty = false;
+    if (typeof _classesDirty !== 'undefined') _classesDirty = false;
+    if (typeof _locationsDirty !== 'undefined') _locationsDirty = false;
     saveStateToLocalStorage();
     syncUIComponents();
     updateSyncStatusBadge();
     updateSyncBanner();
     updateLoginSyncStatus();
 }
-
 async function startupLoadFromCloud() {
     var endpoint = localStorage.getItem('sys_gas_url');
     var secret = localStorage.getItem('sys_api_pwd');
@@ -1423,6 +1429,7 @@ async function startupLoadFromCloud() {
         var cloud = await getCloudState(secret, endpoint);
         if (cloud) {
             replaceLocalStateWithCloud(cloud);
+            triggerReminderCheckThrottled();
         }
         _syncLastFailed = false;
         _syncConflict = false;
@@ -1436,7 +1443,6 @@ async function startupLoadFromCloud() {
         updateLoginSyncStatus();
     }
 }
-
 function hasUnsyncedSnapshot(state) {
     if (!state || !state.meta) return false;
     var localVer = state.meta.localSnapshotVersion || 0;
@@ -1484,23 +1490,25 @@ function updateSyncStatusBadge() {
     var badge = document.getElementById('syncStatusBadge');
     if (!badge) return;
     var pending = (appState.syncQueue && appState.syncQueue.length) || 0;
+    var hasStructureDraft = !!((typeof _classesDirty !== 'undefined' && _classesDirty) || (typeof _locationsDirty !== 'undefined' && _locationsDirty));
+    var visiblePending = pending + (hasStructureDraft ? 1 : 0);
     if (_syncInProgress) {
-        badge.innerText = '\u{1F504} Syncing\u2026';
+        badge.innerText = '🔄 Syncing…';
         badge.className = 'text-[10px] text-blue-600 font-medium ml-2';
     } else if (_syncLastFailed) {
-        badge.innerText = '\u274C Sync failed';
+        badge.innerText = '❌ Sync failed';
         badge.className = 'text-[10px] text-red-500 font-medium ml-2';
     } else if (_syncConflict) {
-        badge.innerText = '\u26A0\uFE0F Conflict detected';
+        badge.innerText = '⚠️ Conflict detected';
         badge.className = 'text-[10px] text-amber-600 font-medium ml-2';
-    } else if (pending > 0) {
-        badge.innerText = '\u{1F4E4} Pending sync (' + pending + ')';
+    } else if (visiblePending > 0) {
+        badge.innerText = '📤 Pending sync (' + visiblePending + ')';
         badge.className = 'text-[10px] text-slate-500 font-medium ml-2';
     } else if (appState.meta.lastSyncedAt) {
-        badge.innerText = '\u2705 Synced ' + formatRelativeTime(appState.meta.lastSyncedAt);
+        badge.innerText = '✅ Synced ' + formatRelativeTime(appState.meta.lastSyncedAt);
         badge.className = 'text-[10px] text-emerald-600 font-medium ml-2';
     } else {
-        badge.innerText = '\u26AA Saved locally';
+        badge.innerText = '⚪ Saved locally';
         badge.className = 'text-[10px] text-slate-400 font-medium ml-2';
     }
     updateSyncBanner();
@@ -1508,7 +1516,6 @@ function updateSyncStatusBadge() {
     updateLoginSyncStatus();
     updateSyncCallToActionState();
 }
-
 function updateSyncAlertRow() {
     var row = document.getElementById('syncAlertRow');
     if (!row) return;
@@ -1532,23 +1539,25 @@ function updateSyncAlertRow() {
 
 function updateSyncBanner() {
     var pending = (appState.syncQueue && appState.syncQueue.length) || 0;
+    var hasStructureDraft = !!((typeof _classesDirty !== 'undefined' && _classesDirty) || (typeof _locationsDirty !== 'undefined' && _locationsDirty));
+    var visiblePending = pending + (hasStructureDraft ? 1 : 0);
     var dotClass, text, textMobile;
     if (_syncInProgress) {
         dotClass = 'sync-dot-blue';
-        text = 'Syncing\u2026';
-        textMobile = 'Syncing\u2026';
+        text = 'Syncing…';
+        textMobile = 'Syncing…';
     } else if (_syncLastFailed) {
         dotClass = 'sync-dot-red';
         text = 'Sync failed';
         textMobile = 'Failed';
     } else if (_syncConflict) {
         dotClass = 'sync-dot-amber';
-        text = '\u26A0\uFE0F Conflict — tap to resolve';
+        text = '⚠️ Conflict — tap to resolve';
         textMobile = 'Conflict — tap';
-    } else if (pending > 0) {
+    } else if (visiblePending > 0) {
         dotClass = 'sync-dot-gray';
-        text = 'Pending sync (' + pending + ')';
-        textMobile = pending + ' pending';
+        text = 'Pending sync (' + visiblePending + ')';
+        textMobile = visiblePending + ' pending';
     } else if (appState.meta.lastSyncedAt) {
         dotClass = 'sync-dot-green';
         text = 'Synced ' + formatRelativeTime(appState.meta.lastSyncedAt);
@@ -1565,7 +1574,6 @@ function updateSyncBanner() {
     if (elMobile) elMobile.innerHTML = htmlMobile;
     if (elDesktop) elDesktop.innerHTML = htmlDesktop;
 }
-
 var _syncInProgress = false;
 var _syncLastFailed = false;
 var _syncConflict = false;
@@ -1850,14 +1858,14 @@ function validateSystemAccess() {
 
 function getSyncStateSnapshot() {
     var pending = (appState.syncQueue && appState.syncQueue.length) || 0;
+    var hasStructureDraft = !!((typeof _classesDirty !== 'undefined' && _classesDirty) || (typeof _locationsDirty !== 'undefined' && _locationsDirty));
     if (_syncInProgress) return { state: 'syncing', pending: pending };
     if (_syncLastFailed) return { state: 'failed', pending: pending };
     if (_syncConflict) return { state: 'conflict', pending: pending };
-    if (pending > 0) return { state: 'pending', pending: pending };
+    if (pending > 0 || hasStructureDraft) return { state: 'pending', pending: pending + (hasStructureDraft ? 1 : 0) };
     if (appState.meta.lastSyncedAt) return { state: 'synced', syncedAt: appState.meta.lastSyncedAt };
     return { state: 'local', pending: 0 };
 }
-
 function updateLoginSyncStatus() {
     var card = document.getElementById('loginSyncStatusCard');
     var text = document.getElementById('loginSyncStatusText');
@@ -5627,6 +5635,33 @@ function commitPendingStructureChanges() {
     }
     return changed;
 }
+function buildSyncSummary(beforeSnap, afterSnap) {
+    beforeSnap = beforeSnap || { segCount: 0, conCount: 0, subCount: 0, catCount: 0, coordCount: 0 };
+    afterSnap = afterSnap || { segCount: 0, conCount: 0, subCount: 0, catCount: 0, coordCount: 0 };
+    var itemDelta = (afterSnap.itemCount || 0) - (beforeSnap.itemCount || 0);
+    var segDelta = (afterSnap.segCount || 0) - (beforeSnap.segCount || 0);
+    var conDelta = (afterSnap.conCount || 0) - (beforeSnap.conCount || 0);
+    var subDelta = (afterSnap.subCount || 0) - (beforeSnap.subCount || 0);
+    var catDelta = (afterSnap.catCount || 0) - (beforeSnap.catCount || 0);
+    return {
+        itemCount: afterSnap.itemCount || 0,
+        segCount: afterSnap.segCount || 0,
+        conCount: afterSnap.conCount || 0,
+        subCount: afterSnap.subCount || 0,
+        catCount: afterSnap.catCount || 0,
+        itemDelta: itemDelta,
+        segDelta: segDelta,
+        conDelta: conDelta,
+        subDelta: subDelta,
+        catDelta: catDelta
+    };
+}
+
+function formatSyncSummary(summary) {
+    summary = summary || {};
+    return 'Synced — ' + (summary.itemCount || 0) + ' items, ' + (summary.segCount || 0) + ' segments, ' + (summary.conCount || 0) + ' containers, ' + (summary.subCount || 0) + ' sub-containers, ' + (summary.catCount || 0) + ' categories';
+}
+
 async function syncNow(opts) {
     opts = opts || {};
     var interactive = opts.interactive !== false;
@@ -5654,8 +5689,12 @@ async function syncNow(opts) {
     saveStateToLocalStorage();
     commitPendingStructureChanges();
 
+    var beforeSnap = collectStructureSnapshot(appState);
+
     try {
-        if (hasUnsyncedLocalChanges(appState)) {
+        var localDirty = hasUnsyncedLocalChanges(appState);
+
+        if (localDirty) {
             var baseRev = (appState.meta && appState.meta.lastServerRevision != null) ? appState.meta.lastServerRevision : 0;
             var pushedSnapshotVersion = (appState.meta && appState.meta.localSnapshotVersion) || 0;
             var pushResult = await triggerSynchronousCloudBackupPush(baseRev);
@@ -5680,11 +5719,19 @@ async function syncNow(opts) {
         }
 
         var cloud = await getCloudState(secret, endpoint);
-        if (cloud) replaceLocalStateWithCloud(cloud);
+        if (cloud) {
+            var cloudRev = (cloud.meta && cloud.meta.lastServerRevision != null) ? cloud.meta.lastServerRevision : 0;
+            var localRev = (appState.meta && appState.meta.lastServerRevision != null) ? appState.meta.lastServerRevision : 0;
+            if (localDirty || cloudRev >= localRev) {
+                replaceLocalStateWithCloud(cloud);
+            }
+        }
 
+        var afterSnap = collectStructureSnapshot(appState);
+        var summary = buildSyncSummary(beforeSnap, afterSnap);
         _syncLastFailed = false;
         _syncConflict = false;
-        if (interactive) showToast('Sync complete.', 'success');
+        if (interactive) showToast(formatSyncSummary(summary), 'success');
     } catch (e) {
         console.error('[syncNow] ' + (e && e.message ? e.message : e), e);
         _syncLastFailed = true;
@@ -5775,6 +5822,7 @@ function collectStructureSnapshot(state) {
         subCount: subCount,
         catCount: catPaths.length,
         coordCount: Object.keys(coords).length,
+        itemCount: (state.inventory || []).filter(function(it) { return !it.deletedAt; }).length,
         segPaths: segPaths,
         catPaths: catPaths,
         segKeysSorted: Object.keys(segs).sort().join(','),
