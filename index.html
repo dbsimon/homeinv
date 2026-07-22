@@ -26,6 +26,20 @@
 <body class="bg-slate-50 text-slate-800 min-h-screen pb-20 md:pb-0">
     <div id="syncToast" class="info"></div>
 
+    <!-- Cloud loading overlay (non-blocking) -->
+    <div id="cloudLoadingOverlay" class="fixed inset-0 bg-white/60 z-[9995] flex items-start justify-center pt-20 hidden" aria-busy="true">
+        <div class="bg-white rounded-xl shadow-lg border border-slate-200 px-5 py-3 flex items-center gap-3">
+            <span class="toast-spinner"></span>
+            <span class="text-sm font-medium text-slate-600">Loading cloud data...</span>
+        </div>
+    </div>
+
+    <!-- Offline banner -->
+    <div id="syncOfflineBanner" class="hidden fixed top-0 left-0 right-0 z-[9994] bg-amber-50 border-b border-amber-200 px-4 py-2 text-center">
+        <span class="text-xs font-medium text-amber-700 offline-detail">Showing last saved data</span>
+        <button onclick="bootSyncManager()" class="ml-2 text-xs font-semibold text-blue-600 hover:text-blue-800 underline">Retry</button>
+    </div>
+
     <div id="appModalOverlay" class="app-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="appModalMessage" onclick="closeAppModal()">
         <div class="app-modal" onclick="event.stopPropagation()">
             <p id="appModalMessage" class="text-sm text-slate-700 mb-4"></p>
@@ -116,7 +130,7 @@
             <input type="password" id="pagePasswordInput" onkeydown="if(event.key==='Enter')validateSystemAccess()" class="w-full border border-slate-300 rounded-lg px-3 py-2.5 mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-center tracking-widest" placeholder="••••">
             <p id="passwordError" class="text-red-500 text-xs font-medium mb-3 hidden" data-i18n="incorrectPwd">Incorrect Access Credentials.</p>
             <div id="loginSyncStatusCard" class="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-3 text-center">
-                <span id="loginSyncStatusText" class="text-[10px] font-medium text-slate-400">Checking cloud sync...</span>
+                <span id="loginSyncStatusText" class="text-[10px] font-medium text-slate-400">Checking cloud...</span>
             </div>
             <button onclick="validateSystemAccess()" class="btn btn-md btn-primary w-full shadow-sm" data-i18n="authorize">Authorize</button>
         </div>
@@ -131,7 +145,7 @@
                 <h1 class="text-sm font-bold tracking-tight text-slate-900 truncate" data-i18n="appTitle">Find My Item</h1>
             </div>
             <div class="flex items-center gap-1.5 flex-shrink-0">
-                <span id="syncBannerMobile" class="text-[10px] font-medium whitespace-nowrap cursor-pointer" onclick="syncNow()" title="Tap to sync"></span>
+                <span id="syncStatusPillMobile" class="sync-pill pill-synced text-[10px]" onclick="if(this.classList.contains('pill-pending')||this.classList.contains('pill-offline')||this.classList.contains('pill-conflict'))bootSyncManager()" title="Tap to sync">Synced</span>
                 <button onclick="toggleOverflowMenu(event, this)" class="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors flex-shrink-0" aria-label="Menu">
                     <svg class="h-5 w-5 text-slate-600" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
                 </button>
@@ -148,10 +162,10 @@
                 <h1 class="text-sm font-bold tracking-tight text-slate-900 truncate" data-i18n="appTitle">Find My Item</h1>
             </div>
             <div class="flex items-center gap-2 flex-shrink-0">
+                <span id="syncStatusPill" class="sync-pill pill-synced" onclick="if(this.classList.contains('pill-pending')||this.classList.contains('pill-offline')||this.classList.contains('pill-conflict'))bootSyncManager()" title="Tap to sync">Synced</span>
                 <select id="headerUserSelect" onchange="switchCurrentUser(this.value)" class="text-xs border border-slate-200 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none bg-slate-50 text-slate-700 font-medium max-w-[100px]"></select>
                 <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en')" class="text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md px-2 py-1.5 text-slate-600 font-medium transition-colors flex-shrink-0">中/EN</button>
-                <button id="btnHeaderSyncNow" onclick="syncNow()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1.5 text-blue-600 font-medium transition-colors flex-shrink-0"><span>↻</span></button>
-                <span id="syncBannerDesktop" class="text-[10px] text-slate-400 font-medium hidden lg:inline"></span>
+                <button id="btnHeaderSyncNow" onclick="bootSyncManager()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1.5 text-blue-600 font-medium transition-colors flex-shrink-0"><span>↻</span></button>
             </div>
         </div>
         <div class="max-w-7xl mx-auto px-2">
@@ -619,21 +633,30 @@
 
                 <div class="bg-white p-5 rounded-xl border border-red-200 bg-red-50/30 shadow-sm">
                     <div class="flex justify-between items-center cursor-pointer" onclick="document.getElementById('advancedOpsContent').classList.toggle('hidden')">
-                        <h2 class="text-sm font-bold uppercase tracking-wider text-red-500 mb-0">Advanced Operations</h2>
+                        <h2 class="text-sm font-bold uppercase tracking-wider text-red-500 mb-0">Admin Tools</h2>
                         <span id="advancedOpsToggle" class="text-red-400 text-sm font-bold transition-transform duration-200">&#x25BC;</span>
                     </div>
                     <div id="advancedOpsContent" class="hidden mt-3">
-                        <p class="text-xs text-slate-500 mb-3">Manual overrides for troubleshooting. Normally sync happens automatically.</p>
-                        <div class="flex flex-wrap gap-2 mb-3">
-                            <button onclick="triggerSynchronousCloudBackupPush()" class="btn btn-sm btn-primary shadow-sm">Upload now</button>
-                            <button onclick="triggerSynchronousCloudFetchPull()" class="btn btn-sm btn-dark-amber shadow-sm">Restore from cloud</button>
-                            <button onclick="verifyCloudSync()" class="btn btn-sm btn-secondary">Check sync status</button>
+                        <p class="text-xs text-slate-500 mb-3">Protected operations for troubleshooting. Use with caution.</p>
+                        <div class="p-3 border border-red-200 rounded-lg bg-white mb-3">
+                            <label class="block text-xs font-semibold text-slate-600 mb-1">Admin Re-auth</label>
+                            <div class="flex gap-2">
+                                <input type="password" id="adminReauthPassword" placeholder="Enter system password" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                                <button onclick="verifyAdminReauth()" class="btn btn-sm btn-primary">Verify</button>
+                            </div>
                         </div>
-                        <p class="text-[10px] text-red-400 mb-2">Destructive: permanently removes all local data.</p>
-                        <div class="flex flex-wrap gap-2">
-                            <button onclick="compactLocalStorage()" class="btn btn-sm btn-amber-outline">Compact Storage</button>
-                            <button onclick="diagnoseStorage(); showToast('Diagnostic printed to console (F12).', 'info')" class="btn btn-sm btn-ghost">Diagnose</button>
-                            <button onclick="purgeSystemStorageCache()" class="btn btn-sm btn-danger shadow-sm">Wipe Local Cache</button>
+                        <div id="adminAuthorizedActions" class="hidden">
+                            <p class="text-xs text-emerald-600 font-medium mb-3">Admin access granted. These operations affect all devices.</p>
+                            <div class="flex flex-wrap gap-2 mb-3">
+                                <button onclick="bootSyncManager({ forceCloudWins: true })" class="btn btn-sm btn-primary shadow-sm" title="Replace local state with cloud snapshot">Force Reload from Cloud</button>
+                                <button onclick="exportLocalDatabasesToExcel()" class="btn btn-sm btn-emerald-fill shadow-sm">Export Backup (.xlsx)</button>
+                            </div>
+                            <p class="text-[10px] text-red-400 mb-2">Destructive — permanently removes all local data on this device only.</p>
+                            <div class="flex flex-wrap gap-2">
+                                <button onclick="compactLocalStorage()" class="btn btn-sm btn-amber-outline">Compact Storage</button>
+                                <button onclick="diagnoseStorage(); showToast('Diagnostic printed to console (F12).', 'info')" class="btn btn-sm btn-ghost">Diagnose</button>
+                                <button onclick="clearThisDeviceCache()" class="btn btn-sm btn-danger shadow-sm">Clear This Device Cache</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -849,7 +872,7 @@
             </div>
         </div>
         <div class="mobile-only border-t border-slate-100 my-0.5"></div>
-        <button onclick="syncNow(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
+        <button onclick="bootSyncManager(); toggleOverflowMenu()" class="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors">
             <svg class="h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             Sync now
         </button>

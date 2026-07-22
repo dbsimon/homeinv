@@ -919,3 +919,49 @@ thead.sticky th {
         bottom: 24px !important;
     }
 }
+
+/* ===== Unified Sync Status Pill (5-state) ===== */
+.sync-pill {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 10px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+    border: 1px solid transparent;
+    user-select: none;
+}
+.pill-synced {
+    background: #ecfdf5;
+    color: #065f46;
+    border-color: #a7f3d0;
+    cursor: default;
+}
+.pill-syncing {
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-color: #bfdbfe;
+    animation: pillPulse 1s ease-in-out infinite;
+}
+.pill-pending {
+    background: #fffbeb;
+    color: #92400e;
+    border-color: #fcd34d;
+    animation: pillPulse 1.6s ease-in-out infinite;
+}
+.pill-offline {
+    background: #f1f5f9;
+    color: #475569;
+    border-color: #cbd5e1;
+}
+.pill-conflict {
+    background: #fef2f2;
+    color: #b91c1c;
+    border-color: #fecaca;
+}
+@keyframes pillPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
