@@ -1186,7 +1186,6 @@ let aiFilteredItemIds = null;
 let editingNode = null; // { type: 'segment'|'container'|'subContainer', segment, container?, subContainer?, oldName }
 let _mapDirty = false;
 let _classesDirty = false;
-let _locationsDirty = false;
 let _formDirty = false;
 var _mapZoom = 1;
 var _mapPanX = 0;
@@ -1377,7 +1376,6 @@ function buildPersistedStateSnapshot(state) {
     snap.reminderLog = deepCloneJsonSafe(state.reminderLog || {});
     snap.language = state.language || 'en';
     snap.spatialBackgroundImage = state.spatialBackgroundImage || null;
-    snap.syncConflicts = deepCloneJsonSafe(state.syncConflicts || []);
     return snap;
 }
 
@@ -1387,65 +1385,6 @@ function buildCloudSyncPayload(state) {
     return payload;
 }
 
-function replaceLocalStateWithCloud(cloud) {
-    if (!cloud) return;
-    var localDeviceId = (appState && appState.meta && appState.meta.deviceId) || getDeviceId();
-    var currentLocalVersion = (appState && appState.meta && appState.meta.localSnapshotVersion) || 0;
-    var currentSelectedCategoryNodePath = appState && appState.selectedCategoryNodePath ? deepCloneJsonSafe(appState.selectedCategoryNodePath) : null;
-    var currentActiveMappingNode = appState && appState.activeMappingNode ? deepCloneJsonSafe(appState.activeMappingNode) : null;
-    var currentPendingQueue = deepCloneJsonSafe((appState && appState.syncQueue) || []);
-    var snapshot = buildPersistedStateSnapshot(cloud);
-    snapshot = migrateLegacyState(snapshot);
-    snapshot.meta = snapshot.meta || {};
-    snapshot.meta.deviceId = localDeviceId;
-    snapshot.meta.lastSyncedAt = new Date().toISOString();
-    snapshot.meta.lastServerRevision = (cloud.meta && (cloud.meta.lastServerRevision != null)) ? cloud.meta.lastServerRevision : (snapshot.meta.lastServerRevision || 0);
-    snapshot.meta.lastPulledServerSeq = (cloud.meta && (cloud.meta.latestServerSeq != null)) ? cloud.meta.latestServerSeq : (cloud.meta && cloud.meta.lastPulledServerSeq) || snapshot.meta.lastPulledServerSeq || 0;
-    snapshot.meta.structureVersion = (cloud.meta && cloud.meta.structureVersion) || snapshot.meta.structureVersion || 0;
-    snapshot.meta.categoryVersion = (cloud.meta && cloud.meta.categoryVersion) || snapshot.meta.categoryVersion || 0;
-    snapshot.meta.localSnapshotVersion = Math.max(snapshot.meta.localSnapshotVersion || 0, currentLocalVersion);
-    snapshot.meta.lastPushedSnapshotVersion = snapshot.meta.localSnapshotVersion;
-    snapshot.syncQueue = currentPendingQueue;
-    snapshot.selectedCategoryNodePath = currentSelectedCategoryNodePath;
-    snapshot.activeMappingNode = currentActiveMappingNode;
-    appState = snapshot;
-    normalizeAllItemImageFields();
-    if (typeof _formDirty !== 'undefined') _formDirty = false;
-    saveStateToLocalStorage();
-    syncUIComponents();
-    updateSyncStatusBadge();
-    updateSyncBanner();
-    updateLoginSyncStatus();
-}
-async function startupLoadFromCloud() {
-    var endpoint = localStorage.getItem('sys_gas_url');
-    var secret = localStorage.getItem('sys_api_pwd');
-    if (!endpoint) return;
-    if (_syncInProgress) return;
-
-    _syncInProgress = true;
-    _syncLastFailed = false;
-    _syncConflict = false;
-    updateSyncStatusBadge();
-
-    try {
-        var cloud = await getCloudState(secret, endpoint);
-        if (cloud) {
-            replaceLocalStateWithCloud(cloud);
-            triggerReminderCheckThrottled();
-        }
-        _syncLastFailed = false;
-        _syncConflict = false;
-    } catch (e) {
-        console.error('[startupLoadFromCloud] ' + (e && e.message ? e.message : e), e);
-        _syncLastFailed = true;
-    } finally {
-        _syncInProgress = false;
-        updateSyncStatusBadge();
-        updateSyncBanner();
-        updateLoginSyncStatus();
-    }
-}
 function hasUnsyncedSnapshot(state) {
     if (!state || !state.meta) return false;
     var localVer = state.meta.localSnapshotVersion || 0;
@@ -1453,6 +1392,10 @@ function hasUnsyncedSnapshot(state) {
     if (localVer > pushedVer) return true;
     var hasQueue = (state.syncQueue && state.syncQueue.length > 0);
     return hasQueue;
+}
+
+async function startupLoadFromCloud() {
+    return startupVersionCheckAndSync();
 }
 
 // ===== Unified Mutation Entry Point =====
@@ -1471,6 +1414,107 @@ function hasUnsyncedLocalChanges(state) {
     return hasUnsyncedSnapshot(state);
 }
 
+let _startupSyncComplete = false;
+let _startupSyncAuthorized = false;
+let _startupSyncStarted = false;
+
+function tryReleasePasswordOverlay() {
+    if (!_startupSyncAuthorized || !_startupSyncComplete) return false;
+    const overlay = document.getElementById('passwordOverlay');
+    if (overlay) overlay.style.display = 'none';
+    return true;
+}
+
+function getCloudRevisionNumber(cloud) {
+    if (!cloud || !cloud.meta) return 0;
+    if (cloud.meta.latestServerSeq != null) return cloud.meta.latestServerSeq;
+    if (cloud.meta.lastServerRevision != null) return cloud.meta.lastServerRevision;
+    if (cloud.meta.lastPulledServerSeq != null) return cloud.meta.lastPulledServerSeq;
+    return 0;
+}
+
+function applyCloudStateSafely(cloud) {
+    if (!cloud) return { merged: false, dirtyAfter: false, cloudRevision: 0 };
+    const hadUnsynced = hasUnsyncedLocalChanges(appState);
+    if (hadUnsynced && typeof mergeCloudPayloadToMemory === 'function' && typeof applyMergedState === 'function') {
+        const merged = mergeCloudPayloadToMemory(cloud);
+        if (merged) applyMergedState(merged);
+        else replaceLocalStateWithCloud(cloud);
+    } else {
+        replaceLocalStateWithCloud(cloud);
+    }
+    return {
+        merged: hadUnsynced,
+        dirtyAfter: hasUnsyncedLocalChanges(appState),
+        cloudRevision: getCloudRevisionNumber(cloud)
+    };
+}
+
+async function syncCloudStateSafely(options) {
+    options = options || {};
+    const endpoint = localStorage.getItem('sys_gas_url');
+    const secret = localStorage.getItem('sys_api_pwd');
+    if (!endpoint || !secret) return { skipped: true, reason: 'missing-endpoint' };
+    if (_syncInProgress && !options.allowWhileSyncing) return { skipped: true, reason: 'busy' };
+
+    _syncInProgress = true;
+    if (!options.keepFailureState) _syncLastFailed = false;
+    if (!options.keepConflictState) _syncConflict = false;
+    updateSyncStatusBadge();
+
+    const result = { skipped: false, merged: false, pushed: false, cloudRevision: 0 };
+    try {
+        const cloud = await getCloudState(secret, endpoint);
+        if (!cloud) return result;
+
+        const localRev = (appState.meta && appState.meta.lastServerRevision) || 0;
+        const cloudRev = getCloudRevisionNumber(cloud);
+        result.cloudRevision = cloudRev;
+
+        const shouldApply = (cloudRev > localRev) || hasUnsyncedLocalChanges(appState) || !!options.forceApply;
+        if (!shouldApply) return result;
+
+        const applyResult = applyCloudStateSafely(cloud);
+        result.merged = !!applyResult.merged;
+        _syncConflict = !!(appState.syncConflicts && appState.syncConflicts.length);
+        _syncLastFailed = false;
+        try { triggerReminderCheckThrottled(); } catch (e) {}
+
+        if ((options.pushAfterMerge !== false) && applyResult.merged && applyResult.dirtyAfter) {
+            _syncInProgress = false;
+            updateSyncStatusBadge();
+            await syncNow({ silent: true, suppressToast: true, auto: true, startup: !!options.startup });
+            result.pushed = true;
+        }
+        return result;
+    } catch (e) {
+        _syncLastFailed = true;
+        throw e;
+    } finally {
+        _syncInProgress = false;
+        updateSyncStatusBadge();
+        updateSyncBanner();
+        updateLoginSyncStatus();
+    }
+}
+
+async function startupVersionCheckAndSync() {
+    if (_startupSyncStarted) return;
+    _startupSyncStarted = true;
+    _startupSyncComplete = false;
+    updateLoginSyncStatus();
+    try {
+        await syncCloudStateSafely({ startup: true, pushAfterMerge: true });
+    } catch (e) {
+        console.error('[startupVersionCheckAndSync]', e && e.message ? e.message : e, e);
+    } finally {
+        _startupSyncComplete = true;
+        updateLoginSyncStatus();
+        tryReleasePasswordOverlay();
+    }
+}
+
+
 function stampNow(obj) {
     if (!obj || typeof obj !== 'object') return obj;
     var now = new Date().toISOString();
@@ -1479,162 +1523,37 @@ function stampNow(obj) {
     return obj;
 }
 
-
-function getOpBaseVersionForAction(actionType) {
-    switch (actionType) {
-        case 'ADD_SEGMENT':
-        case 'RENAME_SEGMENT':
-        case 'DELETE_SEGMENT':
-        case 'ADD_CONTAINER':
-        case 'RENAME_CONTAINER':
-        case 'DELETE_CONTAINER':
-        case 'ADD_SUBCONTAINER':
-        case 'RENAME_SUBCONTAINER':
-        case 'DELETE_SUBCONTAINER':
-            return (appState.meta && appState.meta.structureVersion) || 0;
-        case 'ADD_CATEGORY':
-        case 'DELETE_CATEGORY':
-        case 'SAVE_CLASSIFICATION':
-            return (appState.meta && appState.meta.categoryVersion) || 0;
-        default:
-            return 0;
-    }
-}
-
-function captureSyncOperationPayload(actionType, metadata) {
-    var payload = { meta: deepCloneJsonSafe(metadata || {}) };
-    switch (actionType) {
-        case 'ADD_SEGMENT':
-        case 'RENAME_SEGMENT':
-        case 'DELETE_SEGMENT':
-        case 'ADD_CONTAINER':
-        case 'RENAME_CONTAINER':
-        case 'DELETE_CONTAINER':
-        case 'ADD_SUBCONTAINER':
-        case 'RENAME_SUBCONTAINER':
-        case 'DELETE_SUBCONTAINER':
-            payload.docType = 'locations';
-            payload.baseDocVersion = (appState.meta && appState.meta.structureVersion) || 0;
-            payload.structures = {
-                segments: deepCloneJsonSafe(appState.segments || {}),
-                coordinates: deepCloneJsonSafe(appState.coordinates || {})
-            };
-            break;
-        case 'ADD_CATEGORY':
-        case 'DELETE_CATEGORY':
-        case 'SAVE_CLASSIFICATION':
-            payload.docType = 'categories';
-            payload.baseDocVersion = (appState.meta && appState.meta.categoryVersion) || 0;
-            payload.categories = deepCloneJsonSafe(appState.categories || {});
-            break;
-        default:
-            payload.docType = 'inventory';
-            payload.inventory = deepCloneJsonSafe(appState.inventory || []);
-            payload.users = deepCloneJsonSafe(appState.users || ['Default']);
-            payload.userEmails = deepCloneJsonSafe(appState.userEmails || {});
-            payload.reminderLog = deepCloneJsonSafe(appState.reminderLog || {});
-            break;
-    }
-    return payload;
-}
-
-function mergeRemoteInventoryPayload(payload) {
-    if (!payload) return;
-    var localMap = {};
-    (appState.inventory || []).forEach(function(item) { localMap[item.id] = item; });
-    var remoteMap = {};
-    ((payload.inventory || [])).forEach(function(item) { remoteMap[item.id] = item; });
-    var ids = Array.from(new Set(Object.keys(localMap).concat(Object.keys(remoteMap))));
-    appState.inventory = ids.map(function(id) {
-        return resolveItemConflict(localMap[id], remoteMap[id]).item;
-    });
-    appState.inventory.forEach(function(item) { normalizeImageFields(item); });
-    appState.users = Array.from(new Set(['Default'].concat(appState.users || []).concat(payload.users || [])));
-    appState.userEmails = Object.assign({}, appState.userEmails || {}, payload.userEmails || {});
-    appState.reminderLog = Object.assign({}, appState.reminderLog || {}, payload.reminderLog || {});
-}
-
-function applyRemoteLogOperations(ops, ackedOpIds) {
-    if (!ops || !ops.length) return { applied: 0, conflicts: 0 };
-    var ackMap = {};
-    (ackedOpIds || []).forEach(function(id) { ackMap[id] = true; });
-    var selfId = (appState.meta && appState.meta.deviceId) || getDeviceId();
-    var stats = { applied: 0, conflicts: 0 };
-    ops.sort(function(a, b) { return (a.serverSeq || 0) - (b.serverSeq || 0); }).forEach(function(op) {
-        if (!op) return;
-        if (ackMap[op.opId]) {
-            appState.meta.lastPulledServerSeq = Math.max((appState.meta.lastPulledServerSeq || 0), op.serverSeq || 0);
-            return;
-        }
-        if (op.deviceId === selfId) {
-            appState.meta.lastPulledServerSeq = Math.max((appState.meta.lastPulledServerSeq || 0), op.serverSeq || 0);
-            return;
-        }
-        if (op.conflict) {
-            appState.syncConflicts = appState.syncConflicts || [];
-            appState.syncConflicts.push(op);
-            stats.conflicts += 1;
-            appState.meta.lastPulledServerSeq = Math.max((appState.meta.lastPulledServerSeq || 0), op.serverSeq || 0);
-            return;
-        }
-        var payload = op.payload || {};
-        if (payload.docType === 'locations' && payload.structures) {
-            appState.segments = deepCloneJsonSafe(payload.structures.segments || {});
-            appState.coordinates = deepCloneJsonSafe(payload.structures.coordinates || {});
-            appState.meta.structureVersion = op.serverSeq || appState.meta.structureVersion || 0;
-        } else if (payload.docType === 'categories') {
-            appState.categories = deepCloneJsonSafe(payload.categories || {});
-            appState.meta.categoryVersion = op.serverSeq || appState.meta.categoryVersion || 0;
-        } else {
-            mergeRemoteInventoryPayload(payload);
-        }
-        appState.meta.lastPulledServerSeq = Math.max((appState.meta.lastPulledServerSeq || 0), op.serverSeq || 0);
-        appState.meta.lastServerRevision = Math.max((appState.meta.lastServerRevision || 0), op.serverSeq || 0);
-        stats.applied += 1;
-    });
-    return stats;
-}
-
 function enqueueSyncAction(actionType, metadata) {
     if (!appState.syncQueue) appState.syncQueue = [];
-    appState.meta = appState.meta || {};
-    appState.meta.clientClock = (appState.meta.clientClock || 0) + 1;
-    var op = {
-        opId: 'op_' + (appState.meta.deviceId || getDeviceId()) + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 6),
-        deviceId: appState.meta.deviceId || getDeviceId(),
-        clientClock: appState.meta.clientClock,
+    appState.syncQueue.push({
+        op: actionType,
+        meta: metadata || {},
         timestamp: new Date().toISOString(),
-        type: actionType,
-        meta: deepCloneJsonSafe(metadata || {}),
-        baseRevision: (appState.meta.lastServerRevision || 0),
-        baseDocVersion: getOpBaseVersionForAction(actionType),
-        payload: captureSyncOperationPayload(actionType, metadata)
-    };
-    appState.syncQueue.push(op);
+        id: 'q_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 5)
+    });
 }
+
 function updateSyncStatusBadge() {
     var badge = document.getElementById('syncStatusBadge');
     if (!badge) return;
     var pending = (appState.syncQueue && appState.syncQueue.length) || 0;
-    var hasStructureDraft = !!((typeof _classesDirty !== 'undefined' && _classesDirty) || (typeof _locationsDirty !== 'undefined' && _locationsDirty));
-    var visiblePending = pending + (hasStructureDraft ? 1 : 0);
     if (_syncInProgress) {
-        badge.innerText = '🔄 Syncing…';
+        badge.innerText = '\u{1F504} Syncing\u2026';
         badge.className = 'text-[10px] text-blue-600 font-medium ml-2';
     } else if (_syncLastFailed) {
-        badge.innerText = '❌ Sync failed';
+        badge.innerText = '\u274C Sync failed';
         badge.className = 'text-[10px] text-red-500 font-medium ml-2';
     } else if (_syncConflict) {
-        badge.innerText = '⚠️ Conflict detected';
+        badge.innerText = '\u26A0\uFE0F Conflict detected';
         badge.className = 'text-[10px] text-amber-600 font-medium ml-2';
-    } else if (visiblePending > 0) {
-        badge.innerText = '📤 Pending sync (' + visiblePending + ')';
+    } else if (pending > 0) {
+        badge.innerText = '\u{1F4E4} Pending sync (' + pending + ')';
         badge.className = 'text-[10px] text-slate-500 font-medium ml-2';
     } else if (appState.meta.lastSyncedAt) {
-        badge.innerText = '✅ Synced ' + formatRelativeTime(appState.meta.lastSyncedAt);
+        badge.innerText = '\u2705 Synced ' + formatRelativeTime(appState.meta.lastSyncedAt);
         badge.className = 'text-[10px] text-emerald-600 font-medium ml-2';
     } else {
-        badge.innerText = '⚪ Saved locally';
+        badge.innerText = '\u26AA Saved locally';
         badge.className = 'text-[10px] text-slate-400 font-medium ml-2';
     }
     updateSyncBanner();
@@ -1642,6 +1561,7 @@ function updateSyncStatusBadge() {
     updateLoginSyncStatus();
     updateSyncCallToActionState();
 }
+
 function updateSyncAlertRow() {
     var row = document.getElementById('syncAlertRow');
     if (!row) return;
@@ -1665,25 +1585,23 @@ function updateSyncAlertRow() {
 
 function updateSyncBanner() {
     var pending = (appState.syncQueue && appState.syncQueue.length) || 0;
-    var hasStructureDraft = !!((typeof _classesDirty !== 'undefined' && _classesDirty) || (typeof _locationsDirty !== 'undefined' && _locationsDirty));
-    var visiblePending = pending + (hasStructureDraft ? 1 : 0);
     var dotClass, text, textMobile;
     if (_syncInProgress) {
         dotClass = 'sync-dot-blue';
-        text = 'Syncing…';
-        textMobile = 'Syncing…';
+        text = 'Syncing\u2026';
+        textMobile = 'Syncing\u2026';
     } else if (_syncLastFailed) {
         dotClass = 'sync-dot-red';
         text = 'Sync failed';
         textMobile = 'Failed';
     } else if (_syncConflict) {
         dotClass = 'sync-dot-amber';
-        text = '⚠️ Conflict — tap to resolve';
+        text = '\u26A0\uFE0F Conflict — tap to resolve';
         textMobile = 'Conflict — tap';
-    } else if (visiblePending > 0) {
+    } else if (pending > 0) {
         dotClass = 'sync-dot-gray';
-        text = 'Pending sync (' + visiblePending + ')';
-        textMobile = visiblePending + ' pending';
+        text = 'Pending sync (' + pending + ')';
+        textMobile = pending + ' pending';
     } else if (appState.meta.lastSyncedAt) {
         dotClass = 'sync-dot-green';
         text = 'Synced ' + formatRelativeTime(appState.meta.lastSyncedAt);
@@ -1700,6 +1618,7 @@ function updateSyncBanner() {
     if (elMobile) elMobile.innerHTML = htmlMobile;
     if (elDesktop) elDesktop.innerHTML = htmlDesktop;
 }
+
 var _syncInProgress = false;
 var _syncLastFailed = false;
 var _syncConflict = false;
@@ -1872,7 +1791,7 @@ window.addEventListener('DOMContentLoaded', () => {
         switchTab('tab-spatial');
         clearActiveNode();
         installIOSZoomFix();
-        startupLoadFromCloud();
+        autoPullFromCloudIfPossible();
         installFormDirtyListener();
         installFocusTraps();
         installMapDragListeners();
@@ -1968,14 +1887,15 @@ function validateSystemAccess() {
     try {
         const input = document.getElementById('pagePasswordInput').value.trim();
         const activePhrase = localStorage.getItem('sys_page_pwd');
-
         if (input === 'RESET' || input === activePhrase) {
-            const overlay = document.getElementById('passwordOverlay');
-            overlay.style.display = 'none';
+            _startupSyncAuthorized = true;
+            const errElement = document.getElementById('passwordError');
+            if (errElement) errElement.classList.add('hidden');
             updateLoginSyncStatus();
+            tryReleasePasswordOverlay();
         } else {
             const errElement = document.getElementById('passwordError');
-            errElement.classList.remove('hidden');
+            if (errElement) errElement.classList.remove('hidden');
         }
     } catch (e) {
         showToast('Login error: ' + e.message, 'error');
@@ -1984,27 +1904,32 @@ function validateSystemAccess() {
 
 function getSyncStateSnapshot() {
     var pending = (appState.syncQueue && appState.syncQueue.length) || 0;
-    var hasStructureDraft = !!((typeof _classesDirty !== 'undefined' && _classesDirty) || (typeof _locationsDirty !== 'undefined' && _locationsDirty));
     if (_syncInProgress) return { state: 'syncing', pending: pending };
     if (_syncLastFailed) return { state: 'failed', pending: pending };
     if (_syncConflict) return { state: 'conflict', pending: pending };
-    if (pending > 0 || hasStructureDraft) return { state: 'pending', pending: pending + (hasStructureDraft ? 1 : 0) };
+    if (pending > 0) return { state: 'pending', pending: pending };
     if (appState.meta.lastSyncedAt) return { state: 'synced', syncedAt: appState.meta.lastSyncedAt };
     return { state: 'local', pending: 0 };
 }
+
 function updateLoginSyncStatus() {
     var card = document.getElementById('loginSyncStatusCard');
     var text = document.getElementById('loginSyncStatusText');
     if (!card || !text) return;
-
+    if (_startupSyncStarted && !_startupSyncComplete) {
+        card.className = 'bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3 text-center';
+        card.onclick = null;
+        text.innerText = 'Checking cloud...';
+        return;
+    }
     var snap = getSyncStateSnapshot();
     var msg = '';
     card.className = 'bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-3 text-center';
-
+    card.onclick = null;
     switch (snap.state) {
         case 'syncing':
             card.className = 'bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3 text-center';
-            msg = 'Syncing\u2026';
+            msg = 'Syncing…';
             break;
         case 'failed':
             card.className = 'bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3 text-center';
@@ -2012,7 +1937,7 @@ function updateLoginSyncStatus() {
             break;
         case 'conflict':
             card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center cursor-pointer';
-            msg = 'Conflict \u2014 tap Sync to resolve';
+            msg = 'Conflict — tap Sync to resolve';
             card.onclick = function() { syncNow(); };
             break;
         case 'pending':
@@ -3112,9 +3037,7 @@ function addSegmentNode() {
                 appState.activeMappingNode.segment = sName;
             }
             mutateState('RENAME_SEGMENT', { oldName: oldName, newName: sName });
-            markLocationsDirty();
-            saveStateToLocalStorage();
-            updateSyncStatusBadge();
+            triggerBackgroundSync();
             syncUIComponents();
             var count = 0;
             appState.inventory.forEach(function(it) { if (it.segment === sName) count++; });
@@ -3129,9 +3052,7 @@ function addSegmentNode() {
     if (!appState.segments[sName]) {
         appState.segments[sName] = {};
         mutateState('ADD_SEGMENT', { entity: 'segment', action: 'create', path: sName, segment: sName });
-        markLocationsDirty();
-        saveStateToLocalStorage();
-        updateSyncStatusBadge();
+        triggerBackgroundSync();
         syncUIComponents();
         document.getElementById('newSegmentName').value = '';
     }
@@ -3189,9 +3110,7 @@ function addContainerNode() {
             document.getElementById('activeMappingContainerNode').innerText = newSeg + ' > ' + newName;
         }
         mutateState('RENAME_CONTAINER', { oldSeg: oldSeg, oldName: oldName, newSeg: newSeg, newName: newName });
-        markLocationsDirty();
-        saveStateToLocalStorage();
-        updateSyncStatusBadge();
+        triggerBackgroundSync();
         syncUIComponents();
         showToast('Updated: ' + oldSeg + ' > ' + oldName + ' → ' + newSeg + ' > ' + newName, 'success');
         clearEditingState();
@@ -3377,9 +3296,7 @@ async function deleteSegmentNode(seg) {
         document.getElementById('btnClearActiveNode').classList.add('hidden');
     }
     mutateState('DELETE_SEGMENT', { name: seg });
-    markLocationsDirty();
-    saveStateToLocalStorage();
-    updateSyncStatusBadge();
+    triggerBackgroundSync();
     syncUIComponents();
 }
 
@@ -3398,9 +3315,7 @@ async function deleteContainerNode(seg, con) {
         document.getElementById('btnClearActiveNode').classList.add('hidden');
     }
     mutateState('DELETE_CONTAINER', { segment: seg, name: con });
-    markLocationsDirty();
-    saveStateToLocalStorage();
-    updateSyncStatusBadge();
+    triggerBackgroundSync();
     syncUIComponents();
 }
 
@@ -3496,12 +3411,8 @@ function markClassesDirty() {
     }
 }
 
-
-function markLocationsDirty() {
-    _locationsDirty = true;
-}
-
 function saveClassification() {
+    mutateState('SAVE_CLASSIFICATION', {});
     _classesDirty = false;
     var btn = document.getElementById('btnSaveClassification');
     if (btn) {
@@ -3510,9 +3421,9 @@ function saveClassification() {
         var label = btn.querySelector('.btn-label');
         if (label) label.innerText = 'Save';
     }
-    saveStateToLocalStorage();
-    updateSyncStatusBadge();
+    triggerSynchronousCloudBackupPush();
 }
+
 function selectNodeForAssets(seg, con, sub) {
     appState.activeMappingNode = { segment: seg, container: con || null, subContainer: sub || null };
     var label = seg;
@@ -3851,8 +3762,7 @@ function createClassificationNode() {
         targetParentMap[nodeName] = {};
         markClassesDirty();
         mutateState('ADD_CATEGORY', { entity: 'category', action: 'create', name: nodeName });
-        saveStateToLocalStorage();
-        updateSyncStatusBadge();
+        triggerBackgroundSync();
         syncUIComponents();
         document.getElementById('newCategoryNodeName').value = '';
         resetCategorySelectionContext();
@@ -3877,8 +3787,7 @@ async function deleteSelectedCategoryNode() {
         delete targetParentMap[targetNodeKey];
         markClassesDirty();
         mutateState('DELETE_CATEGORY', { name: targetNodeKey });
-        saveStateToLocalStorage();
-        updateSyncStatusBadge();
+        triggerBackgroundSync();
         syncUIComponents();
         resetCategorySelectionContext();
     }
@@ -5397,43 +5306,79 @@ function commitCloudSystemCredentials() {
 async function triggerSynchronousCloudBackupPush(baseRevision) {
     const endpoint = localStorage.getItem('sys_gas_url');
     const secret = localStorage.getItem('sys_api_pwd');
-    if (!endpoint) { return { success: false, error: 'No endpoint' }; }
+    if(!endpoint) { return { success: false, error: 'No endpoint' }; }
+
+    var segKeysBefore = Object.keys(appState.segments || {}).length;
+    console.log('[push] start baseRev=' + (baseRevision !== undefined ? baseRevision : 'none') +
+        ' segs=' + segKeysBefore + ' queue=' + (appState.syncQueue || []).length);
+
+    // Guard: background pushes (no baseRevision) must not run during active syncNow.
+    if (baseRevision === undefined && _syncInProgress) {
+        console.log('[push] skipped – sync already in progress');
+        return { success: false, error: 'sync in progress' };
+    }
+
     try {
-        var opsToSend = deepCloneJsonSafe(appState.syncQueue || []);
+        var opsToSend = (appState.syncQueue || []).slice();
+        var stateJson = buildSyncPayload();
+
         var params = new URLSearchParams();
         params.append('token', secret);
         params.append('action', 'SYNC_PUSH');
+        params.append('payload', stateJson);
         params.append('operations', JSON.stringify(opsToSend));
-        params.append('clientRevision', String((appState.meta && appState.meta.lastServerRevision) || 0));
-        params.append('lastPulledServerSeq', String((appState.meta && appState.meta.lastPulledServerSeq) || 0));
-        params.append('deviceId', (appState.meta && appState.meta.deviceId) || getDeviceId());
-        params.append('bootstrapPayload', JSON.stringify(buildCloudSyncPayload(appState)));
-        if (baseRevision !== undefined && baseRevision !== null) params.append('baseRevision', String(baseRevision));
-        return fetch(endpoint, { method: 'POST', body: params })
-            .then(function(resp) { return resp.text(); })
-            .then(function(text) {
-                var result;
-                try { result = JSON.parse(text); } catch (e) { result = null; }
-                if (result && result.success) return result;
-                return { success: false, error: (result && result.error) || 'unknown', conflict: !!(result && result.conflict), conflicts: (result && result.conflicts) || [] };
-            })
-            .catch(function(e) { return { success: false, error: e.message }; });
+        params.append('clientRevision', appState.meta.lastServerRevision || '');
+        if (baseRevision !== undefined && baseRevision !== null) {
+            params.append('baseRevision', String(baseRevision));
+        }
+
+        var resp = await fetch(endpoint, {
+            method: 'POST',
+            body: params
+        });
+        var text = await resp.text();
+        var result;
+        try { result = JSON.parse(text); } catch(e) { result = null; }
+
+        if (result && result.success) {
+            appState.meta.lastSyncedAt = new Date().toISOString();
+            appState.meta.lastServerRevision = result.revision || null;
+            appState.syncQueue = [];
+            _syncLastFailed = false;
+            _syncConflict = false;
+            updateSyncStatusBadge();
+            return { success: true, revision: result.revision };
+        } else if (result && result.errorType === 'revision_mismatch') {
+            return {
+                success: false,
+                conflict: true,
+                currentRevision: result.currentRevision,
+                error: result.message || 'Revision mismatch'
+            };
+        } else {
+            _syncLastFailed = true;
+            updateSyncStatusBadge();
+            return { success: false, error: (result && result.error) || 'unknown' };
+        }
     } catch (e) {
+        _syncLastFailed = true;
+        updateSyncStatusBadge();
         return { success: false, error: e.message };
     }
 }
+
 async function triggerBackgroundSync() {
     var endpoint = localStorage.getItem('sys_gas_url');
     if (!endpoint) return;
-    setTimeout(function() {
+    setTimeout(async function() {
         if (_syncInProgress) return;
-        syncNow({ interactive: false }).catch(function() {});
-    }, 300);
-}
-function buildSyncPayload() {
-    return JSON.stringify(buildCloudSyncPayload(appState));
+        await triggerSynchronousCloudBackupPush();
+    }, 500);
 }
 
+function buildSyncPayload() {
+    return JSON.stringify(appState);
+}
 
 function getSyncPayloadSize() {
     return buildSyncPayload().length;
@@ -5699,72 +5644,22 @@ function hideToast() {
     if (toast) toast.classList.remove('show');
 }
 
-function commitPendingStructureChanges() {
-    var changed = false;
-
-    if (typeof _classesDirty !== 'undefined' && _classesDirty) {
-        _classesDirty = false;
-        var btn = document.getElementById('btnSaveClassification');
-        if (btn) {
-            btn.classList.remove('btn-warning');
-            btn.classList.add('btn-secondary');
-            var label = btn.querySelector('.btn-label');
-            if (label) label.innerText = 'Save';
-        }
-        changed = true;
-    }
-
-    if (typeof _locationsDirty !== 'undefined' && _locationsDirty) {
-        _locationsDirty = false;
-        changed = true;
-    }
-
-    if (changed) {
-        saveStateToLocalStorage();
-        updateSyncStatusBadge();
-    }
-    return changed;
-}
-function buildSyncSummary(beforeSnap, afterSnap) {
-    beforeSnap = beforeSnap || { segCount: 0, conCount: 0, subCount: 0, catCount: 0, coordCount: 0 };
-    afterSnap = afterSnap || { segCount: 0, conCount: 0, subCount: 0, catCount: 0, coordCount: 0 };
-    var itemDelta = (afterSnap.itemCount || 0) - (beforeSnap.itemCount || 0);
-    var segDelta = (afterSnap.segCount || 0) - (beforeSnap.segCount || 0);
-    var conDelta = (afterSnap.conCount || 0) - (beforeSnap.conCount || 0);
-    var subDelta = (afterSnap.subCount || 0) - (beforeSnap.subCount || 0);
-    var catDelta = (afterSnap.catCount || 0) - (beforeSnap.catCount || 0);
-    return {
-        itemCount: afterSnap.itemCount || 0,
-        segCount: afterSnap.segCount || 0,
-        conCount: afterSnap.conCount || 0,
-        subCount: afterSnap.subCount || 0,
-        catCount: afterSnap.catCount || 0,
-        itemDelta: itemDelta,
-        segDelta: segDelta,
-        conDelta: conDelta,
-        subDelta: subDelta,
-        catDelta: catDelta
-    };
-}
-
-function formatSyncSummary(summary) {
-    summary = summary || {};
-    return 'Synced — ' + (summary.itemCount || 0) + ' items, ' + (summary.segCount || 0) + ' segments, ' + (summary.conCount || 0) + ' containers, ' + (summary.subCount || 0) + ' sub-containers, ' + (summary.catCount || 0) + ' categories';
-}
-
 async function syncNow(opts) {
     opts = opts || {};
     var interactive = opts.interactive !== false;
+
     var btns = document.querySelectorAll('.btn-sync-refresh');
     btns.forEach(function(b) { b.classList.add('btn-syncing'); });
-    if (interactive) showToast('Syncing…', 'info');
+    if (interactive) showToast('Syncing\u2026', 'info');
 
     var endpoint = localStorage.getItem('sys_gas_url');
+    var secret = localStorage.getItem('sys_api_pwd');
     if (!endpoint) {
         if (interactive) showToast(t('missingEndpointShort'), 'error');
         btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
         return;
     }
+
     if (_syncInProgress) {
         if (interactive) showToast('Sync already in progress', 'info');
         btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
@@ -5772,57 +5667,194 @@ async function syncNow(opts) {
     }
 
     _syncInProgress = true;
-    _syncLastFailed = false;
-    _syncConflict = false;
     updateSyncStatusBadge();
-    commitPendingStructureChanges();
+
+    // Snapshot local state BEFORE any async work.
+    var preSyncSnap = collectStructureSnapshot(appState);
+    var isDirty = hasUnsyncedLocalChanges(appState);
+    var localVer = appState.meta.localSnapshotVersion || 0;
+    var pendingQueue = (appState.syncQueue || []).slice();
+    logStructureSnapshot('preSync', preSyncSnap);
+    updateSyncDebugOverlay('preSync', preSyncSnap);
+    // Verify no shared references between snapshot and live state
+    var testSnap = buildPersistedStateSnapshot(appState);
+    console.log('[syncNow] snap.segments === appState.segments: ' + (testSnap.segments === appState.segments));
+    console.log('[syncNow] snap.coordinates === appState.coordinates: ' + (testSnap.coordinates === appState.coordinates));
+    console.log('[syncNow] snap.categories === appState.categories: ' + (testSnap.categories === appState.categories));
+    // Persist now so any concurrent background push sees the latest state
     saveStateToLocalStorage();
 
-    var beforeSnap = collectStructureSnapshot(appState);
-
     try {
-        var baseRev = (appState.meta && appState.meta.lastServerRevision != null) ? appState.meta.lastServerRevision : 0;
-        var pushResult = await triggerSynchronousCloudBackupPush(baseRev);
-        if (!(pushResult && pushResult.success)) {
-            throw new Error((pushResult && pushResult.error) || 'Sync failed');
+        var cloudState = await getCloudState(secret, endpoint);
+        if (!cloudState) {
+            updateSyncDebugOverlay('pull-fail', preSyncSnap, 'cloud unreachable');
+            _syncInProgress = false; _syncLastFailed = true;
+            updateSyncStatusBadge();
+            if (interactive) showToast('Sync failed \u2014 server unreachable', 'error');
+            btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+            return;
+        }
+        var cloudSnap = collectStructureSnapshot(cloudState);
+        logStructureSnapshot('cloudPull', cloudSnap);
+        updateSyncDebugOverlay('cloudPull', cloudSnap);
+
+        // Restore queue snapshot if background push cleared it
+        appState.syncQueue = pendingQueue;
+
+        var cloudRev = cloudState.meta && cloudState.meta.lastServerRevision;
+        var localRev = appState.meta.lastServerRevision;
+        var attemptedPush = false;
+
+        console.log('[syncNow] local segs=' + preSyncSnap.segCount + ' cats=' + preSyncSnap.catCount +
+            ' dirty=' + isDirty + ' localRev=' + (localRev || 0) +
+            ' cloud segs=' + cloudSnap.segCount + ' cats=' + cloudSnap.catCount + ' cloudRev=' + (cloudRev || 0));
+
+        if (isDirty && cloudRev != null && cloudRev > (localRev || 0)) {
+            mergeCloudPayloadToMemory(cloudState);
+            var rebaseSnap = collectStructureSnapshot(appState);
+            logStructureSnapshot('afterRebase', rebaseSnap);
+            updateSyncDebugOverlay('afterRebase', rebaseSnap);
+            if (!assertNoStructuralLoss(preSyncSnap, rebaseSnap, 'rebase')) {
+                _syncInProgress = false; _syncLastFailed = true;
+                saveStateToLocalStorage(); updateSyncStatusBadge();
+                if (interactive) showToast('Sync blocked: structural data would be lost.', 'error');
+                btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+                return;
+            }
+            saveStateToLocalStorage();
+            if (interactive) showToast('Rebased onto latest cloud', 'info');
+            var prePushVer = appState.meta.localSnapshotVersion || 0;
+            var pushResult = await triggerSynchronousCloudBackupPush(cloudRev);
+            attemptedPush = true;
+            if (pushResult && pushResult.success) {
+                applyPushSuccess(interactive, prePushVer);
+            } else if (pushResult && pushResult.conflict) {
+                var retryCloud = await getCloudState(secret, endpoint);
+                if (retryCloud) {
+                    mergeCloudPayloadToMemory(retryCloud);
+                    if (!assertNoStructuralLoss(preSyncSnap, collectStructureSnapshot(appState), 'retry-merge')) {
+                        _syncInProgress = false; _syncConflict = true;
+                        updateSyncStatusBadge();
+                        if (interactive) showToast('Sync blocked on retry.', 'error');
+                        btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+                        return;
+                    }
+                    saveStateToLocalStorage();
+                    var rVer = appState.meta.localSnapshotVersion || 0;
+                    var rPush = await triggerSynchronousCloudBackupPush(retryCloud.meta && retryCloud.meta.lastServerRevision);
+                    if (rPush && rPush.success) {
+                        applyPushSuccess(interactive, rVer);
+                    } else {
+                        _syncConflict = true; _syncInProgress = false;
+                        updateSyncStatusBadge(); updateSyncBanner();
+                        if (interactive) showToast('Sync conflict \u2014 please sync again.', 'error');
+                    }
+                }
+            } else {
+                _syncInProgress = false;
+                if (interactive) showToast('Push failed \u2014 ' + (pushResult && pushResult.error || 'unknown'), 'error');
+            }
+        } else if (isDirty && (cloudRev == null || cloudRev === localRev || cloudRev <= (localRev || 0))) {
+            var base = localRev != null ? localRev : 0;
+            var prePushVer = appState.meta.localSnapshotVersion || 0;
+            var directPush = await triggerSynchronousCloudBackupPush(base);
+            attemptedPush = true;
+            if (directPush && directPush.success) {
+                var postPushSnap = collectStructureSnapshot(appState);
+                if (!assertNoStructuralLoss(preSyncSnap, postPushSnap, 'afterPush')) {
+                    _syncInProgress = false; _syncLastFailed = true;
+                    updateSyncStatusBadge();
+                    if (interactive) showToast('Sync blocked: structures lost during push.', 'error');
+                    btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+                    return;
+                }
+                applyPushSuccess(interactive, prePushVer);
+            } else if (directPush && directPush.conflict) {
+                var latestCloud = await getCloudState(secret, endpoint);
+                if (latestCloud) {
+                    mergeCloudPayloadToMemory(latestCloud);
+                    if (!assertNoStructuralLoss(preSyncSnap, collectStructureSnapshot(appState), 'conflict-rebase')) {
+                        _syncInProgress = false; _syncConflict = true;
+                        updateSyncStatusBadge();
+                        if (interactive) showToast('Sync blocked.', 'error');
+                        btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+                        return;
+                    }
+                    saveStateToLocalStorage();
+                    var rVer = appState.meta.localSnapshotVersion || 0;
+                    var retry = await triggerSynchronousCloudBackupPush(latestCloud.meta && latestCloud.meta.lastServerRevision);
+                    if (retry && retry.success) { applyPushSuccess(interactive, rVer); }
+                    else { _syncConflict = true; _syncInProgress = false; updateSyncStatusBadge();
+                        if (interactive) showToast('Sync conflict.', 'error'); }
+                }
+            } else {
+                _syncInProgress = false;
+                if (interactive) showToast('Push failed.', 'error');
+            }
+        } else if (!isDirty && cloudRev != null && cloudRev > (localRev || 0)) {
+            mergeCloudPayloadToMemory(cloudState);
+            var pullSnap = collectStructureSnapshot(appState);
+            logStructureSnapshot('afterPull', pullSnap);
+            updateSyncDebugOverlay('afterPull', pullSnap);
+            if (!assertNoStructuralLoss(preSyncSnap, pullSnap, 'pull')) {
+                _syncInProgress = false; _syncLastFailed = true;
+                updateSyncStatusBadge();
+                if (interactive) showToast('Sync blocked: cloud pull would lose local structures.', 'error');
+                btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+                return;
+            }
+            appState.syncQueue = [];
+            appState.meta.lastPushedSnapshotVersion = appState.meta.localSnapshotVersion || 0;
+            saveStateToLocalStorage();
+            _syncInProgress = false; _syncLastFailed = false; _syncConflict = false;
+            updateSyncStatusBadge(); updateSyncBanner();
+            syncUIComponents(); triggerReminderCheckThrottled();
+            if (interactive) showToast('Synced \u2014 ' + ((cloudState.inventory || []).length) + ' items', 'success');
+        } else {
+            // Revisions match — check for structural reconciliation
+            var localHasExtra = (preSyncSnap.segCount > cloudSnap.segCount ||
+                                 preSyncSnap.catCount > cloudSnap.catCount ||
+                                 preSyncSnap.conCount > cloudSnap.conCount ||
+                                 preSyncSnap.subCount > cloudSnap.subCount);
+            if (localHasExtra || isDirty) {
+                console.log('[syncNow] forcing push — local extra segs=' +
+                    (preSyncSnap.segCount - cloudSnap.segCount) + ' dirty=' + isDirty);
+                var fBase = localRev != null ? localRev : 0;
+                var fVer = appState.meta.localSnapshotVersion || 0;
+                var forcePush = await triggerSynchronousCloudBackupPush(fBase);
+                if (forcePush && forcePush.success) {
+                    applyPushSuccess(interactive, fVer);
+                } else {
+                    _syncInProgress = false;
+                    if (interactive) showToast('Push failed — retry later.', 'error');
+                }
+            } else {
+                _syncInProgress = false; _syncLastFailed = false; _syncConflict = false;
+                updateSyncStatusBadge(); updateSyncBanner();
+                if (interactive) showToast('Already up to date', 'info');
+            }
         }
 
-        var acked = pushResult.ackedOpIds || [];
-        var ackMap = {};
-        acked.forEach(function(id) { ackMap[id] = true; });
-        appState.syncQueue = (appState.syncQueue || []).filter(function(op) { return !ackMap[op.opId]; });
-        appState.meta.lastPulledServerSeq = Math.max((appState.meta.lastPulledServerSeq || 0), pushResult.latestServerSeq || 0);
-        appState.meta.lastServerRevision = Math.max((appState.meta.lastServerRevision || 0), pushResult.latestServerSeq || 0);
-
-        var remoteStats = applyRemoteLogOperations(pushResult.remoteOps || [], acked);
-        appState.syncConflicts = (appState.syncConflicts || []).concat(pushResult.conflicts || []);
-        if (pushResult.structureVersion != null) appState.meta.structureVersion = pushResult.structureVersion;
-        if (pushResult.categoryVersion != null) appState.meta.categoryVersion = pushResult.categoryVersion;
-
-        appState.meta.lastSyncedAt = new Date().toISOString();
-        appState.meta.lastPushedSnapshotVersion = appState.meta.localSnapshotVersion || 0;
-        saveStateToLocalStorage();
-        syncUIComponents();
-        triggerReminderCheckThrottled();
-
-        var afterSnap = collectStructureSnapshot(appState);
-        var summary = buildSyncSummary(beforeSnap, afterSnap);
-        _syncLastFailed = false;
-        _syncConflict = !!((pushResult.conflicts && pushResult.conflicts.length) || remoteStats.conflicts);
-        if (interactive) showToast(formatSyncSummary(summary), _syncConflict ? 'warning' : 'success');
+        if (attemptedPush && !_syncConflict && !_syncLastFailed) {
+            saveStateToLocalStorage();
+        }
     } catch (e) {
-        console.error('[syncNow] ' + (e && e.message ? e.message : e), e);
-        _syncLastFailed = true;
-        _syncConflict = false;
-        if (interactive) showToast('Sync failed.', 'error');
-    } finally {
-        _syncInProgress = false;
-        btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
+        _syncInProgress = false; _syncLastFailed = true;
         updateSyncStatusBadge();
-        updateSyncBanner();
-        updateLoginSyncStatus();
+        if (interactive) showToast('Sync error \u2014 ' + e.message, 'error');
     }
+
+    var postSnap = collectStructureSnapshot(appState);
+    logStructureSnapshot('postSync', postSnap);
+    updateSyncDebugOverlay('done', postSnap);
+    if (postSnap.segCount < preSyncSnap.segCount || postSnap.catCount < preSyncSnap.catCount) {
+        console.error('[syncNow] STRUCTURE LOSS: segs ' + preSyncSnap.segCount + '→' + postSnap.segCount +
+            ' cats ' + preSyncSnap.catCount + '→' + postSnap.catCount);
+    }
+
+    btns.forEach(function(b) { b.classList.remove('btn-syncing'); });
 }
+
 function applyPushSuccess(interactive, pushedSnapshotVersion) {
     _syncInProgress = false; _syncLastFailed = false; _syncConflict = false;
     appState.syncQueue = [];
@@ -5900,7 +5932,6 @@ function collectStructureSnapshot(state) {
         subCount: subCount,
         catCount: catPaths.length,
         coordCount: Object.keys(coords).length,
-        itemCount: (state.inventory || []).filter(function(it) { return !it.deletedAt; }).length,
         segPaths: segPaths,
         catPaths: catPaths,
         segKeysSorted: Object.keys(segs).sort().join(','),
@@ -6086,10 +6117,6 @@ async function getCloudState(secret, endpoint) {
         var json = await resp.json();
         if (json && json.segments) {
             json.meta = json.meta || {};
-            json.meta.lastServerRevision = json.meta.lastServerRevision || json.meta.latestServerSeq || 0;
-            json.meta.lastPulledServerSeq = json.meta.latestServerSeq || json.meta.lastPulledServerSeq || 0;
-            json.meta.structureVersion = json.meta.structureVersion || 0;
-            json.meta.categoryVersion = json.meta.categoryVersion || 0;
             return json;
         }
         return null;
@@ -6097,6 +6124,7 @@ async function getCloudState(secret, endpoint) {
         return null;
     }
 }
+
 /**
  * Merges cloud payload into appState in-memory (does NOT save to localStorage or update UI).
  * Returns stats about the merge.
@@ -6314,33 +6342,24 @@ function simpleHash(str) {
 
 function triggerAutoCloudSyncIfPossible() {
     var endpoint = localStorage.getItem('sys_gas_url');
-    if (!endpoint) return;
-    setTimeout(function() {
-        if (_syncInProgress) return;
-        syncNow({ interactive: false }).catch(function() {});
-    }, 300);
-}
-async function autoPullFromCloudIfPossible() {
-    var endpoint = localStorage.getItem('sys_gas_url');
-    var secret = localStorage.getItem('sys_api_pwd');
-    if (!endpoint) return;
-    if (_syncInProgress) return;
-
-    try {
-        var cloud = await getCloudState(secret, endpoint);
-        if (!cloud) return;
-        var cloudRev = (cloud.meta && cloud.meta.lastServerRevision != null) ? cloud.meta.lastServerRevision : 0;
-        var localRev = (appState.meta && appState.meta.lastServerRevision != null) ? appState.meta.lastServerRevision : 0;
-        if (cloudRev >= localRev) {
-            replaceLocalStateWithCloud(cloud);
-            _syncLastFailed = false;
-            _syncConflict = false;
-            updateSyncStatusBadge();
-        }
-    } catch (e) {
-        console.warn('[autoPullFromCloudIfPossible] ' + (e && e.message ? e.message : e), e);
+    if (endpoint) {
+        triggerSynchronousCloudBackupPush().catch(function() {});
+        setTimeout(function() {
+            autoPullFromCloudIfPossible();
+        }, 3000);
     }
 }
+
+async function autoPullFromCloudIfPossible() {
+    try {
+        const result = await syncCloudStateSafely({ auto: true, pushAfterMerge: true });
+        return !!(result && !result.skipped && (result.merged || result.pushed || result.cloudRevision > 0));
+    } catch (e) {
+        console.error('[autoPullFromCloudIfPossible]', e && e.message ? e.message : e, e);
+        return false;
+    }
+}
+
 function normalizeAllItemImageFields() {
     (appState.inventory || []).forEach(function(item) { normalizeImageFields(item); });
 }
@@ -6689,30 +6708,10 @@ function migrateLegacyState(state) {
         state.meta.lastLocalChangeAt = null;
         migrated = true;
     }
-    if (state.meta.lastPulledServerSeq === undefined) {
-        state.meta.lastPulledServerSeq = 0;
-        migrated = true;
-    }
-    if (state.meta.clientClock === undefined) {
-        state.meta.clientClock = 0;
-        migrated = true;
-    }
-    if (state.meta.structureVersion === undefined) {
-        state.meta.structureVersion = 0;
-        migrated = true;
-    }
-    if (state.meta.categoryVersion === undefined) {
-        state.meta.categoryVersion = 0;
-        migrated = true;
-    }
 
     // Ensure syncQueue
     if (!state.syncQueue || !Array.isArray(state.syncQueue)) {
         state.syncQueue = [];
-        migrated = true;
-    }
-    if (!state.syncConflicts || !Array.isArray(state.syncConflicts)) {
-        state.syncConflicts = [];
         migrated = true;
     }
 
