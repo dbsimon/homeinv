@@ -4407,6 +4407,8 @@ async function deleteSelectedCategoryNode() {
 
     if (targetParentMap && targetParentMap[targetNodeKey]) {
         delete targetParentMap[targetNodeKey];
+        // [FIX: reset stale selectedCategoryNodePath]
+        appState.selectedCategoryNodePath = null;
         markClassesDirty();
         mutateState('DELETE_CATEGORY', { name: targetNodeKey });
         saveStateToLocalStorage();
