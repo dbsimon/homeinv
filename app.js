@@ -1480,11 +1480,23 @@ function buildPersistedStateSnapshot(state) {
         deviceId: state.meta.deviceId,
         lastSyncedAt: state.meta.lastSyncedAt,
         lastServerRevision: state.meta.lastServerRevision,
+        lastPulledServerSeq: state.meta.lastPulledServerSeq || 0,
         lastLocalChangeAt: state.meta.lastLocalChangeAt,
         lastChangeBy: state.meta.lastChangeBy,
         localSnapshotVersion: state.meta.localSnapshotVersion || 0,
-        lastPushedSnapshotVersion: state.meta.lastPushedSnapshotVersion || 0
-    } : { deviceId: getDeviceId(), lastSyncedAt: null, lastServerRevision: null, localSnapshotVersion: 0, lastPushedSnapshotVersion: 0 };
+        lastPushedSnapshotVersion: state.meta.lastPushedSnapshotVersion || 0,
+        structureVersion: state.meta.structureVersion || 0,
+        categoryVersion: state.meta.categoryVersion || 0
+    } : {
+        deviceId: getDeviceId(),
+        lastSyncedAt: null,
+        lastServerRevision: null,
+        lastPulledServerSeq: 0,
+        localSnapshotVersion: 0,
+        lastPushedSnapshotVersion: 0,
+        structureVersion: 0,
+        categoryVersion: 0
+    };
     snap.syncQueue = deepCloneJsonSafe(state.syncQueue || []);
     snap.segments = deepCloneJsonSafe(state.segments || {});
     snap.coordinates = deepCloneJsonSafe(state.coordinates || {});
@@ -1590,7 +1602,7 @@ function mutateState(actionType, metadata) {
         opId: opId,
         entityType: actionType,
         entityId: (metadata && (metadata.itemId || metadata.name || metadata.id)) || '',
-        payload: deepCloneJsonSafe(metadata || {}),
+        payload: captureSyncOperationPayload(actionType, metadata),
         baseRevision: (appState.meta.lastServerRevision || 0),
         deviceId: appState.meta.deviceId || getDeviceId(),
         createdAt: now,
@@ -1697,6 +1709,7 @@ function mergeRemoteInventoryPayload(payload) {
 
 function applyRemoteLogOperations(ops, ackedOpIds) {
     if (!ops || !ops.length) return { applied: 0, conflicts: 0 };
+    appState.meta = appState.meta || {};
     var ackMap = {};
     (ackedOpIds || []).forEach(function(id) { ackMap[id] = true; });
     var selfId = (appState.meta && appState.meta.deviceId) || getDeviceId();
@@ -1711,7 +1724,7 @@ function applyRemoteLogOperations(ops, ackedOpIds) {
             appState.meta.lastPulledServerSeq = Math.max((appState.meta.lastPulledServerSeq || 0), op.serverSeq || 0);
             return;
         }
-        if (op.conflict) {
+        if (op.conflictType || op.applied === 'conflict') {
             appState.syncConflicts = appState.syncConflicts || [];
             appState.syncConflicts.push(op);
             stats.conflicts += 1;
@@ -1726,8 +1739,13 @@ function applyRemoteLogOperations(ops, ackedOpIds) {
         } else if (payload.docType === 'categories') {
             appState.categories = deepCloneJsonSafe(payload.categories || {});
             appState.meta.categoryVersion = op.serverSeq || appState.meta.categoryVersion || 0;
-        } else {
+        } else if (payload.docType === 'inventory') {
             mergeRemoteInventoryPayload(payload);
+        } else {
+            applyClientOperation(appState, {
+                entityType: op.type || op.entityType,
+                payload: payload
+            });
         }
         appState.meta.lastPulledServerSeq = Math.max((appState.meta.lastPulledServerSeq || 0), op.serverSeq || 0);
         appState.meta.lastServerRevision = Math.max((appState.meta.lastServerRevision || 0), op.serverSeq || 0);
@@ -1796,16 +1814,23 @@ async function flushOutbox() {
             var acked = result.ackedOpIds || result.receivedOpIds || [];
             var ackMap = {};
             acked.forEach(function(id) { ackMap[id] = true; });
+
             for (var i = 0; i < ops.length; i++) {
                 if (ackMap[ops[i].opId]) {
                     await idbDeleteOutboxOp(ops[i].opId);
                 }
             }
+
+            applyRemoteLogOperations(result.remoteOps || [], acked);
+
             if (result.latestServerSeq) {
                 appState.meta.lastPulledServerSeq = Math.max((appState.meta.lastPulledServerSeq || 0), result.latestServerSeq || 0);
                 appState.meta.lastServerRevision = Math.max((appState.meta.lastServerRevision || 0), result.latestServerSeq || 0);
             }
+
+            appState.meta.lastPushedSnapshotVersion = appState.meta.localSnapshotVersion || 0;
             appState.meta.lastSyncedAt = new Date().toISOString();
+
             saveStateToLocalStorage();
             await idbPutAppState(buildPersistedStateSnapshot(appState));
             _syncLastFailed = false;
