@@ -528,6 +528,19 @@
                 </div>
             </div>
 
+            <!-- Mobile sort control -->
+            <div class="flex items-center gap-2 px-3 pt-2 pb-1 md:hidden">
+                <label class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">Sort</label>
+                <select id="mobileSortSelect" onchange="onMobileSortChange()" class="text-xs border border-slate-300 rounded-lg px-2 py-1.5 flex-1 focus:ring-2 focus:ring-blue-500 outline-none bg-white">
+                    <option value="name">Name</option>
+                    <option value="category">Category</option>
+                    <option value="location">Location</option>
+                    <option value="owner">Owner</option>
+                    <option value="created">Date Added</option>
+                </select>
+                <button id="mobileSortDirBtn" onclick="onMobileSortDirToggle()" class="text-[10px] font-semibold px-2 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 transition-colors whitespace-nowrap min-w-[40px]">▲ Asc</button>
+            </div>
+
             <div class="bg-white rounded-xl border border-slate-200 shadow-sm">
                 <div class="overflow-x-auto max-h-[60vh] overflow-y-auto hidden md:block">
                     <table class="w-full text-left border-collapse min-w-[800px]">

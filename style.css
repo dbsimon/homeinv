@@ -240,7 +240,8 @@ textarea, select {
 /* ===== Toast Notification System ===== */
 #syncToast {
     position: fixed;
-    top: 16px;
+    top: constant(safe-area-inset-top, 16px);
+    top: calc(16px + env(safe-area-inset-top, 0px));
     left: 50%;
     transform: translateX(-50%) translateY(-120px);
     z-index: 9999;
@@ -276,6 +277,12 @@ textarea, select {
     background: #fef2f2;
     color: #b91c1c;
     border: 1px solid #fecaca;
+}
+
+/* Keep offline banner content below iOS safe area / Dynamic Island */
+#syncOfflineBanner {
+    padding-top: constant(safe-area-inset-top, 0.5rem);
+    padding-top: calc(0.5rem + env(safe-area-inset-top, 0px));
 }
 
 /* Toast spinner */

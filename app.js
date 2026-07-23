@@ -1826,6 +1826,13 @@ async function flushOutbox() {
     }
 }
 
+function getStockOpDelta(opType, amount) {
+  var n = Number(amount || 0);
+  if (!isFinite(n)) return 0;
+  var abs = Math.abs(n);
+  return opType === 'STOCK_OUT' ? -abs : abs;
+}
+
 // ===== Client-side operation replay for conflict merge =====
 function applyClientOperation(state, op) {
     if (!state || !op) return;
@@ -1905,8 +1912,13 @@ function applyClientOperation(state, op) {
                 var si = (state.inventory || []).find(function(i) { return i.id === payload.itemId; });
                 if (si && si.stockEntries && payload.entryId) {
                     var se = si.stockEntries.find(function(e) { return e.id === payload.entryId; });
-                    if (se) se.quantity = (se.quantity || 0) + (payload.amount || 0);
+                    if (se) {
+                        var delta = getStockOpDelta(op.entityType, payload.amount);
+                        se.quantity = Math.max(0, Number(se.quantity || 0) + delta);
+                        se.updatedAt = payload.timestamp || new Date().toISOString();
+                    }
                     si.quantity = getTotalStockQuantity(si);
+                    si.updatedAt = payload.timestamp || new Date().toISOString();
                 }
             }
             break;
@@ -6940,6 +6952,7 @@ function setInventorySort(key) {
         _inventorySortKey = key;
         _inventorySortDir = 'asc';
     }
+    updateMobileSortUI();
     renderFilteredInventoryTable();
 }
 
@@ -6969,6 +6982,29 @@ function getSortValue(item, key) {
         case 'created':  return item.createdAt || item.timestamp || '';
         default: return '';
     }
+}
+
+// Mobile sort control helpers
+function onMobileSortChange() {
+    var sel = document.getElementById('mobileSortSelect');
+    if (!sel) return;
+    _inventorySortKey = sel.value;
+    _inventorySortDir = 'asc';
+    updateMobileSortUI();
+    renderFilteredInventoryTable();
+}
+
+function onMobileSortDirToggle() {
+    _inventorySortDir = _inventorySortDir === 'asc' ? 'desc' : 'asc';
+    updateMobileSortUI();
+    renderFilteredInventoryTable();
+}
+
+function updateMobileSortUI() {
+    var sel = document.getElementById('mobileSortSelect');
+    var btn = document.getElementById('mobileSortDirBtn');
+    if (sel) sel.value = _inventorySortKey;
+    if (btn) btn.textContent = _inventorySortDir === 'asc' ? '\u25B2 Asc' : '\u25BC Desc';
 }
 
 function setItemTypeFilter(filter) {
@@ -7674,6 +7710,7 @@ function renderFilteredInventoryTable() {
         });
     }
     updateInventorySortIndicators();
+    updateMobileSortUI();
 }
 
 function renderToBuyList() {
