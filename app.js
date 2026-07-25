@@ -1563,6 +1563,7 @@ function hasUnsyncedSnapshot(state) {
 // ===== Unified Mutation Entry Point (v3 sync-core integration) =====
 // All state changes MUST flow through mutateState().
 // mutates appState in-memory, queues a v3 operation via sync-core, then triggers flush.
+// Returns a Promise that resolves with the queued operation (or null).
 function mutateState(actionType, metadata) {
     appState.meta = appState.meta || {};
     var now = new Date().toISOString();
@@ -1570,19 +1571,35 @@ function mutateState(actionType, metadata) {
     appState.meta.lastChangeBy = appState.meta.deviceId || getDeviceId();
     appState.meta.localSnapshotVersion = (appState.meta.localSnapshotVersion || 0) + 1;
 
-    // Queue the appropriate v3 operation
-    queueV3Operation(actionType, metadata);
+    // Queue the appropriate v3 operation and wait for IndexedDB persistence
+    return Promise.resolve(queueV3Operation(actionType, metadata))
+        .then(function(op) {
+            saveStateToLocalStorage();
+            updatePillSyncStatus();
+            updateSyncStatusBadge();
 
-    saveStateToLocalStorage();
-    updatePillSyncStatus();
-    updateSyncStatusBadge();
+            if (navigator.onLine) {
+                triggerBackgroundSyncV3();
+            }
 
-    if (navigator.onLine) {
-        triggerBackgroundSyncV3();
-    }
+            return op;
+        })
+        .catch(function(err) {
+            console.error('Could not persist sync operation', actionType, err);
+            saveStateToLocalStorage();
+            updatePillSyncStatus();
+            updateSyncStatusBadge();
+            showToast(
+                'Saved on this device, but cloud sync could not be queued. Please retry.',
+                'warning'
+            );
+            // Return null instead of re-throwing to avoid unhandled rejections
+            // for callers that do not attach their own .catch().
+            return null;
+        });
 }
 
-// Map legacy actionType to v3 operations
+// Map legacy actionType to v3 operations — returns a Promise
 function queueV3Operation(actionType, metadata) {
     metadata = metadata || {};
     switch (actionType) {
@@ -1595,85 +1612,147 @@ function queueV3Operation(actionType, metadata) {
         case 'ADD_SUB_CONTAINER':
         case 'RENAME_SUB_CONTAINER':
         case 'DELETE_SUB_CONTAINER':
-            // Map structural changes to LOCATIONS_PUT
-            locPutDebounced();
-            break;
+        case 'SAVE_LAYOUT':
+        case 'UPDATE_COORDINATE':
+        case 'UPDATE_BACKGROUND_IMAGE':
+            return locPutDebounced();
+
         case 'ADD_CATEGORY':
         case 'DELETE_CATEGORY':
         case 'SAVE_CLASSIFICATION':
-            catPutDebounced();
-            break;
+            return catPutDebounced();
+
         case 'ADD_USER':
         case 'REMOVE_USER':
-            settingsPutDebounced();
-            break;
         case 'SET_REMINDER':
-            settingsPutDebounced();
-            break;
+            return settingsPutDebounced();
+
         case 'COMMIT_ITEM':
         case 'EDIT_ITEM':
             if (metadata && metadata.itemId) {
                 var item = findInventoryItem(metadata.itemId);
                 if (item) {
-                    queueItemPut(item, item.version || 0).catch(function(){});
+                    return queueItemPut(item, item.version || 0);
                 }
             }
-            break;
+            return Promise.resolve(null);
+
         case 'REMOVE_ITEM':
             if (metadata && metadata.itemId) {
                 var ditem = findInventoryItem(metadata.itemId);
-                queueItemDelete(metadata.itemId, ditem ? ditem.version || 0 : 0).catch(function(){});
+                return queueItemDelete(metadata.itemId, ditem ? ditem.version || 0 : 0);
             }
-            break;
+            return Promise.resolve(null);
+
         case 'STOCK_IN':
         case 'STOCK_OUT':
             if (metadata && metadata.itemId && metadata.entryId && metadata.amount) {
                 var delta = actionType === 'STOCK_OUT' ? -Math.abs(metadata.amount) : Math.abs(metadata.amount);
-                queueStockAdjust(metadata.itemId, metadata.entryId, delta).catch(function(){});
+                return queueStockAdjust(metadata.itemId, metadata.entryId, delta);
             }
-            break;
-        case 'SAVE_LAYOUT':
-        case 'UPDATE_COORDINATE':
-        case 'UPDATE_BACKGROUND_IMAGE':
-            locPutDebounced();
-            break;
+            return Promise.resolve(null);
+
+        case 'CREATESTOCKENTRY':
+            if (metadata && metadata.itemId && metadata.entry) {
+                return queueStockEntryPut(
+                    metadata.itemId,
+                    metadata.entry,
+                    0,
+                    metadata.initialQuantity
+                );
+            }
+            return Promise.resolve(null);
+
         default:
-            break;
+            return Promise.resolve(null);
     }
+}
+
+// Simple deferred Promise helper
+function createDeferred() {
+    var resolve, reject;
+    var promise = new Promise(function(res, rej) {
+        resolve = res; reject = rej;
+    });
+    return { promise: promise, resolve: resolve, reject: reject };
 }
 
 // Debounced structural writes to avoid queuing one per UI click
 var _locPutTimer = null;
+var _locPutDeferred = null;
+
 var _catPutTimer = null;
+var _catPutDeferred = null;
+
 var _settingsPutTimer = null;
+var _settingsPutDeferred = null;
 
 function locPutDebounced() {
-    if (_locPutTimer) clearTimeout(_locPutTimer);
     _locationsDirty = true;
+    if (!_locPutDeferred) {
+        _locPutDeferred = createDeferred();
+    }
+
+    if (_locPutTimer) clearTimeout(_locPutTimer);
+    _locPutTimer = null;
+
     _locPutTimer = setTimeout(function() {
         _locPutTimer = null;
+        var deferred = _locPutDeferred;
+        _locPutDeferred = null;
+
         var ver = (appState.meta && appState.meta.locationsVersion != null) ? appState.meta.locationsVersion : 0;
-        queueLocationsPut(ver).catch(function(){});
+        queueLocationsPut(ver)
+            .then(function(op) { deferred.resolve(op); })
+            .catch(function(err) { deferred.reject(err); });
     }, 500);
+
+    return _locPutDeferred.promise;
 }
 
 function catPutDebounced() {
-    if (_catPutTimer) clearTimeout(_catPutTimer);
     _classesDirty = true;
+    if (!_catPutDeferred) {
+        _catPutDeferred = createDeferred();
+    }
+
+    if (_catPutTimer) clearTimeout(_catPutTimer);
+    _catPutTimer = null;
+
     _catPutTimer = setTimeout(function() {
         _catPutTimer = null;
+        var deferred = _catPutDeferred;
+        _catPutDeferred = null;
+
         var ver = (appState.meta && appState.meta.categoriesVersion != null) ? appState.meta.categoriesVersion : 0;
-        queueCategoriesPut(ver).catch(function(){});
+        queueCategoriesPut(ver)
+            .then(function(op) { deferred.resolve(op); })
+            .catch(function(err) { deferred.reject(err); });
     }, 500);
+
+    return _catPutDeferred.promise;
 }
 
 function settingsPutDebounced() {
+    if (!_settingsPutDeferred) {
+        _settingsPutDeferred = createDeferred();
+    }
+
     if (_settingsPutTimer) clearTimeout(_settingsPutTimer);
+    _settingsPutTimer = null;
+
     _settingsPutTimer = setTimeout(function() {
         _settingsPutTimer = null;
+        var deferred = _settingsPutDeferred;
+        _settingsPutDeferred = null;
+
         var ver = (appState.meta && appState.meta.householdSettingsVersion != null) ? appState.meta.householdSettingsVersion : 0;
-        queueHouseholdSettingsPut(ver).catch(function(){});
+        queueHouseholdSettingsPut(ver)
+            .then(function(op) { deferred.resolve(op); })
+            .catch(function(err) { deferred.reject(err); });
     }, 500);
+
+    return _settingsPutDeferred.promise;
 }
 
 function triggerBackgroundSyncV3() {
@@ -3869,7 +3948,9 @@ async function continueStockEntryIn(itemId, entryId) {
     item.updatedAt = new Date().toISOString();
     item.version = (item.version || 1) + 1;
     item.lastModifiedBy = appState.meta.deviceId;
-    mutateState('STOCK_IN', { itemId: item.id, amount: amt, entryId: entryId });
+    mutateState('STOCK_IN', { itemId: item.id, amount: amt, entryId: entryId }).catch(function(err) {
+        console.error('[continueStockEntryIn] Queue failed:', err);
+    });
     syncUIComponents();
     if (_currentScanItemId === itemId) {
         showItemDetail(itemId);
@@ -3897,7 +3978,9 @@ async function continueStockEntryOut(itemId, entryId) {
     item.updatedAt = new Date().toISOString();
     item.version = (item.version || 1) + 1;
     item.lastModifiedBy = appState.meta.deviceId;
-    mutateState('STOCK_OUT', { itemId: item.id, amount: amt, entryId: entryId });
+    mutateState('STOCK_OUT', { itemId: item.id, amount: amt, entryId: entryId }).catch(function(err) {
+        console.error('[continueStockEntryOut] Queue failed:', err);
+    });
     syncUIComponents();
     if (_currentScanItemId === itemId) {
         showItemDetail(itemId);
@@ -3982,7 +4065,11 @@ async function commitNewStockEntryFromModal(itemId) {
     item.updatedAt = new Date().toISOString();
     item.version = (item.version || 1) + 1;
     item.lastModifiedBy = appState.meta.deviceId;
-    mutateState('STOCK_IN', { itemId: item.id, amount: qty, entryId: entry.id });
+    mutateState('CREATESTOCKENTRY', {
+        itemId: item.id,
+        entry: entry,
+        initialQuantity: qty
+    }).catch(function(err) { console.error('[CREATESTOCKENTRY] Queue failed:', err); });
     closeNewStockLocationModal();
     syncUIComponents();
     if (_currentScanItemId === itemId) {
@@ -5399,6 +5486,64 @@ function clearStockLocationRows() {
     if (rows) rows.innerHTML = '';
 }
 
+function queueStockEntryOpsForEdit(existingItem, newEntries) {
+    // Diff existing stock entries against new form entries.
+    // - New entry IDs not in existing → STOCKENTRYPUT(baseVersion=0)
+    // - Existing entry IDs modified → STOCKENTRYPUT with entry's version
+    // - Existing entry IDs gone → STOCKENTRYDELETE
+    var oldEntries = existingItem.stockEntries || [];
+    var oldMap = {};
+    oldEntries.forEach(function(e) { oldMap[e.id] = e; });
+
+    var newMap = {};
+    (newEntries || []).forEach(function(e) { newMap[e.id] = e; });
+
+    oldEntries.forEach(function(oldEntry) {
+        var newEntry = newMap[oldEntry.id];
+        if (!newEntry && !oldEntry.hiddenAt) {
+            // Entry was removed from the form → queue delete
+            queueStockEntryDelete(existingItem.id, oldEntry.id, oldEntry.version || 0).catch(function(err) {
+                console.error('[queueStockEntryOpsForEdit] STOCKENTRYDELETE failed:', err);
+            });
+        } else if (newEntry && !oldEntry.hiddenAt) {
+            // Existing entry may have changed metadata
+            var fieldsChanged = false;
+            var metaFields = ['segment', 'container', 'subContainer', 'purchaseDate', 'warrantyDate', 'expiryDate'];
+            for (var i = 0; i < metaFields.length; i++) {
+                if ((oldEntry[metaFields[i]] || '') !== (newEntry[metaFields[i]] || '')) {
+                    fieldsChanged = true;
+                    break;
+                }
+            }
+            if (fieldsChanged) {
+                queueStockEntryPut(existingItem.id, newEntry, oldEntry.version || 0)
+                    .then(function() {
+                        // Quantity adjustment handled separately
+                    })
+                    .catch(function(err) {
+                        console.error('[queueStockEntryOpsForEdit] STOCKENTRYPUT failed:', err);
+                    });
+            }
+            // Quantity diff → STOCKADJUST
+            var qtyDiff = (newEntry.quantity || 0) - (oldEntry.quantity || 0);
+            if (qtyDiff !== 0) {
+                queueStockAdjust(existingItem.id, oldEntry.id, qtyDiff).catch(function(err) {
+                    console.error('[queueStockEntryOpsForEdit] STOCK_ADJUST failed:', err);
+                });
+            }
+        }
+    });
+
+    (newEntries || []).forEach(function(newEntry) {
+        if (!oldMap[newEntry.id]) {
+            // Brand-new entry
+            queueStockEntryPut(existingItem.id, newEntry, 0, newEntry.quantity || 0).catch(function(err) {
+                console.error('[queueStockEntryOpsForEdit] new STOCKENTRYPUT failed:', err);
+            });
+        }
+    });
+}
+
 function commitItemToInventory() {
     try {
     var name = document.getElementById('invItemName').value.trim();
@@ -5568,10 +5713,26 @@ function commitItemToInventory() {
     if (editId) {
         var idx = appState.inventory.findIndex(function(i) { return i.id === editId; });
         if (idx !== -1) appState.inventory[idx] = payloadItem;
-        mutateState('EDIT_ITEM', { itemId: editId });
+        mutateState('EDIT_ITEM', { itemId: editId }).catch(function(err) {
+            console.error('[commitItemToInventory] EDIT_ITEM queue failed:', err);
+        });
+
+        if (isStock && existing) {
+            queueStockEntryOpsForEdit(existing, payloadItem.stockEntries);
+        }
     } else {
         appState.inventory.push(payloadItem);
-        mutateState('COMMIT_ITEM', { itemId: itemId });
+        mutateState('COMMIT_ITEM', { itemId: itemId }).catch(function(err) {
+            console.error('[commitItemToInventory] COMMIT_ITEM queue failed:', err);
+        });
+
+        if (isStock && payloadItem.stockEntries && payloadItem.stockEntries.length > 0) {
+            payloadItem.stockEntries.forEach(function(entry) {
+                queueStockEntryPut(itemId, entry, 0, entry.quantity).catch(function(err) {
+                    console.error('[commitItemToInventory] STOCKENTRYPUT queue failed:', err);
+                });
+            });
+        }
     }
 
     _pendingImageMeta = null;
