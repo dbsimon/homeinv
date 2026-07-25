@@ -1634,7 +1634,11 @@ function queueV3Operation(actionType, metadata) {
             if (metadata && metadata.itemId) {
                 var item = findInventoryItem(metadata.itemId);
                 if (item) {
-                    return queueItemPut(item, item.version || 0);
+                    // Use explicitly-passed baseVersion from metadata if available.
+                    // For COMMIT_ITEM (new item): baseVersion must be 0 (CREATE).
+                    // For EDIT_ITEM (update): baseVersion must be the server-known version (before local increment).
+                    var baseVer = (metadata.baseVersion != null) ? metadata.baseVersion : item.version || 0;
+                    return queueItemPut(item, baseVer);
                 }
             }
             return Promise.resolve(null);
@@ -1642,7 +1646,9 @@ function queueV3Operation(actionType, metadata) {
         case 'REMOVE_ITEM':
             if (metadata && metadata.itemId) {
                 var ditem = findInventoryItem(metadata.itemId);
-                return queueItemDelete(metadata.itemId, ditem ? ditem.version || 0 : 0);
+                // Use explicitly-passed baseVersion if provided; fall back to item version.
+                var baseVer = (metadata.baseVersion != null) ? metadata.baseVersion : (ditem ? ditem.version || 0 : 0);
+                return queueItemDelete(metadata.itemId, baseVer);
             }
             return Promise.resolve(null);
 
@@ -1934,8 +1940,12 @@ async function runFullSyncV3() {
     updateSyncStatusBadge();
     updateLoginSyncStatus();
 
-    _syncLastFailed = !!(result._pullFailed || result._pushFailed);
+    _syncLastFailed = !!(result._pullFailed || result._pushFailed || result._error);
     _syncConflict = !!(result.conflictCount > 0 || result._conflictFound);
+
+    if (result._error) {
+      syncDebug('fullSync returned unexpected error:', (result._error && result._error.message) || result._error);
+    }
 
     var elapsed = Date.now() - startMs;
     syncDebug('full sync complete — ' + elapsed + 'ms'
@@ -5772,7 +5782,9 @@ function commitItemToInventory() {
     if (editId) {
         var idx = appState.inventory.findIndex(function(i) { return i.id === editId; });
         if (idx !== -1) appState.inventory[idx] = payloadItem;
-        mutateState('EDIT_ITEM', { itemId: editId }).catch(function(err) {
+        // baseVersion must be the server-known version (pre-increment)
+        var baseVer = existing ? existing.version || 0 : 0;
+        mutateState('EDIT_ITEM', { itemId: editId, baseVersion: baseVer }).catch(function(err) {
             console.error('[commitItemToInventory] EDIT_ITEM queue failed:', err);
         });
 
@@ -5781,7 +5793,8 @@ function commitItemToInventory() {
         }
     } else {
         appState.inventory.push(payloadItem);
-        mutateState('COMMIT_ITEM', { itemId: itemId }).catch(function(err) {
+        // New item — baseVersion 0 signals CREATE to the server
+        mutateState('COMMIT_ITEM', { itemId: itemId, baseVersion: 0 }).catch(function(err) {
             console.error('[commitItemToInventory] COMMIT_ITEM queue failed:', err);
         });
 
@@ -6009,11 +6022,12 @@ async function removeItemFromInventory(itemId) {
     if (item) {
         item.deletedAt = new Date().toISOString();
         item.updatedAt = new Date().toISOString();
-        item.version = (item.version || 1) + 1;
+        var origVersion = item.version || 1;    // server-known version before this delete
+        item.version = origVersion + 1;
         item.lastModifiedBy = appState.meta.deviceId;
         removeItemImagesQuiet(item);
     }
-    mutateState('REMOVE_ITEM', { itemId: itemId });
+    mutateState('REMOVE_ITEM', { itemId: itemId, baseVersion: origVersion || 0 });
     syncUIComponents();
 }
 
