@@ -3,7 +3,7 @@
  * Data Model (v3 sync protocol)
  * Copyright (c) Westdoor Streetson 2026
  */
-const APP_VERSION = '1.51';
+const APP_VERSION = '1.53';
 
 // ===== PWA: Service Worker Registration =====
 var _deferredInstallPrompt = null;
@@ -659,7 +659,10 @@ let appState = {
     meta: {
         deviceId: getDeviceId(),
         lastSyncedAt: null,
-        lastServerRevision: null
+        lastServerRevision: null,
+        locationsVersion: 0,
+        categoriesVersion: 0,
+        householdSettingsVersion: 0
     },
     segments: {},
     coordinates: {},
@@ -749,29 +752,13 @@ function idbListKeys() {
 }
 
 /* ==========================================================================
-   IndexedDB State Store — isolate appState + outbox from localStorage
+   IndexedDB State Store — managed by sync-core.js (shared openStateDb)
+   Legacy functions retained for compatibility. openStateDb is defined in sync-core.js
+   and MUST NOT be redefined here — it owns the DB schema at version 2.
    ========================================================================== */
-var _stateDb = null;
 
-function openStateDb() {
-    return new Promise(function(resolve, reject) {
-        if (_stateDb) return resolve(_stateDb);
-        var request = indexedDB.open('findmyitem-state', 1);
-        request.onupgradeneeded = function(e) {
-            var db = e.target.result;
-            if (!db.objectStoreNames.contains('appState')) {
-                db.createObjectStore('appState', { keyPath: 'key' });
-            }
-            if (!db.objectStoreNames.contains('outbox')) {
-                var outboxStore = db.createObjectStore('outbox', { keyPath: 'opId' });
-                outboxStore.createIndex('createdAt', 'createdAt', { unique: false });
-                outboxStore.createIndex('status', 'status', { unique: false });
-            }
-        };
-        request.onsuccess = function(e) { _stateDb = e.target.result; resolve(_stateDb); };
-        request.onerror = function(e) { reject(e.target.error); };
-    });
-}
+// Note: openStateDb(), _stateDb are provided by sync-core.js (v2 schema).
+// The v2 schema includes: appState, outbox, canonical, conflicts.
 
 function idbGetAppState() {
     return openStateDb().then(function(db) {
@@ -1480,11 +1467,17 @@ function buildPersistedStateSnapshot(state) {
     snap.meta = state.meta ? {
         deviceId: state.meta.deviceId,
         lastSyncedAt: state.meta.lastSyncedAt,
-        lastServerRevision: state.meta.lastServerRevision
+        lastServerRevision: state.meta.lastServerRevision,
+        locationsVersion: state.meta.locationsVersion || 0,
+        categoriesVersion: state.meta.categoriesVersion || 0,
+        householdSettingsVersion: state.meta.householdSettingsVersion || 0
     } : {
         deviceId: getDeviceId(),
         lastSyncedAt: null,
-        lastServerRevision: null
+        lastServerRevision: null,
+        locationsVersion: 0,
+        categoriesVersion: 0,
+        householdSettingsVersion: 0
     };
     snap.segments = deepCloneJsonSafe(state.segments || {});
     snap.coordinates = deepCloneJsonSafe(state.coordinates || {});
@@ -1659,11 +1652,8 @@ function locPutDebounced() {
     _locationsDirty = true;
     _locPutTimer = setTimeout(function() {
         _locPutTimer = null;
-        // Get current locations version from canonical snapshot
-        getCanonicalSnapshot().then(function(snap) {
-            var ver = (snap && snap.meta) ? (snap.meta.locationsVersion || 0) : 0;
-            return queueLocationsPut(ver);
-        }).catch(function(){});
+        var ver = (appState.meta && appState.meta.locationsVersion != null) ? appState.meta.locationsVersion : 0;
+        queueLocationsPut(ver).catch(function(){});
     }, 500);
 }
 
@@ -1672,10 +1662,8 @@ function catPutDebounced() {
     _classesDirty = true;
     _catPutTimer = setTimeout(function() {
         _catPutTimer = null;
-        getCanonicalSnapshot().then(function(snap) {
-            var ver = (snap && snap.meta) ? (snap.meta.categoriesVersion || 0) : 0;
-            return queueCategoriesPut(ver);
-        }).catch(function(){});
+        var ver = (appState.meta && appState.meta.categoriesVersion != null) ? appState.meta.categoriesVersion : 0;
+        queueCategoriesPut(ver).catch(function(){});
     }, 500);
 }
 
@@ -1683,10 +1671,8 @@ function settingsPutDebounced() {
     if (_settingsPutTimer) clearTimeout(_settingsPutTimer);
     _settingsPutTimer = setTimeout(function() {
         _settingsPutTimer = null;
-        getCanonicalSnapshot().then(function(snap) {
-            var ver = (snap && snap.meta) ? (snap.meta.householdSettingsVersion || 0) : 0;
-            return queueHouseholdSettingsPut(ver);
-        }).catch(function(){});
+        var ver = (appState.meta && appState.meta.householdSettingsVersion != null) ? appState.meta.householdSettingsVersion : 0;
+        queueHouseholdSettingsPut(ver).catch(function(){});
     }, 500);
 }
 
@@ -1793,6 +1779,7 @@ async function flushOutboxV3() {
     if (!endpoint || !secret) return;
 
     _outboxFlushInProgress = true;
+    _syncState.outboxFlushInProgress = true;
     updatePillSyncStatus();
 
     try {
@@ -1805,12 +1792,28 @@ async function flushOutboxV3() {
             }
             _syncLastFailed = true;
         } else {
-            await processPushResults(result);
+            await processPushResults(result, result._submittedOps || []);
             _syncLastFailed = false;
-            _syncConflict = false;
+
+            if (result._conflictFound) {
+                _syncConflict = true;
+                if (result.snapshot) {
+                    updateLocalVersionsFromCanonical(result.snapshot);
+                }
+            } else {
+                _syncConflict = false;
+            }
+
             appState.meta.lastSyncedAt = new Date().toISOString();
             if (result.serverSeq) {
                 appState.meta.lastServerRevision = result.serverSeq;
+            }
+            if (result.snapshot && !result._conflictFound) {
+                updateLocalVersionsFromCanonical(result.snapshot);
+            }
+            var proj = await buildProjectedStateV3();
+            if (proj && proj.projected) {
+                applyProjectedToAppState(proj.projected);
             }
             saveStateToLocalStorage();
         }
@@ -1819,10 +1822,90 @@ async function flushOutboxV3() {
         console.error('[flushOutboxV3] Failed:', e);
     } finally {
         _outboxFlushInProgress = false;
+        _syncState.outboxFlushInProgress = false;
         updatePillSyncStatus();
         updateSyncStatusBadge();
         updateLoginSyncStatus();
     }
+}
+
+// Sync entity versions from canonical snapshot into appState items/entries.
+// Does NOT overwrite stock-entry quantities when pending STOCK_ADJUST ops exist,
+// because projection must preserve/replay outstanding adjustments.
+function updateLocalVersionsFromCanonical(snap) {
+    if (!snap) return;
+
+    if (snap.meta) {
+        appState.meta = appState.meta || {};
+        if (snap.meta.locationsVersion != null) appState.meta.locationsVersion = snap.meta.locationsVersion;
+        if (snap.meta.categoriesVersion != null) appState.meta.categoriesVersion = snap.meta.categoriesVersion;
+        if (snap.meta.householdSettingsVersion != null) appState.meta.householdSettingsVersion = snap.meta.householdSettingsVersion;
+    }
+
+    if (!snap.inventory) return;
+    var canonMap = {};
+    snap.inventory.forEach(function(item) { canonMap[item.id] = item; });
+
+    // Check for pending STOCK_ADJUST operations — if any exist, we must not
+    // overwrite local quantities because projection replays adjustments on top.
+    return idbGetOutboxOps().then(function(outboxOps) {
+        var hasPendingAdjust = {};
+        (outboxOps || []).forEach(function(op) {
+            if (op.type === 'STOCK_ADJUST' && (op.status === 'pending' || op.status === 'sending')) {
+                if (op.payload && op.payload.entryId) {
+                    hasPendingAdjust[op.payload.entryId] = true;
+                }
+            }
+        });
+
+        (appState.inventory || []).forEach(function(localItem) {
+            var canon = canonMap[localItem.id];
+            if (canon) {
+                localItem.version = canon.version || 0;
+                localItem.createdAt = canon.createdAt || localItem.createdAt;
+                localItem.updatedAt = canon.updatedAt || localItem.updatedAt;
+                if (canon.stockEntries && localItem.stockEntries) {
+                    var entryMap = {};
+                    canon.stockEntries.forEach(function(e) { entryMap[e.id] = e; });
+                    localItem.stockEntries.forEach(function(le) {
+                        var ce = entryMap[le.id];
+                        if (ce) {
+                            le.version = ce.version || le.version || 0;
+                            le.updatedAt = ce.updatedAt || le.updatedAt;
+                            if (ce.hiddenAt) le.hiddenAt = ce.hiddenAt;
+                            // Only copy quantity when there is no pending STOCK_ADJUST for this entry
+                            if (!hasPendingAdjust[le.id]) {
+                                le.quantity = ce.quantity;
+                            }
+                        }
+                    });
+                }
+            }
+        });
+    }).catch(function() {
+        // Fallback: sync versions without quantity protection
+        (appState.inventory || []).forEach(function(localItem) {
+            var canon = canonMap[localItem.id];
+            if (canon) {
+                localItem.version = canon.version || 0;
+                localItem.createdAt = canon.createdAt || localItem.createdAt;
+                localItem.updatedAt = canon.updatedAt || localItem.updatedAt;
+                if (canon.stockEntries && localItem.stockEntries) {
+                    var entryMap = {};
+                    canon.stockEntries.forEach(function(e) { entryMap[e.id] = e; });
+                    localItem.stockEntries.forEach(function(le) {
+                        var ce = entryMap[le.id];
+                        if (ce) {
+                            le.version = ce.version || le.version || 0;
+                            le.quantity = ce.quantity;
+                            le.updatedAt = ce.updatedAt || le.updatedAt;
+                            if (ce.hiddenAt) le.hiddenAt = ce.hiddenAt;
+                        }
+                    });
+                }
+            }
+        });
+    });
 }
 
 // Legacy flushOutbox redirected to v3
@@ -2317,9 +2400,10 @@ async function bootSyncManagerV3(opts) {
         return;
     }
 
-    if (_syncInProgress) return;
-    _syncInProgress = true;
-    updatePillSyncStatus();
+            if (_syncInProgress) return;
+            _syncInProgress = true;
+            _syncState.inProgress = true;
+            updatePillSyncStatus();
 
     try {
         // Step 1: Pull canonical snapshot
@@ -2337,22 +2421,34 @@ async function bootSyncManagerV3(opts) {
                 // Replace entire local state with cloud
                 replaceLocalStateWithCloud(pullResult.snapshot);
                 await idbClearOutbox().catch(function(){});
+                await idbClearConflicts().catch(function(){});
+                _syncConflict = false;
                 appState.meta = appState.meta || {};
                 appState.meta.lastSyncedAt = new Date().toISOString();
                 appState.meta.lastServerRevision = pullResult.serverSeq || 0;
                 saveStateToLocalStorage();
             } else {
-                // Merge: apply canonical snapshot, then push pending ops
-                mergeCanonicalIntoLocal(pullResult.snapshot);
+                // Do NOT overwrite local data with pull snapshot — pending ops must survive.
+                // Only sync version metadata so the subsequent push uses correct baseVersion.
+                syncVersionsFromPull(pullResult.snapshot);
                 saveStateToLocalStorage();
 
                 // Step 2: Push pending outbox ops
                 var pushResult = await syncPush();
                 if (pushResult && pushResult.success) {
-                    await processPushResults(pushResult);
+                    await processPushResults(pushResult, pushResult._submittedOps || []);
                     appState.meta.lastSyncedAt = new Date().toISOString();
                     if (pushResult.serverSeq) {
                         appState.meta.lastServerRevision = pushResult.serverSeq;
+                    }
+                    // Sync versions from server response (whether conflicts or applied)
+                    if (pushResult.snapshot) {
+                        updateLocalVersionsFromCanonical(pushResult.snapshot);
+                    }
+                    if (pushResult._conflictFound) {
+                        _syncConflict = true;
+                    } else {
+                        _syncConflict = false;
                     }
 
                     // Re-project: apply remaining pending ops on top
@@ -2396,6 +2492,7 @@ async function bootSyncManagerV3(opts) {
         scheduleBootRetry();
     } finally {
         _syncInProgress = false;
+        _syncState.inProgress = false;
         hideLoadingCloudOverlay();
         updatePillSyncStatus();
         updateSyncStatusBadge();
@@ -2408,23 +2505,48 @@ async function bootSyncManagerV3(opts) {
 async function bootSyncManager(opts) { return bootSyncManagerV3(opts); }
 
 function buildProjectedStateV3() {
-    return Promise.all([
-        getCanonicalSnapshot(),
-        idbGetOutboxOps(),
-        idbGetConflicts()
-    ]).then(function(results) {
-        var canonical = results[0] || emptyCanonicalSnapshot();
-        var pendingOps = results[1] || [];
-        var conflicts = results[2] || [];
-        var projection = projectState(canonical, pendingOps);
+    return buildProjectedState_().then(function(state) {
         return {
-            canonical: canonical,
-            projected: projection.projected,
-            pendingCount: pendingOps.length,
-            conflictCount: projection.conflictCount,
-            conflicts: conflicts
+            canonical: state.canonical || emptyCanonicalSnapshot(),
+            projected: state.projected || emptyCanonicalSnapshot(),
+            pendingCount: state.pendingCount || 0,
+            conflictCount: state.conflictCount || 0,
+            conflicts: state.conflicts || []
         };
     });
+}
+
+// Sync only version metadata from a pull response — does NOT overwrite local data.
+// This ensures the subsequent push uses the correct baseVersion without wiping
+// in-flight local changes.  Use mergeCanonicalIntoLocal only for force-reload.
+function syncVersionsFromPull(snap) {
+    if (!snap) return;
+    appState.meta = appState.meta || {};
+    if (snap.meta) {
+        if (snap.meta.locationsVersion != null) appState.meta.locationsVersion = snap.meta.locationsVersion;
+        if (snap.meta.categoriesVersion != null) appState.meta.categoriesVersion = snap.meta.categoriesVersion;
+        if (snap.meta.householdSettingsVersion != null) appState.meta.householdSettingsVersion = snap.meta.householdSettingsVersion;
+        if (snap.meta.serverSeq != null) appState.meta.lastServerRevision = snap.meta.serverSeq;
+    }
+    // Sync inventory item versions so ITEM_PUT uses correct baseVersion
+    if (snap.inventory) {
+        var canonMap = {};
+        snap.inventory.forEach(function(item) { canonMap[item.id] = item; });
+        (appState.inventory || []).forEach(function(localItem) {
+            var canon = canonMap[localItem.id];
+            if (canon && canon.version != null) {
+                localItem.version = canon.version;
+                if (canon.stockEntries && localItem.stockEntries) {
+                    var entryMap = {};
+                    canon.stockEntries.forEach(function(e) { entryMap[e.id] = e; });
+                    localItem.stockEntries.forEach(function(le) {
+                        var ce = entryMap[le.id];
+                        if (ce && ce.version != null) le.version = ce.version;
+                    });
+                }
+            }
+        });
+    }
 }
 
 function mergeCanonicalIntoLocal(snap) {
@@ -2449,6 +2571,14 @@ function mergeCanonicalIntoLocal(snap) {
     appState.meta = appState.meta || {};
     appState.meta.deviceId = localDeviceId;
     appState.meta.lastServerRevision = (snap.meta && snap.meta.serverSeq) || 0;
+
+    // Sync structural document versions from canonical snapshot
+    if (snap.meta) {
+        appState.meta.locationsVersion = snap.meta.locationsVersion != null ? snap.meta.locationsVersion : 0;
+        appState.meta.categoriesVersion = snap.meta.categoriesVersion != null ? snap.meta.categoriesVersion : 0;
+        appState.meta.householdSettingsVersion = snap.meta.householdSettingsVersion != null ? snap.meta.householdSettingsVersion : 0;
+    }
+
     appState.currentUser = localCurrentUser;
     appState.language = localLanguage;
     appState.selectedCategoryNodePath = localCatPath;
@@ -2477,6 +2607,19 @@ function applyProjectedToAppState(projected) {
 
     appState.meta = appState.meta || {};
     appState.meta.deviceId = localDeviceId;
+    // Use max to never regress: canonical snapshot via projection may carry updated versions
+    appState.meta.locationsVersion = Math.max(
+        appState.meta.locationsVersion || 0,
+        (projected.meta && projected.meta.locationsVersion) || 0
+    );
+    appState.meta.categoriesVersion = Math.max(
+        appState.meta.categoriesVersion || 0,
+        (projected.meta && projected.meta.categoriesVersion) || 0
+    );
+    appState.meta.householdSettingsVersion = Math.max(
+        appState.meta.householdSettingsVersion || 0,
+        (projected.meta && projected.meta.householdSettingsVersion) || 0
+    );
     appState.currentUser = localCurrentUser;
     appState.language = localLanguage;
     appState.selectedCategoryNodePath = localCatPath;
@@ -2488,8 +2631,70 @@ function applyProjectedToAppState(projected) {
 
 function showBootstrapUI() {
     // Show explicit bootstrap decision
-    showToast('Cloud storage is empty. Use Settings to upload this device.', 'warning');
+    showToast('Cloud storage is empty. Use Initialize Cloud Storage in Cloud Engine to upload.', 'warning');
     _syncState.cloudInitialized = false;
+    // Show the bootstrap button
+    var btn = document.getElementById('btnBootstrapCloud');
+    if (btn) { btn.classList.remove('hidden'); }
+    updateSyncStatusBadge();
+}
+
+async function triggerBootstrapUpload() {
+    var endpoint = localStorage.getItem('sys_gas_url');
+    var secret = localStorage.getItem('sys_api_pwd');
+    if (!endpoint || !secret) {
+        showToast('Missing cloud configuration. Set URL and token first.', 'error');
+        return;
+    }
+
+    var confirmed = await showAppConfirm(
+        'This will upload ALL local data to initialize the empty cloud storage.\n\n' +
+        'Inventory items: ' + (appState.inventory || []).length + '\n' +
+        'Segments: ' + Object.keys(appState.segments || {}).length + '\n' +
+        'Categories: ' + Object.keys(appState.categories || {}).length + '\n' +
+        'This action is only needed once per cloud deployment.',
+        'Upload to Cloud'
+    );
+    if (!confirmed) return;
+
+    showToast('Uploading to cloud...', 'info');
+
+    var snap = {
+        segments: deepCloneJsonSafe(appState.segments || {}),
+        coordinates: deepCloneJsonSafe(appState.coordinates || {}),
+        spatialBackgroundImage: appState.spatialBackgroundImage || null,
+        categories: deepCloneJsonSafe(appState.categories || {}),
+        inventory: deepCloneJsonSafe(appState.inventory || []),
+        users: deepCloneJsonSafe(appState.users || ['Default']),
+        userEmails: deepCloneJsonSafe(appState.userEmails || {}),
+        reminderDays: appState.reminderDays || 30
+    };
+
+    syncBootstrap(snap).then(function(result) {
+        if (result.success && result.snapshot) {
+            setCanonicalSnapshot(result.snapshot).then(function() {
+                _syncState.cloudInitialized = true;
+                _syncState.lastServerSeq = result.serverSeq || 0;
+                _syncLastFailed = false;
+                _syncConflict = false;
+                // Merge canonical versions into appState so subsequent edits use correct baseVersion
+                mergeCanonicalIntoLocal(result.snapshot);
+                saveStateToLocalStorage();
+                syncUIComponents();
+                var btn = document.getElementById('btnBootstrapCloud');
+                if (btn) { btn.classList.add('hidden'); }
+                updateSyncStatusBadge();
+                updateLoginSyncStatus();
+                showToast('Cloud initialized! ' + (appState.inventory || []).length + ' items uploaded.', 'success');
+            });
+        } else if (result.errorCode === 'SERVER_ALREADY_INITIALIZED') {
+            showToast('Cloud is already initialized. Pull the latest data instead.', 'warning');
+        } else {
+            showToast('Bootstrap failed: ' + (result.message || result.errorCode || 'unknown error'), 'error');
+        }
+    }).catch(function(e) {
+        showToast('Bootstrap failed: ' + (e.message || 'network error'), 'error');
+    });
 }
 
 function scheduleBootRetry() {
@@ -2505,6 +2710,264 @@ function replayOutboxOnTop(outboxOps) {
     outboxOps.forEach(function(op) {
         applyOpToState(appState, op);
     });
+}
+
+// ===== Conflict Resolution UI =====
+
+function refreshConflictList() {
+    Promise.all([idbGetConflicts(), getCanonicalSnapshot()]).then(function(results) {
+        var conflicts = results[0] || [];
+        var canon = results[1];
+        var panel = document.getElementById('conflictResolutionPanel');
+        var badge = document.getElementById('conflictCountBadge');
+        var container = document.getElementById('conflictListContainer');
+        if (!panel || !container) return;
+
+        var unresolved = conflicts.filter(function(c) { return !c.resolved; });
+
+        if (unresolved.length === 0) {
+            panel.classList.add('hidden');
+            _syncConflict = false;
+            updatePillSyncStatus();
+            updateSyncStatusBadge();
+            return;
+        }
+
+        panel.classList.remove('hidden');
+        if (badge) badge.innerText = String(unresolved.length);
+
+        var html = '';
+        unresolved.forEach(function(c) {
+            html += buildConflictCard(c, canon, conflicts);
+        });
+
+        container.innerHTML = html;
+    }).catch(function(e) {
+        console.error('[refreshConflictList]', e);
+    });
+}
+
+function buildConflictCard(c) {
+    var localItem = findInventoryItem(c.entityId);
+    var localName = localItem ? safeStr(localItem.name) : '(orphaned — local version missing)';
+    var entityName = localName;
+
+    // Server entity details
+    var serverEnt = c.serverEntity || {};
+    var serverName = safeStr(serverEnt.name || serverEnt.id || '');
+
+    // Client payload details
+    var clientPayload = c.clientPayload || {};
+    var clientItem = null;
+    if (clientPayload.item) clientItem = clientPayload.item;
+    else if (c.clientOpType === 'STOCK_ADJUST' || c.clientOpType === 'STOCK_ENTRY_PUT') {
+        clientItem = { id: c.entityId, _stockOp: true };
+    }
+
+    // Build comparison fields
+    var fields = [];
+    if (clientItem && !clientItem._stockOp) {
+        var compareKeys = ['name', 'brand', 'category', 'segment', 'container', 'subContainer',
+            'owner', 'uom', 'minQuantity', 'purchaseDate', 'warrantyDate', 'expiryDate', 'remarks'];
+        compareKeys.forEach(function(k) {
+            var localVal = clientItem[k];
+            var serverVal = serverEnt[k];
+            if (localVal !== undefined || serverVal !== undefined) {
+                fields.push({
+                    key: k,
+                    local: localVal,
+                    server: serverVal,
+                    changed: localVal !== serverVal
+                });
+            }
+        });
+
+        // Stock entries comparison
+        var localEntries = clientItem.stockEntries || [];
+        var serverEntries = serverEnt.stockEntries || [];
+        var allEntryIds = {};
+        localEntries.forEach(function(e) { allEntryIds[e.id] = true; });
+        serverEntries.forEach(function(e) { allEntryIds[e.id] = true; });
+        Object.keys(allEntryIds).forEach(function(eid) {
+            var le = localEntries.find(function(e) { return e.id === eid; });
+            var se = serverEntries.find(function(e) { return e.id === eid; });
+            if (!le) le = {};
+            if (!se) se = {};
+            var locText = le.quantity !== undefined ? 'qty:' + le.quantity + ' @ ' + safeStr(le.segment || '') + '/' + safeStr(le.container || '') : '(none)';
+            var srvText = se.quantity !== undefined ? 'qty:' + se.quantity + ' @ ' + safeStr(se.segment || '') + '/' + safeStr(se.container || '') : '(none)';
+            fields.push({
+                key: 'stock[' + (eid || '').substring(0, 8) + ']',
+                local: locText,
+                server: srvText,
+                changed: locText !== srvText
+            });
+        });
+    } else if (clientItem && clientItem._stockOp) {
+        fields.push({ key: 'operation', local: safeStr(c.clientOpType) + ' (see payload)', server: 'server entity v' + (c.actualVersion || '?'), changed: true });
+    } else if (c.clientOpType === 'LOCATIONS_PUT' || c.entityType === 'locations') {
+        // Structural: LOCATIONS_PUT — show segment/container counts
+        var clientSegs = (c.clientPayload && c.clientPayload.segments) || {};
+        var serverSegs = (c.serverEntity && c.serverEntity.segments) || {};
+        var clientSegCnt = Object.keys(clientSegs).length;
+        var serverSegCnt = Object.keys(serverSegs).length;
+        fields.push({ key: 'segments', local: clientSegCnt + ' segments', server: serverSegCnt + ' segments', changed: clientSegCnt !== serverSegCnt });
+
+        // Count containers
+        var clientConCnt = 0, serverConCnt = 0;
+        Object.keys(clientSegs).forEach(function(s) { clientConCnt += Object.keys(clientSegs[s] || {}).length; });
+        Object.keys(serverSegs).forEach(function(s) { serverConCnt += Object.keys(serverSegs[s] || {}).length; });
+        fields.push({ key: 'containers', local: clientConCnt + ' containers', server: serverConCnt + ' containers', changed: clientConCnt !== serverConCnt });
+
+        // Count sub-containers
+        var clientSubCnt = 0, serverSubCnt = 0;
+        Object.keys(clientSegs).forEach(function(s) {
+            var cm = clientSegs[s] || {};
+            Object.keys(cm).forEach(function(c) { clientSubCnt += (cm[c] || []).length; });
+        });
+        Object.keys(serverSegs).forEach(function(s) {
+            var cm = serverSegs[s] || {};
+            Object.keys(cm).forEach(function(c) { serverSubCnt += (cm[c] || []).length; });
+        });
+        fields.push({ key: 'sub-containers', local: clientSubCnt + ' sub-cons', server: serverSubCnt + ' sub-cons', changed: clientSubCnt !== serverSubCnt });
+
+        // Coordinates count
+        var clientCoordCnt = (c.clientPayload && c.clientPayload.coordinates) ? Object.keys(c.clientPayload.coordinates).length : 0;
+        var serverCoordCnt = (c.serverEntity && c.serverEntity.coordinates) ? Object.keys(c.serverEntity.coordinates).length : 0;
+        fields.push({ key: 'coordinates', local: clientCoordCnt + ' markers', server: serverCoordCnt + ' markers', changed: clientCoordCnt !== serverCoordCnt });
+
+        // List actual segment names that differ
+        var allSegNames = {};
+        Object.keys(clientSegs).forEach(function(s) { allSegNames[s] = true; });
+        Object.keys(serverSegs).forEach(function(s) { allSegNames[s] = true; });
+        var diffSegs = [];
+        Object.keys(allSegNames).forEach(function(s) {
+            if (!clientSegs[s]) diffSegs.push('+' + s + ' (server only)');
+            else if (!serverSegs[s]) diffSegs.push('-' + s + ' (your only)');
+        });
+        diffSegs.slice(0, 4).forEach(function(d) {
+            fields.push({ key: 'diff', local: d.indexOf('(your') >= 0 ? d : '', server: d.indexOf('(server') >= 0 ? d : '', changed: true });
+        });
+
+    } else if (c.clientOpType === 'CATEGORIES_PUT' || c.entityType === 'categories') {
+        var clientCats = (c.clientPayload && c.clientPayload.categories) || {};
+        var serverCats = (c.serverEntity && c.serverEntity.categories) || {};
+        var clientCatCnt = countCategoryKeys(clientCats);
+        var serverCatCnt = countCategoryKeys(serverCats);
+        fields.push({ key: 'categories', local: clientCatCnt + ' nodes', server: serverCatCnt + ' nodes', changed: clientCatCnt !== serverCatCnt });
+
+        // List category path differences
+        var cpLocal = collectCategoryPaths(clientCats);
+        var cpServer = collectCategoryPaths(serverCats);
+        var catDiffs = [];
+        cpLocal.forEach(function(p) { if (cpServer.indexOf(p) === -1) catDiffs.push('-' + p + ' (your only)'); });
+        cpServer.forEach(function(p) { if (cpLocal.indexOf(p) === -1) catDiffs.push('+' + p + ' (server only)'); });
+        catDiffs.slice(0, 4).forEach(function(d) {
+            fields.push({ key: 'diff', local: d.indexOf('(your') >= 0 ? d : '', server: d.indexOf('(server') >= 0 ? d : '', changed: true });
+        });
+
+    } else if (c.clientOpType === 'HOUSEHOLD_SETTINGS_PUT' || c.entityType === 'household_settings') {
+        var clientUsers = (c.clientPayload && c.clientPayload.users) || [];
+        var serverUsers = (c.serverEntity && c.serverEntity.users) || [];
+        fields.push({ key: 'users', local: (clientUsers).join(', '), server: (serverUsers).join(', '), changed: clientUsers.join(',') !== serverUsers.join(',') });
+        fields.push({ key: 'reminder days', local: '' + ((c.clientPayload && c.clientPayload.reminderDays) || '?'), server: '' + ((c.serverEntity && c.serverEntity.reminderDays) || '?'), changed: true });
+    } else {
+        var opType = safeStr(c.clientOpType || c.entityType);
+        fields.push({ key: 'operation type', local: opType, server: 'v' + (c.actualVersion || '?'), changed: true });
+    }
+
+    var hasFields = fields.length > 0;
+    var detail = '';
+    if (c.errorCode === 'VERSION_CONFLICT') {
+        detail = 'Version conflict: expected v' + c.expectedVersion + ', server at v' + c.actualVersion;
+    } else {
+        detail = safeStr(c.errorCode || 'Unknown conflict');
+    }
+
+    var html = '<div class="p-3 border border-amber-200 rounded-lg bg-white text-xs">';
+    html += '<div class="flex justify-between items-start mb-2">';
+    html += '<div><span class="font-bold text-slate-800">' + entityName + '</span>';
+    html += '<span class="text-slate-400 ml-2">' + safeStr(c.entityType || 'item') + '</span></div>';
+    html += '<span class="text-amber-600 font-medium text-[10px] whitespace-nowrap">' + detail + '</span>';
+    html += '</div>';
+
+    if (hasFields) {
+        html += '<div class="mb-2 border border-slate-100 rounded overflow-hidden">';
+        html += '<div class="grid grid-cols-12 gap-0 text-[10px] bg-slate-50 border-b border-slate-100 px-2 py-1 font-bold text-slate-500">';
+        html += '<span class="col-span-4">Field</span><span class="col-span-4 text-blue-600">Your Version</span><span class="col-span-4 text-emerald-600">Server Version</span>';
+        html += '</div>';
+        var shown = 0;
+        fields.forEach(function(f) {
+            if (shown >= 8) return;
+            var rowBg = f.changed ? 'bg-amber-50' : '';
+            html += '<div class="grid grid-cols-12 gap-0 px-2 py-1 ' + rowBg + ' border-b border-slate-50">';
+            html += '<span class="col-span-4 font-medium text-slate-500 truncate">' + f.key + '</span>';
+            html += '<span class="col-span-4 text-slate-700 truncate" title="' + safeAttr(f.local) + '">' + formatConflictVal(f.local) + '</span>';
+            html += '<span class="col-span-4 text-slate-700 truncate" title="' + safeAttr(f.server) + '">' + formatConflictVal(f.server) + '</span>';
+            html += '</div>';
+            shown++;
+        });
+        if (fields.length > 8) {
+            html += '<div class="px-2 py-1 text-slate-400 text-[10px]">+ ' + (fields.length - 8) + ' more fields differ</div>';
+        }
+        html += '</div>';
+    }
+
+    // Timestamps
+    if (serverEnt.updatedAt || serverEnt.createdAt) {
+        html += '<div class="text-[10px] text-slate-400 mb-1">Server: ' + safeStr(serverEnt.updatedAt || serverEnt.createdAt || '') + ' | Local: ' + safeStr(clientItem ? clientItem.updatedAt || '' : c.timestamp) + '</div>';
+    }
+
+    html += '<div class="flex gap-2">';
+    html += '<button onclick="resolveConflictUI(\'' + c.opId + '\', \'cloud\')" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-3 py-1.5 rounded border border-slate-300 transition-colors text-[10px]">Use Cloud Version</button>';
+    html += '<button onclick="resolveConflictUI(\'' + c.opId + '\', \'local\')" class="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium px-3 py-1.5 rounded border border-blue-300 transition-colors text-[10px]">Keep My Version</button>';
+    html += '</div></div>';
+
+    return html;
+}
+
+function formatConflictVal(v) {
+    if (v === undefined || v === null) return '\u2014';
+    if (v === '') return '(empty)';
+    return String(v).substring(0, 40);
+}
+
+function safeStr(s) { return escapeHtml(String(s || '')); }
+function safeAttr(s) {
+    if (s === undefined || s === null) return '';
+    return String(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function resolveConflictUI(opId, resolution) {
+    showToast('Resolving conflict...', 'info');
+    resolveConflict(opId, resolution).then(function(result) {
+        if (result.resolved) {
+            showToast('Conflict resolved.', 'success');
+            refreshConflictList();
+            updatePillSyncStatus();
+            updateSyncStatusBadge();
+            // If 'local' resolution, trigger flush to push the new operation
+            if (resolution === 'local') {
+                triggerBackgroundSyncV3();
+            } else {
+                // For 'cloud' resolution, re-project local state
+                buildProjectedStateV3().then(function(proj) {
+                    if (proj && proj.projected) {
+                        applyProjectedToAppState(proj.projected);
+                        saveStateToLocalStorage();
+                    }
+                });
+            }
+        } else {
+            showToast('Failed to resolve: ' + (result.error || 'unknown'), 'error');
+        }
+    }).catch(function(e) {
+        showToast('Resolution error: ' + e.message, 'error');
+    });
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // Application Init Hooks
@@ -2902,6 +3365,8 @@ function toggleOverflowMenu(e, btnEl) {
 function openCloudSettings() {
     saveFocusTrigger();
     document.getElementById('cloudSettingsModal').classList.remove('hidden');
+    // Refresh conflict list when opening settings
+    refreshConflictList();
     setTimeout(function() {
         var closeBtn = document.querySelector('#cloudSettingsModal button');
         if (closeBtn) closeBtn.focus();
@@ -3661,7 +4126,12 @@ function addUser() {
         if (emailInput.value.trim()) {
             appState.userEmails[name] = emailInput.value.trim();
         }
-        mutateState('ADD_USER', { username: name });
+        // Flush debounced settings immediately
+        if (_settingsPutTimer) { clearTimeout(_settingsPutTimer); _settingsPutTimer = null; }
+        var ver = (appState.meta && appState.meta.householdSettingsVersion != null) ? appState.meta.householdSettingsVersion : 0;
+        queueHouseholdSettingsPut(ver).then(function() {
+            flushOutboxV3().catch(function(){});
+        }).catch(function(){});
         syncUserInterface();
         input.value = '';
         emailInput.value = '';
@@ -3676,7 +4146,12 @@ async function removeUser(username) {
     if (appState.currentUser === username) {
         appState.currentUser = 'Default';
     }
-    mutateState('REMOVE_USER', { username: username });
+    // Flush debounced settings immediately
+    if (_settingsPutTimer) { clearTimeout(_settingsPutTimer); _settingsPutTimer = null; }
+    var ver = (appState.meta && appState.meta.householdSettingsVersion != null) ? appState.meta.householdSettingsVersion : 0;
+    queueHouseholdSettingsPut(ver).then(function() {
+        flushOutboxV3().catch(function(){});
+    }).catch(function(){});
     syncUserInterface();
 }
 
@@ -3742,7 +4217,12 @@ function syncUserInterface() {
 function commitReminderSettings() {
     var val = parseInt(document.getElementById('settingReminderDays').value) || 30;
     appState.reminderDays = Math.max(1, Math.min(365, val));
-    mutateState('SET_REMINDER', { reminderDays: appState.reminderDays });
+    // Flush debounced settings immediately
+    if (_settingsPutTimer) { clearTimeout(_settingsPutTimer); _settingsPutTimer = null; }
+    var ver = (appState.meta && appState.meta.householdSettingsVersion != null) ? appState.meta.householdSettingsVersion : 0;
+    queueHouseholdSettingsPut(ver).then(function() {
+        flushOutboxV3().catch(function(){});
+    }).catch(function(){});
     showToast('Reminder set to ' + appState.reminderDays + ' days before expiry.', 'success');
 }
 
@@ -4136,7 +4616,12 @@ function markMapDirty() {
 }
 
 function saveLayoutMap() {
-    mutateState('SAVE_LAYOUT', {});
+    // Flush debounced location changes immediately on explicit save
+    if (_locPutTimer) { clearTimeout(_locPutTimer); _locPutTimer = null; }
+    var ver = (appState.meta && appState.meta.locationsVersion != null) ? appState.meta.locationsVersion : 0;
+    queueLocationsPut(ver).then(function() {
+        flushOutboxV3().catch(function(){});
+    }).catch(function(){});
     _mapDirty = false;
     var btn = document.getElementById('btnSaveLayout');
     if (btn) {
@@ -4148,7 +4633,6 @@ function saveLayoutMap() {
     var badge = document.getElementById('mapUnsavedBadge');
     if (badge) badge.classList.add('hidden');
     showToast('Layout saved', 'success');
-    flushOutbox().catch(function(){});
 }
 
 function markClassesDirty() {
@@ -4168,6 +4652,12 @@ function markLocationsDirty() {
 }
 
 function saveClassification() {
+    // Flush debounced category changes immediately on explicit save
+    if (_catPutTimer) { clearTimeout(_catPutTimer); _catPutTimer = null; }
+    var ver = (appState.meta && appState.meta.categoriesVersion != null) ? appState.meta.categoriesVersion : 0;
+    queueCategoriesPut(ver).then(function() {
+        flushOutboxV3().catch(function(){});
+    }).catch(function(){});
     _classesDirty = false;
     var btn = document.getElementById('btnSaveClassification');
     if (btn) {
@@ -6060,12 +6550,32 @@ function commitCloudSystemCredentials() {
     if(dsKey) localStorage.setItem('sys_ds_api_key', dsKey);
 
     showToast('Local infrastructure access profile updated.', 'success');
+
+    // Check if cloud is initialized — show bootstrap button if not
+    if (url && token) {
+        syncPull().then(function(result) {
+            var btn = document.getElementById('btnBootstrapCloud');
+            if (btn) {
+                if (result.success && !result.initialized) {
+                    btn.classList.remove('hidden');
+                } else {
+                    btn.classList.add('hidden');
+                }
+            }
+            _syncState.cloudInitialized = result.success && result.initialized;
+        }).catch(function(){});
+    }
 }
 
 async function triggerSynchronousCloudBackupPush(baseRevision) {
     return syncPush().then(function(result) {
         if (result && result.success) {
-            return processPushResults(result).then(function() { return result; });
+            return processPushResults(result, result._submittedOps || []).then(function() {
+                if (result._conflictFound && result.snapshot) {
+                    updateLocalVersionsFromCanonical(result.snapshot);
+                }
+                return result;
+            });
         }
         return { success: false, error: (result && result.errorCode) || 'unknown' };
     }).catch(function(e) { return { success: false, error: e.message }; });
@@ -7159,53 +7669,53 @@ function diagnoseStorage() {
     var stateBytes = stateStr.length * 2;
     var inventoryCount = appState.inventory.length;
     idbGetPendingOutboxCount().then(function(queueLen) {
-    var idbImageCount = 0;
-    var idbThumbBytes = 0;
-    var idbFullBytes = 0;
-    var remoteCount = 0;
-    appState.inventory.forEach(function(item) {
-        if (item.imageSourceType === 'idb') {
-            idbImageCount++;
-            if (item.imageMeta) {
-                idbThumbBytes += item.imageMeta.thumbBytes || 0;
-                idbFullBytes += item.imageMeta.fullBytes || 0;
+        var idbImageCount = 0;
+        var idbThumbBytes = 0;
+        var idbFullBytes = 0;
+        var remoteCount = 0;
+        appState.inventory.forEach(function(item) {
+            if (item.imageSourceType === 'idb') {
+                idbImageCount++;
+                if (item.imageMeta) {
+                    idbThumbBytes += item.imageMeta.thumbBytes || 0;
+                    idbFullBytes += item.imageMeta.fullBytes || 0;
+                }
             }
+            if (item.imageUrl && item.imageUrl.indexOf('http') === 0) remoteCount++;
+        });
+        var idbTotalKB = ((idbThumbBytes + idbFullBytes) / 1024).toFixed(1);
+        var report = [
+            '=== Storage Diagnostic ===',
+            'Total localStorage: ' + (totalBytes / 1024 / 1024).toFixed(2) + ' MB (' + totalBytes + ' bytes)',
+            'App state only:     ' + (stateBytes / 1024 / 1024).toFixed(2) + ' MB (' + stateBytes + ' bytes)',
+            'Inventory items:    ' + inventoryCount,
+            'Pending outbox:     ' + queueLen,
+            'IDB-backed images:  ' + idbImageCount + ' (~' + idbTotalKB + ' KB in IndexedDB)',
+            'Remote URL images:  ' + remoteCount,
+            'Estimated limit:    ~5 MB (localStorage) + IndexedDB quota (varies)',
+            ''
+        ];
+        if (idbImageCount > 0) {
+            report.push('IDB IMAGE DETAILS:');
+            var ranked = [];
+            appState.inventory.forEach(function(item, i) {
+                if (item.imageSourceType === 'idb' && item.imageMeta) {
+                    ranked.push({ idx: i, name: item.name, kb: ((item.imageMeta.thumbBytes || 0) + (item.imageMeta.fullBytes || 0)) / 1024 });
+                }
+            });
+            ranked.sort(function(a, b) { return b.kb - a.kb; });
+            ranked.slice(0, 5).forEach(function(r) {
+                report.push('  [' + r.idx + '] ' + r.name + ': ' + r.kb.toFixed(1) + ' KB');
+            });
         }
-        if (item.imageUrl && item.imageUrl.indexOf('http') === 0) remoteCount++;
+        report.push('');
+        report.push('SUGGESTIONS:');
+        report.push('  - Run compactLocalStorage() to trim storage');
+        report.push('  - Call cleanupOrphanedImages() to free unreferenced blobs');
+        report.push('  - Remove unused items');
+        report.push('  - Purge Local Cache as last resort (also wipes IndexedDB)');
+        console.log(report.join('\n'));
     });
-    var idbTotalKB = ((idbThumbBytes + idbFullBytes) / 1024).toFixed(1);
-    var report = [
-        '=== Storage Diagnostic ===',
-        'Total localStorage: ' + (totalBytes / 1024 / 1024).toFixed(2) + ' MB (' + totalBytes + ' bytes)',
-        'App state only:     ' + (stateBytes / 1024 / 1024).toFixed(2) + ' MB (' + stateBytes + ' bytes)',
-        'Inventory items:    ' + inventoryCount,
-        'Sync queue entries: ' + queueLen,
-        'IDB-backed images:  ' + idbImageCount + ' (~' + idbTotalKB + ' KB in IndexedDB)',
-        'Remote URL images:  ' + remoteCount,
-        'Estimated limit:    ~5 MB (localStorage) + IndexedDB quota (varies)',
-        ''
-    ];
-    if (idbImageCount > 0) {
-        report.push('IDB IMAGE DETAILS:');
-        var ranked = [];
-        appState.inventory.forEach(function(item, i) {
-            if (item.imageSourceType === 'idb' && item.imageMeta) {
-                ranked.push({ idx: i, name: item.name, kb: ((item.imageMeta.thumbBytes || 0) + (item.imageMeta.fullBytes || 0)) / 1024 });
-            }
-        });
-        ranked.sort(function(a, b) { return b.kb - a.kb; });
-        ranked.slice(0, 5).forEach(function(r) {
-            report.push('  [' + r.idx + '] ' + r.name + ': ' + r.kb.toFixed(1) + ' KB');
-        });
-    }
-    report.push('');
-    report.push('SUGGESTIONS:');
-    report.push('  - Run compactLocalStorage() to trim storage');
-    report.push('  - Call cleanupOrphanedImages() to free unreferenced blobs');
-    report.push('  - Remove unused items');
-    report.push('  - Purge Local Cache as last resort (also wipes IndexedDB)');
-    console.log(report.join('\n'));
-    return report.join('\n');
 }
 
 function compactLocalStorage() {
@@ -7245,6 +7755,18 @@ function migrateLegacyState(state) {
     }
     if (state.meta.localSnapshotVersion === undefined) {
         state.meta.localSnapshotVersion = 0;
+        migrated = true;
+    }
+    if (state.meta.locationsVersion === undefined) {
+        state.meta.locationsVersion = 0;
+        migrated = true;
+    }
+    if (state.meta.categoriesVersion === undefined) {
+        state.meta.categoriesVersion = 0;
+        migrated = true;
+    }
+    if (state.meta.householdSettingsVersion === undefined) {
+        state.meta.householdSettingsVersion = 0;
         migrated = true;
     }
     if (state.meta.lastPushedSnapshotVersion === undefined) {

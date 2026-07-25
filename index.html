@@ -145,7 +145,7 @@
                 <h1 class="text-sm font-bold tracking-tight text-slate-900 truncate" data-i18n="appTitle">Find My Item</h1>
             </div>
             <div class="flex items-center gap-1.5 flex-shrink-0">
-                <span id="syncStatusPillMobile" class="sync-pill pill-synced text-[10px]" onclick="if(this.classList.contains('pill-pending')||this.classList.contains('pill-offline')||this.classList.contains('pill-conflict'))bootSyncManager()" title="Tap to sync">Synced</span>
+                <span id="syncStatusPillMobile" class="sync-pill pill-synced text-[10px]" onclick="if(this.classList.contains('pill-pending')||this.classList.contains('pill-offline'))bootSyncManager();if(this.classList.contains('pill-conflict'))openCloudSettings()" title="Tap to sync">Synced</span>
                 <button onclick="toggleOverflowMenu(event, this)" class="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors flex-shrink-0" aria-label="Menu">
                     <svg class="h-5 w-5 text-slate-600" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
                 </button>
@@ -162,7 +162,7 @@
                 <h1 class="text-sm font-bold tracking-tight text-slate-900 truncate" data-i18n="appTitle">Find My Item</h1>
             </div>
             <div class="flex items-center gap-2 flex-shrink-0">
-                <span id="syncStatusPill" class="sync-pill pill-synced" onclick="if(this.classList.contains('pill-pending')||this.classList.contains('pill-offline')||this.classList.contains('pill-conflict'))bootSyncManager()" title="Tap to sync">Synced</span>
+                <span id="syncStatusPill" class="sync-pill pill-synced" onclick="if(this.classList.contains('pill-pending')||this.classList.contains('pill-offline'))bootSyncManager();if(this.classList.contains('pill-conflict'))openCloudSettings()" title="Tap to sync">Synced</span>
                 <select id="headerUserSelect" onchange="switchCurrentUser(this.value)" class="text-xs border border-slate-200 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none bg-slate-50 text-slate-700 font-medium max-w-[100px]"></select>
                 <button onclick="switchLanguage(appState.language==='en'?'zh-Hant':'en')" class="text-[10px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md px-2 py-1.5 text-slate-600 font-medium transition-colors flex-shrink-0">中/EN</button>
                 <button id="btnHeaderSyncNow" onclick="bootSyncManager()" title="Sync from Google Sheet" class="btn-sync-refresh text-[10px] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md px-2 py-1.5 text-blue-600 font-medium transition-colors flex-shrink-0"><span>↻</span></button>
@@ -595,6 +595,7 @@
                             <input type="password" id="settingDeepSeekApiKey" placeholder="sk-..." class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-blue-500 outline-none font-mono">
                         </div>
                         <button onclick="commitCloudSystemCredentials()" class="w-full sm:w-auto bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-colors">Commit Network Profile Changes</button>
+                        <button onclick="triggerBootstrapUpload()" id="btnBootstrapCloud" class="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-colors ml-2 hidden" title="Upload all local data to initialize empty cloud storage">Initialize Cloud Storage</button>
                     </div>
                 </div>
 
@@ -642,6 +643,15 @@
                         <button onclick="triggerReminderCheckNow()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors shadow-sm">Send Reminder Test</button>
                         <span class="text-[10px] text-slate-400">Scans inventory and sends email reminders for all due items now.</span>
                     </div>
+                </div>
+
+                <div id="conflictResolutionPanel" class="bg-white p-5 rounded-xl border border-amber-300 bg-amber-50/30 shadow-sm hidden">
+                    <div class="flex justify-between items-center mb-3">
+                        <h2 class="text-sm font-bold uppercase tracking-wider text-amber-600">Sync Conflicts <span id="conflictCountBadge" class="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-bold ml-2">0</span></h2>
+                        <button onclick="refreshConflictList()" class="text-[10px] text-amber-600 hover:text-amber-800 font-medium">Refresh</button>
+                    </div>
+                    <p class="text-xs text-slate-500 mb-3">These items were edited on another device while you had pending changes. Choose which version to keep for each conflict.</p>
+                    <div id="conflictListContainer" class="space-y-2 max-h-64 overflow-y-auto"></div>
                 </div>
 
                 <div class="bg-white p-5 rounded-xl border border-red-200 bg-red-50/30 shadow-sm">
@@ -814,8 +824,8 @@
         </div>
     </nav>
 
-    <script src="sync-core.js?v=1"></script>
-    <script src="app.js?v=10"></script>
+    <script src="sync-core.js?v=3"></script>
+    <script src="app.js?v=12"></script>
 
     <button id="btnFab" onclick="quickAddAsset()" class="fixed right-6 w-14 h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-xl flex items-center justify-center z-50 transition-transform hover:scale-110 active:scale-95" style="bottom: calc(env(safe-area-inset-bottom, 0px) + 72px);" title="Quick Add Asset">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>

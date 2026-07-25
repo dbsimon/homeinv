@@ -33,6 +33,7 @@ var SYNC_OP_TYPES = Object.freeze({
 
 var SYNC_ERROR_CODES = Object.freeze({
   AUTH_FAILED: 'AUTH_FAILED',
+  AUTH_NOT_CONFIGURED: 'AUTH_NOT_CONFIGURED',
   PROTOCOL_VERSION_MISMATCH: 'PROTOCOL_VERSION_MISMATCH',
   SERVER_NOT_INITIALIZED: 'SERVER_NOT_INITIALIZED',
   SERVER_ALREADY_INITIALIZED: 'SERVER_ALREADY_INITIALIZED',
@@ -54,6 +55,13 @@ var SYNC_ERROR_CODES = Object.freeze({
 });
 
 var SYNC_TERMINAL_STATUSES = ['applied', 'duplicate'];
+
+var COMPACTABLE_OP_TYPES = Object.freeze([
+  SYNC_OP_TYPES.ITEM_PUT,
+  SYNC_OP_TYPES.LOCATIONS_PUT,
+  SYNC_OP_TYPES.CATEGORIES_PUT,
+  SYNC_OP_TYPES.HOUSEHOLD_SETTINGS_PUT
+]);
 
 // ─── Sync State ─────────────────────────────────────────────────────────────
 
@@ -181,15 +189,92 @@ function idbClearOutbox() {
   });
 }
 
-function idbGetPendingOutboxCount() {
+function idbUpdateOutboxOpField(opId, updates) {
   return openStateDb().then(function(db) {
     return new Promise(function(resolve, reject) {
-      var tx = db.transaction('outbox', 'readonly');
+      var tx = db.transaction('outbox', 'readwrite');
       var store = tx.objectStore('outbox');
-      var req = store.count();
-      req.onsuccess = function() { resolve(req.result); };
-      req.onerror = function() { reject(req.error); };
+      var req = store.get(opId);
+      req.onsuccess = function() {
+        var op = req.result;
+        if (op) {
+          Object.keys(updates).forEach(function(k) { op[k] = updates[k]; });
+          store.put(op);
+        }
+      };
+      tx.oncomplete = function() { resolve(); };
+      tx.onerror = function() { reject(tx.error); };
     });
+  });
+}
+
+function idbBatchUpdateStatus(opIds, newStatus) {
+  if (!opIds || opIds.length === 0) return Promise.resolve();
+  return openStateDb().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx = db.transaction('outbox', 'readwrite');
+      var store = tx.objectStore('outbox');
+      var completed = 0;
+      var total = opIds.length;
+      function checkDone() { completed++; if (completed >= total) resolve(); }
+      opIds.forEach(function(opId) {
+        var req = store.get(opId);
+        req.onsuccess = function() {
+          var op = req.result;
+          if (op) { op.status = newStatus; store.put(op); }
+          checkDone();
+        };
+        req.onerror = checkDone;
+      });
+    });
+  });
+}
+
+// ─── Pending-Operation Compaction ────────────────────────────────────────────
+
+function compactOrInsertVersionedOp(type, entityType, entityId, baseVersion, payload) {
+  var identity = type + '|' + (entityType || '') + '|' + (entityId || '');
+
+  return idbGetOutboxOps().then(function(ops) {
+    var pendingSame = (ops || []).filter(function(o) {
+      return o.status === 'pending'
+        && !o.dependsOnOpId
+        && getCompactionIdentity(o) === identity;
+    });
+
+    if (pendingSame.length === 0) {
+      var op = buildOp(type, entityType, entityId, baseVersion, payload, null);
+      return idbPutOutboxOp(op).then(function() { return op; });
+    }
+
+    pendingSame.sort(function(a, b) {
+      return (a.createdAt || '').localeCompare(b.createdAt || '');
+    });
+
+    var survivor = pendingSame[0];
+    survivor.payload = deepClone(payload);
+
+    var toDelete = pendingSame.slice(1).map(function(o) { return o.opId; });
+
+    return openStateDb().then(function(db) {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction('outbox', 'readwrite');
+        var store = tx.objectStore('outbox');
+        store.put(survivor);
+        toDelete.forEach(function(id) { store.delete(id); });
+        tx.oncomplete = function() { resolve(survivor); };
+        tx.onerror = function() { reject(tx.error); };
+      });
+    });
+  });
+}
+
+function idbGetPendingOutboxCount() {
+  return idbGetOutboxOps().then(function(ops) {
+    if (!ops || !ops.length) return 0;
+    return ops.filter(function(o) {
+      return o.status === 'pending' || o.status === 'sending' || o.status === 'conflict' || o.status === 'blocked' || o.status === 'rejected';
+    }).length;
   });
 }
 
@@ -257,6 +342,18 @@ function idbDeleteConflict(opId) {
   });
 }
 
+function idbClearConflicts() {
+  return openStateDb().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx = db.transaction('conflicts', 'readwrite');
+      var store = tx.objectStore('conflicts');
+      var req = store.clear();
+      req.onsuccess = function() { resolve(); };
+      req.onerror = function() { reject(req.error); };
+    });
+  });
+}
+
 function idbGetConflictCount() {
   return openStateDb().then(function(db) {
     return new Promise(function(resolve, reject) {
@@ -274,6 +371,24 @@ function idbGetConflictCount() {
 function deepClone(val) {
   if (val === undefined || val === null) return val;
   try { return JSON.parse(JSON.stringify(val)); } catch(e) { return val; }
+}
+
+// ─── Compaction Identity ────────────────────────────────────────────────────
+
+function getCompactionIdentity(op) {
+  if (!op || !op.type) return null;
+  switch (op.type) {
+    case SYNC_OP_TYPES.ITEM_PUT:
+      return op.type + '|' + (op.entityType || 'item') + '|' + (op.entityId || '');
+    case SYNC_OP_TYPES.LOCATIONS_PUT:
+      return SYNC_OP_TYPES.LOCATIONS_PUT + '|locations|locations';
+    case SYNC_OP_TYPES.CATEGORIES_PUT:
+      return SYNC_OP_TYPES.CATEGORIES_PUT + '|categories|categories';
+    case SYNC_OP_TYPES.HOUSEHOLD_SETTINGS_PUT:
+      return SYNC_OP_TYPES.HOUSEHOLD_SETTINGS_PUT + '|household_settings|household_settings';
+    default:
+      return null;
+  }
 }
 
 // ─── Operation Creation Helpers ─────────────────────────────────────────────
@@ -305,7 +420,7 @@ function queueOperation(type, entityType, entityId, baseVersion, payload, depend
 }
 
 function queueItemPut(item, baseVersion) {
-  return queueOperation(SYNC_OP_TYPES.ITEM_PUT, 'item', item.id, baseVersion, { item: item });
+  return compactOrInsertVersionedOp(SYNC_OP_TYPES.ITEM_PUT, 'item', item.id, baseVersion, { item: item });
 }
 
 function queueItemDelete(itemId, baseVersion) {
@@ -329,7 +444,7 @@ function queueStockAdjust(itemId, entryId, delta) {
 }
 
 function queueLocationsPut(baseVersion) {
-  return queueOperation(SYNC_OP_TYPES.LOCATIONS_PUT, 'locations', 'locations', baseVersion, {
+  return compactOrInsertVersionedOp(SYNC_OP_TYPES.LOCATIONS_PUT, 'locations', 'locations', baseVersion, {
     segments: deepClone(window._appStateRef ? window._appStateRef.segments : {}),
     coordinates: deepClone(window._appStateRef ? window._appStateRef.coordinates : {}),
     spatialBackgroundImage: window._appStateRef ? window._appStateRef.spatialBackgroundImage : null
@@ -337,13 +452,13 @@ function queueLocationsPut(baseVersion) {
 }
 
 function queueCategoriesPut(baseVersion) {
-  return queueOperation(SYNC_OP_TYPES.CATEGORIES_PUT, 'categories', 'categories', baseVersion, {
+  return compactOrInsertVersionedOp(SYNC_OP_TYPES.CATEGORIES_PUT, 'categories', 'categories', baseVersion, {
     categories: deepClone(window._appStateRef ? window._appStateRef.categories : {})
   });
 }
 
 function queueHouseholdSettingsPut(baseVersion) {
-  return queueOperation(SYNC_OP_TYPES.HOUSEHOLD_SETTINGS_PUT, 'household_settings', 'household_settings', baseVersion, {
+  return compactOrInsertVersionedOp(SYNC_OP_TYPES.HOUSEHOLD_SETTINGS_PUT, 'household_settings', 'household_settings', baseVersion, {
     users: deepClone(window._appStateRef ? window._appStateRef.users : ['Default']),
     userEmails: deepClone(window._appStateRef ? window._appStateRef.userEmails : {}),
     reminderDays: window._appStateRef ? window._appStateRef.reminderDays : 30
@@ -609,30 +724,50 @@ function syncPull() {
  * Returns { success, serverSeq, results[], snapshot }
  */
 function syncPush() {
-  return idbGetOutboxOps().then(function(ops) {
-    if (!ops || ops.length === 0) {
-      return { success: true, serverSeq: 0, results: [], snapshot: null };
+  return idbGetOutboxOps().then(function(allOps) {
+    var pendingOps = (allOps || []).filter(function(o) { return o.status === 'pending'; });
+    if (!pendingOps || pendingOps.length === 0) {
+      return { success: true, serverSeq: 0, results: [], snapshot: null, _submittedOps: [] };
     }
 
-    var payload = {
-      deviceId: getDeviceId(),
-      requestId: generateRequestId(),
-      operations: ops.map(function(op) {
-        return {
-          opId: op.opId,
-          type: op.type,
-          entityType: op.entityType,
-          entityId: op.entityId,
-          baseVersion: op.baseVersion || 0,
-          dependsOnOpId: op.dependsOnOpId || null,
-          createdAt: op.createdAt,
-          deviceId: op.deviceId,
-          payload: op.payload
-        };
-      })
-    };
+    var opIds = pendingOps.map(function(o) { return o.opId; });
+    return idbBatchUpdateStatus(opIds, 'sending').then(function() {
+      var payload = {
+        deviceId: getDeviceId(),
+        requestId: generateRequestId(),
+        operations: pendingOps.map(function(op) {
+          return {
+            opId: op.opId,
+            type: op.type,
+            entityType: op.entityType,
+            entityId: op.entityId,
+            baseVersion: op.baseVersion || 0,
+            dependsOnOpId: op.dependsOnOpId || null,
+            createdAt: op.createdAt,
+            deviceId: op.deviceId,
+            payload: op.payload
+          };
+        })
+      };
 
-    return syncFetch('SYNC_PUSH', payload);
+      return syncFetch('SYNC_PUSH', payload).then(function(result) {
+        result._submittedOps = pendingOps;
+        return result;
+      }).catch(function(err) {
+        return idbBatchUpdateStatus(opIds, 'pending').then(function() {
+          return {
+            success: false,
+            errorCode: 'INTERNAL_ERROR',
+            message: (err && err.message) || 'Network error',
+            retryable: true,
+            _submittedOps: [],
+            serverSeq: 0,
+            results: [],
+            snapshot: null
+          };
+        });
+      });
+    });
   });
 }
 
@@ -658,18 +793,26 @@ function syncBootstrap(snapshot) {
  *   - Keep 'blocked' and 'rejected' in outbox
  *   - Update canonical snapshot cache from server
  */
-function processPushResults(result) {
+function processPushResults(result, submittedOps) {
   if (!result || !result.success) return Promise.resolve(result);
 
-  var promises = [];
+  var ops = submittedOps || [];
+  var opMap = {};
+  ops.forEach(function(o) { opMap[o.opId] = o; });
 
-  // Process per-operation results
+  var promises = [];
+  var conflictFound = false;
+  var handledOpIds = {};
+
   if (result.results && result.results.length > 0) {
     result.results.forEach(function(r) {
+      handledOpIds[r.opId] = true;
       if (r.status === 'applied' || r.status === 'duplicate') {
         promises.push(idbDeleteOutboxOp(r.opId).catch(function(){}));
       } else if (r.status === 'conflict') {
-        // Store conflict record
+        conflictFound = true;
+        var submittedOp = opMap[r.opId] || {};
+        promises.push(idbUpdateOutboxOpField(r.opId, { status: 'conflict' }).catch(function(){}));
         promises.push(idbPutConflict({
           opId: r.opId,
           status: 'conflict',
@@ -679,15 +822,23 @@ function processPushResults(result) {
           expectedVersion: r.expectedVersion,
           actualVersion: r.actualVersion,
           serverEntity: r.serverEntity || null,
+          clientPayload: deepClone(submittedOp.payload || null),
+          clientOpType: submittedOp.type || '',
           resolved: false,
           timestamp: new Date().toISOString()
         }).catch(function(){}));
+      } else if (r.status === 'blocked' || r.status === 'rejected') {
+        promises.push(idbUpdateOutboxOpField(r.opId, { status: r.status }).catch(function(){}));
       }
-      // blocked and rejected stay in outbox for visibility
     });
   }
 
-  // Update canonical snapshot if provided
+  ops.forEach(function(op) {
+    if (!handledOpIds[op.opId] && op.status === 'sending') {
+      promises.push(idbUpdateOutboxOpField(op.opId, { status: 'pending' }).catch(function(){}));
+    }
+  });
+
   if (result.snapshot) {
     promises.push(setCanonicalSnapshot(result.snapshot));
     _syncState.lastServerSeq = result.snapshot.meta ? result.snapshot.meta.serverSeq || 0 : 0;
@@ -698,7 +849,11 @@ function processPushResults(result) {
   }
 
   _syncState.lastSyncedAt = new Date().toISOString();
-  return Promise.all(promises).then(function() { return result; });
+
+  return Promise.all(promises).then(function() {
+    result._conflictFound = conflictFound;
+    return result;
+  });
 }
 
 // ─── Full Sync Flow ─────────────────────────────────────────────────────────
@@ -733,7 +888,7 @@ function fullSync() {
 
         // Step 2: Push pending ops
         return syncPush().then(function(pushResult) {
-          return processPushResults(pushResult).then(function() {
+          return processPushResults(pushResult, pushResult._submittedOps || []).then(function() {
             _syncState.lastFailed = false;
             return buildProjectedState_();
           });
@@ -771,13 +926,21 @@ function buildProjectedState_() {
 
     var projection = projectState(canonical, pendingOps);
 
+    var activeCount = 0;
+    (pendingOps || []).forEach(function(o) {
+      if (o.status === 'pending' || o.status === 'sending' || o.status === 'conflict'
+          || o.status === 'blocked' || o.status === 'rejected') {
+        activeCount++;
+      }
+    });
+
     return {
       canonical: canonical,
       projected: projection.projected,
-      pendingCount: pendingOps.length,
+      pendingCount: activeCount,
       conflictCount: projection.conflictCount,
       conflicts: conflicts,
-      synced: pendingOps.length === 0 && projection.conflictCount === 0 && !_syncState.lastFailed,
+      synced: activeCount === 0 && projection.conflictCount === 0 && !_syncState.lastFailed,
       protocolMismatch: _syncState.protocolMismatch,
       cloudInitialized: _syncState.cloudInitialized,
       lastServerSeq: _syncState.lastServerSeq,
@@ -803,45 +966,95 @@ function resolveConflict(opId, resolution, customPayload) {
     var conflictOp = ops.find(function(o) { return o.opId === opId; });
     var conflictRecord = conflicts.find(function(c) { return c.opId === opId; });
 
-    if (!conflictOp) return { resolved: false, error: 'conflict not found' };
+    if (!conflictRecord) return { resolved: false, error: 'conflict record not found' };
 
     if (resolution === 'cloud') {
-      // Accept server version — just delete the conflict
-      return idbDeleteOutboxOp(opId).then(function() {
-        return idbDeleteConflict(opId).catch(function(){});
-      }).then(function() {
-        return { resolved: true };
+      // Accept server version — delete the conflict record and outbox op (if any)
+      var promises = [idbDeleteConflict(opId).catch(function(){})];
+      if (conflictOp) promises.push(idbDeleteOutboxOp(opId).catch(function(){}));
+
+      // If serverEntity is provided, update the local item from canonical
+      if (snap && snap.inventory && conflictRecord.serverEntity) {
+        var localItem = findItemInSnapshot(snap, conflictRecord.entityId);
+        if (localItem) {
+          // Local already has server version from last pull — no action needed
+        }
+      }
+
+      return Promise.all(promises).then(function() {
+        return { resolved: true, resolution: 'cloud' };
       });
     }
 
     if (resolution === 'local') {
-      // Resubmit with updated baseVersion
-      var newOp = deepClone(conflictOp);
-      newOp.opId = generateOpId();
-      newOp.createdAt = new Date().toISOString();
+      var newBaseVersion = (conflictRecord.actualVersion !== undefined) ? conflictRecord.actualVersion : 0;
+      var opType = conflictOp ? conflictOp.type : conflictRecord.clientOpType || '';
+      var entityType = conflictOp ? conflictOp.entityType : conflictRecord.entityType || 'item';
+      var entityId = conflictOp ? conflictOp.entityId : conflictRecord.entityId;
+      var payload;
 
-      if (customPayload) {
-        newOp.payload = customPayload;
+      if (opType === SYNC_OP_TYPES.ITEM_PUT && conflictRecord.serverEntity) {
+        // Rebase onto the server entity, overlaying only allowed editable fields
+        var rebased = deepClone(conflictRecord.serverEntity);
+        var clientItem = null;
+        if (conflictOp && conflictOp.payload && conflictOp.payload.item) {
+          clientItem = conflictOp.payload.item;
+        } else if (conflictRecord.clientPayload && conflictRecord.clientPayload.item) {
+          clientItem = conflictRecord.clientPayload.item;
+        }
+        if (clientItem) {
+          var allowedEditable = [
+            'barcodeId', 'name', 'brand', 'category', 'itemType', 'owner',
+            'uom', 'minQuantity', 'remarks', 'aiMetadata',
+            'imageUrl', 'imageThumbUrl', 'imageSourceType', 'imageThumbKey',
+            'imageFullKey', 'imageMeta',
+            'segment', 'container', 'subContainer',
+            'purchaseDate', 'warrantyDate', 'expiryDate'
+          ];
+          allowedEditable.forEach(function(f) {
+            if (clientItem[f] !== undefined) rebased[f] = clientItem[f];
+          });
+        }
+        payload = { item: rebased };
+      } else if (conflictOp) {
+        payload = deepClone(conflictOp.payload);
+      } else if (conflictRecord.clientPayload) {
+        payload = deepClone(conflictRecord.clientPayload);
+      } else {
+        return idbDeleteConflict(opId).then(function() {
+          return { resolved: true, resolution: 'local', note: 'no payload to resubmit' };
+        });
       }
 
-      // Use the current server version
-      if (conflictRecord && conflictRecord.actualVersion !== undefined) {
-        newOp.baseVersion = conflictRecord.actualVersion;
-      }
+      var newOp = {
+        opId: generateOpId(),
+        type: opType || (entityType === 'item' ? SYNC_OP_TYPES.ITEM_PUT : entityType),
+        entityType: entityType,
+        entityId: entityId,
+        baseVersion: newBaseVersion,
+        dependsOnOpId: null,
+        createdAt: new Date().toISOString(),
+        deviceId: getDeviceId(),
+        payload: customPayload || payload,
+        status: 'pending'
+      };
 
-      newOp.status = 'pending';
-
-      return idbDeleteOutboxOp(opId).then(function() {
-        return idbDeleteConflict(opId).catch(function(){});
+      return idbDeleteConflict(opId).catch(function(){}).then(function() {
+        if (conflictOp) return idbDeleteOutboxOp(opId).catch(function(){});
       }).then(function() {
         return idbPutOutboxOp(newOp);
       }).then(function() {
-        return { resolved: true, newOpId: newOp.opId };
+        return { resolved: true, newOpId: newOp.opId, resolution: 'local' };
       });
     }
 
     return { resolved: false, error: 'unknown resolution' };
   });
+}
+
+function findItemInSnapshot(snap, itemId) {
+  if (!snap || !snap.inventory) return null;
+  return snap.inventory.find(function(i) { return i.id === itemId; }) || null;
 }
 
 // ─── Bootstrap Flow ─────────────────────────────────────────────────────────
@@ -892,6 +1105,7 @@ function getSyncStatusSummary() {
     if (!isOnline()) return { state: 'offline', pending: pending, conflicts: conflicts };
     if (_syncState.lastFailed && pending > 0) return { state: 'offline', pending: pending, conflicts: conflicts };
     if (!_syncState.cloudInitialized && !_syncState.lastFailed) return { state: 'cloud_uninitialized', pending: pending, conflicts: conflicts };
+    if (!_syncState.cloudInitialized) return { state: 'cloud_uninitialized', pending: pending, conflicts: conflicts };
     if (pending > 0) return { state: 'pending', pending: pending, conflicts: conflicts };
     if (_syncState.lastSyncedAt) return { state: 'synced', pending: 0, conflicts: 0 };
     return { state: 'offline', pending: pending, conflicts: conflicts };

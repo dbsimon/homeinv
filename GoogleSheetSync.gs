@@ -34,9 +34,7 @@ function getSecretToken() {
   var props = PropertiesService.getScriptProperties();
   var token = props.getProperty('SYNC_SECRET_TOKEN');
   if (!token) {
-    // Legacy fallback: try the old hardcoded default for migration
-    // Remove this after migration — see README
-    return 'secretToken123';
+    return null; // Fail closed — must be configured in Script Properties
   }
   return token;
 }
@@ -56,8 +54,10 @@ function errorResponse_(code, message, retryable) {
 }
 
 function validateToken_(token) {
+  var secret = getSecretToken();
+  if (!secret) return { valid: false, code: 'AUTH_NOT_CONFIGURED', message: 'Server not configured (SYNC_SECRET_TOKEN missing in Script Properties).' };
   if (!token) return { valid: false, code: 'AUTH_FAILED', message: 'Missing authentication token.' };
-  if (token !== getSecretToken()) return { valid: false, code: 'AUTH_FAILED', message: 'Invalid authentication token.' };
+  if (token !== secret) return { valid: false, code: 'AUTH_FAILED', message: 'Invalid authentication token.' };
   return { valid: true };
 }
 
@@ -476,7 +476,7 @@ function handleSyncBootstrapV3_(params) {
 
   var deviceId = payload.deviceId || 'unknown';
   var requestId = payload.requestId || '';
-  var expectedServerSeq = parseInt(payload.expectedServerSeq || -1, 10);
+  var expectedServerSeq = payload.expectedServerSeq != null ? parseInt(payload.expectedServerSeq, 10) : -1;
 
   var lock = LockService.getScriptLock();
   var acquired = false;
@@ -648,6 +648,7 @@ function handleSyncPushV3_(params) {
 
     var results = [];
     var currentSeq = snap.meta.serverSeq;
+    var batchEntityVersions = {}; // Track version bumps within this batch for diagnostics
 
     for (var i = 0; i < operations.length; i++) {
       var op = operations[i];
@@ -657,6 +658,17 @@ function handleSyncPushV3_(params) {
         currentSeq += 1;
         result.serverSeq = currentSeq;
         snapshotResultToRecord_(result, op);
+        // Track entity version changes for diagnostic
+        var entityKey = (result.entityType || '') + '/' + (result.entityId || '');
+        batchEntityVersions[entityKey] = result.entityVersion || 0;
+      }
+
+      // Add diagnostic note for self-generated conflicts within batch
+      if (result.status === 'conflict' && result.errorCode === 'VERSION_CONFLICT') {
+        var diagKey = (result.entityType || '') + '/' + (result.entityId || '');
+        if (batchEntityVersions[diagKey] !== undefined) {
+          result._diagnostic = 'SELF_CONFLICT: entity ' + diagKey + ' was already updated in this batch (prev version ' + batchEntityVersions[diagKey] + '). Client should compact pending operations for this entity before push.';
+        }
       }
 
       results.push(result);
