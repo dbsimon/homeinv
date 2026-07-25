@@ -1526,6 +1526,8 @@ function replaceLocalStateWithCloud(cloud) {
     updateSyncBanner();
     updateLoginSyncStatus();
 }
+// Legacy sync helper retained for backward reference only.
+// Protocol v3 runtime must use fullSync() + buildProjectedState().
 async function startupLoadFromCloud() {
     var endpoint = localStorage.getItem('sys_gas_url');
     var secret = localStorage.getItem('sys_api_pwd');
@@ -1785,6 +1787,8 @@ function stampNow(obj) {
 
 // getOpBaseVersionForAction and captureSyncOperationPayload removed — v3 uses sync-core protocol
 
+// Legacy sync helper retained for backward reference only.
+// Protocol v3 runtime must use fullSync() + buildProjectedState().
 function mergeRemoteInventoryPayload(payload) {
     if (!payload) return;
     var localMap = {};
@@ -1801,6 +1805,8 @@ function mergeRemoteInventoryPayload(payload) {
     appState.reminderLog = Object.assign({}, appState.reminderLog || {}, payload.reminderLog || {});
 }
 
+// Legacy sync helper retained for backward reference only.
+// Protocol v3 runtime must use fullSync() + buildProjectedState().
 function applyRemoteLogOperations(ops, ackedOpIds) {
     if (!ops || !ops.length) return { applied: 0, conflicts: 0 };
     appState.meta = appState.meta || {};
@@ -1848,64 +1854,124 @@ function applyRemoteLogOperations(ops, ackedOpIds) {
     return stats;
 }
 
-// ===== Outbox flush (v3) — sends queued ops to cloud via sync-core =====
-async function flushOutboxV3() {
-    if (_outboxFlushInProgress) return;
-    if (_syncInProgress) return;
+// ===== Diagnostic Sync Logging =====
+var SYNC_DEBUG = true;
+function syncDebug() {
+  if (SYNC_DEBUG && console && console.log) {
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift('[sync-v3]');
+    console.log.apply(console, args);
+  }
+}
 
-    var endpoint = localStorage.getItem('sys_gas_url');
-    var secret = localStorage.getItem('sys_api_pwd');
-    if (!endpoint || !secret) return;
+// ===== Full v3 Sync Entry Point =====
+// Single authoritative app-level sync: PULL canonical → PUSH pending → project → UI.
+async function runFullSyncV3() {
+  if (_outboxFlushInProgress || _syncInProgress) {
+    syncDebug('skipped — sync already in progress');
+    return null;
+  }
 
-    _outboxFlushInProgress = true;
-    _syncState.outboxFlushInProgress = true;
+  var endpoint = localStorage.getItem('sys_gas_url');
+  var secret = localStorage.getItem('sys_api_pwd');
+  if (!endpoint || !secret) {
     updatePillSyncStatus();
+    updateSyncStatusBadge();
+    syncDebug('skipped — missing endpoint or secret');
+    return null;
+  }
 
-    try {
-        var result = await syncPush();
-        if (!result || !result.success) {
-            if (result && result.errorCode === 'PROTOCOL_VERSION_MISMATCH') {
-                _syncState.protocolMismatch = true;
-            } else if (result && result.errorCode === 'SERVER_NOT_INITIALIZED') {
-                _syncState.cloudInitialized = false;
-            }
-            _syncLastFailed = true;
-        } else {
-            await processPushResults(result, result._submittedOps || []);
-            _syncLastFailed = false;
+  _outboxFlushInProgress = true;
+  _syncState.outboxFlushInProgress = true;
+  _syncInProgress = true;
+  _syncState.inProgress = true;
+  updatePillSyncStatus();
+  updateSyncStatusBadge();
 
-            if (result._conflictFound) {
-                _syncConflict = true;
-                if (result.snapshot) {
-                    updateLocalVersionsFromCanonical(result.snapshot);
-                }
-            } else {
-                _syncConflict = false;
-            }
+  var startMs = Date.now();
+  syncDebug('full sync started', 'device:', getDeviceId());
 
-            appState.meta.lastSyncedAt = new Date().toISOString();
-            if (result.serverSeq) {
-                appState.meta.lastServerRevision = result.serverSeq;
-            }
-            if (result.snapshot && !result._conflictFound) {
-                updateLocalVersionsFromCanonical(result.snapshot);
-            }
-            var proj = await buildProjectedStateV3();
-            if (proj && proj.projected) {
-                applyProjectedToAppState(proj.projected);
-            }
-            saveStateToLocalStorage();
-        }
-    } catch (e) {
-        _syncLastFailed = true;
-        console.error('[flushOutboxV3] Failed:', e);
-    } finally {
-        _outboxFlushInProgress = false;
-        _syncState.outboxFlushInProgress = false;
-        updatePillSyncStatus();
-        updateSyncStatusBadge();
-        updateLoginSyncStatus();
+  try {
+    var pendingBefore = await idbGetPendingOutboxCount().catch(function() { return -1; });
+    syncDebug('pull starting — pending outbox:', pendingBefore);
+
+    var result = await fullSync();
+
+    if (!result) {
+      syncDebug('fullSync returned null (guard conflict)');
+      return null;
     }
+
+    syncDebug('pull result: initialized=' + result.cloudInitialized
+      + ' serverSeq=' + result.lastServerSeq
+      + ' inv=' + ((result.projected && result.projected.inventory) ? result.projected.inventory.length : '?')
+      + ' cats=' + (result.projected ? Object.keys(result.projected.categories || {}).length : '?'));
+
+    syncDebug('push result: pending=' + result.pendingCount
+      + ' conflicts=' + result.conflictCount
+      + ' synced=' + result.synced
+      + (result._conflictFound ? ' CONFLICT' : '')
+      + (result._pullFailed ? ' PULL_FAILED' : '')
+      + (result._pushFailed ? ' PUSH_FAILED' : ''));
+
+    // Apply projection to appState
+    if (result.projected) {
+      syncDebug('applying projection — inv=' + ((result.projected.inventory || []).length)
+        + ' cats=' + Object.keys(result.projected.categories || {}).length
+        + ' segs=' + Object.keys(result.projected.segments || {}).length);
+      applyProjectedToAppState(result.projected);
+    } else {
+      syncDebug('no projected state in result, building manually');
+      var proj = await buildProjectedStateV3();
+      if (proj && proj.projected) {
+        applyProjectedToAppState(proj.projected);
+      }
+    }
+
+    saveStateToLocalStorage();
+    syncUIComponents();
+    updatePillSyncStatus();
+    updateSyncStatusBadge();
+    updateLoginSyncStatus();
+
+    _syncLastFailed = !!(result._pullFailed || result._pushFailed);
+    _syncConflict = !!(result.conflictCount > 0 || result._conflictFound);
+
+    var elapsed = Date.now() - startMs;
+    syncDebug('full sync complete — ' + elapsed + 'ms'
+      + ' lastFailed=' + _syncLastFailed
+      + ' conflicts=' + result.conflictCount);
+
+    return result;
+  } catch (err) {
+    _syncLastFailed = true;
+    var msg = (err && err.message) || String(err);
+    var code = (err && err.errorCode) || '';
+    syncDebug('full sync FAILED', code, msg);
+    console.error('[runFullSyncV3] Failed:', err);
+    updatePillSyncStatus();
+    updateSyncStatusBadge();
+    updateLoginSyncStatus();
+    throw err;
+  } finally {
+    _outboxFlushInProgress = false;
+    _syncState.outboxFlushInProgress = false;
+    _syncInProgress = false;
+    _syncState.inProgress = false;
+    updatePillSyncStatus();
+    updateSyncStatusBadge();
+    updateLoginSyncStatus();
+  }
+}
+
+// ===== Outbox flush (v3) — compatibility wrapper, delegates to full sync =====
+// All sync paths must use runFullSyncV3() / fullSync() which always pulls first.
+// Direct syncPush() from app.js is forbidden.
+async function flushOutboxV3() {
+  return runFullSyncV3().catch(function(err) {
+    // Swallow for compatibility; runFullSyncV3 already logs + updates UI
+    syncDebug('flushOutboxV3 wrapper caught error:', (err && err.message) || err);
+  });
 }
 
 // Sync entity versions from canonical snapshot into appState items/entries.
@@ -2467,7 +2533,7 @@ function closeAppPrompt() {
     restoreFocusTrigger();
 }
 
-// ===== Boot Sync Manager (v3) — pulls canonical snapshot, pushes pending ops =====
+// ===== Boot Sync Manager (v3) — delegates to fullSync() =====
 async function bootSyncManagerV3(opts) {
     opts = opts || {};
     var forceCloudWins = !!opts.forceCloudWins;
@@ -2479,90 +2545,77 @@ async function bootSyncManagerV3(opts) {
         return;
     }
 
-            if (_syncInProgress) return;
-            _syncInProgress = true;
-            _syncState.inProgress = true;
-            updatePillSyncStatus();
+    if (_syncInProgress) return;
+    _syncInProgress = true;
+    _syncState.inProgress = true;
+    updatePillSyncStatus();
 
     try {
-        // Step 1: Pull canonical snapshot
-        var pullResult = await syncPull();
-
-        if (pullResult.success && pullResult.initialized && pullResult.snapshot) {
-            // Server has data
-            _syncState.cloudInitialized = true;
-            _syncState.lastServerSeq = pullResult.serverSeq || 0;
-
-            // Update canonical snapshot cache
-            await setCanonicalSnapshot(pullResult.snapshot);
-
-            if (forceCloudWins) {
-                // Replace entire local state with cloud
+        if (forceCloudWins) {
+            // Force cloud wins: pull canonical snapshot, replace local state
+            var pullResult = await syncPull();
+            if (pullResult.success && pullResult.initialized && pullResult.snapshot) {
+                _syncState.cloudInitialized = true;
+                _syncState.lastServerSeq = pullResult.serverSeq || 0;
+                await setCanonicalSnapshot(pullResult.snapshot);
                 replaceLocalStateWithCloud(pullResult.snapshot);
                 await idbClearOutbox().catch(function(){});
                 await idbClearConflicts().catch(function(){});
                 _syncConflict = false;
+                _syncLastFailed = false;
                 appState.meta = appState.meta || {};
                 appState.meta.lastSyncedAt = new Date().toISOString();
                 appState.meta.lastServerRevision = pullResult.serverSeq || 0;
                 saveStateToLocalStorage();
+            } else if (pullResult.success && !pullResult.initialized) {
+                _syncState.cloudInitialized = false;
+                _syncLastFailed = false;
+                showBootstrapUI();
             } else {
-                // Do NOT overwrite local data with pull snapshot — pending ops must survive.
-                // Only sync version metadata so the subsequent push uses correct baseVersion.
-                syncVersionsFromPull(pullResult.snapshot);
-                saveStateToLocalStorage();
+                throw new Error((pullResult && pullResult.message) || 'Pull failed');
+            }
+        } else {
+            // Normal boot: full pull + push + projection via fullSync()
+            var result = await fullSync();
 
-                // Step 2: Push pending outbox ops
-                var pushResult = await syncPush();
-                if (pushResult && pushResult.success) {
-                    await processPushResults(pushResult, pushResult._submittedOps || []);
-                    appState.meta.lastSyncedAt = new Date().toISOString();
-                    if (pushResult.serverSeq) {
-                        appState.meta.lastServerRevision = pushResult.serverSeq;
-                    }
-                    // Sync versions from server response (whether conflicts or applied)
-                    if (pushResult.snapshot) {
-                        updateLocalVersionsFromCanonical(pushResult.snapshot);
-                    }
-                    if (pushResult._conflictFound) {
-                        _syncConflict = true;
-                    } else {
-                        _syncConflict = false;
-                    }
+            if (!result) {
+                // Guard conflict — another sync in progress
+                return;
+            }
 
-                    // Re-project: apply remaining pending ops on top
+            if (result.uninitialized) {
+                _syncState.cloudInitialized = false;
+                _syncLastFailed = false;
+                showBootstrapUI();
+            } else {
+                _syncState.cloudInitialized = result.cloudInitialized;
+                _syncState.lastServerSeq = result.lastServerSeq;
+
+                if (result.projected) {
+                    applyProjectedToAppState(result.projected);
+                } else {
                     var proj = await buildProjectedStateV3();
                     if (proj && proj.projected) {
                         applyProjectedToAppState(proj.projected);
                     }
-                    saveStateToLocalStorage();
                 }
-            }
 
-            _syncLastFailed = false;
-            _syncConflict = false;
-            _bootSyncDone = true;
-            window._bootSyncDone = true;
-            if (_bootSyncRetryTimer) { clearTimeout(_bootSyncRetryTimer); _bootSyncRetryTimer = null; }
-            hideOfflineBanner();
-            showToast(t('syncOk'), 'success');
+                saveStateToLocalStorage();
+                _syncLastFailed = !!(result._pullFailed || result._pushFailed);
+                _syncConflict = !!(result.conflictCount > 0 || result._conflictFound);
 
-        } else if (pullResult.success && !pullResult.initialized) {
-            // Server is uninitialized — show bootstrap UI
-            _syncState.cloudInitialized = false;
-            _syncLastFailed = false;
-            _bootSyncDone = true;
-            window._bootSyncDone = true;
-            hideOfflineBanner();
-            showBootstrapUI();
-        } else {
-            var errMsg = (pullResult && pullResult.message) || 'Cannot reach cloud';
-            if (pullResult && pullResult.errorCode === 'PROTOCOL_VERSION_MISMATCH') {
-                _syncState.protocolMismatch = true;
-                errMsg = 'Protocol version mismatch — please update the app';
+                appState.meta.lastSyncedAt = new Date().toISOString();
+                if (result.lastServerSeq) {
+                    appState.meta.lastServerRevision = result.lastServerSeq;
+                }
+                hideOfflineBanner();
+                showToast(t('syncOk'), 'success');
             }
-            throw new Error(errMsg);
         }
+
+        _bootSyncDone = true;
+        window._bootSyncDone = true;
+        if (_bootSyncRetryTimer) { clearTimeout(_bootSyncRetryTimer); _bootSyncRetryTimer = null; }
 
     } catch (e) {
         console.error('[bootSyncManagerV3] Failed:', e);
@@ -3084,18 +3137,24 @@ window.addEventListener('DOMContentLoaded', () => {
 
         // Online/offline/resume listeners for retry (v3)
         window.addEventListener('online', function() {
+            syncDebug('online event');
             if (!window._bootSyncDone && !_syncInProgress) {
                 bootSyncManagerV3();
-            } else {
-                flushOutboxV3();
+            } else if (!_syncInProgress) {
+                runFullSyncV3().catch(function(e) {
+                    syncDebug('online sync failed:', (e && e.message) || e);
+                });
             }
         });
         document.addEventListener('visibilitychange', function() {
             if (document.visibilityState === 'visible') {
+                syncDebug('visibilitychange → visible');
                 if (!window._bootSyncDone && !_syncInProgress) {
                     bootSyncManagerV3();
                 } else if (!_syncInProgress) {
-                    flushOutboxV3();
+                    runFullSyncV3().catch(function(e) {
+                        syncDebug('visibility sync failed:', (e && e.message) || e);
+                    });
                 }
             }
         });
@@ -6728,17 +6787,14 @@ function commitCloudSystemCredentials() {
     }
 }
 
+// Legacy sync helper retained for backward reference only.
+// Protocol v3 runtime must use fullSync() + buildProjectedState().
 async function triggerSynchronousCloudBackupPush(baseRevision) {
-    return syncPush().then(function(result) {
-        if (result && result.success) {
-            return processPushResults(result, result._submittedOps || []).then(function() {
-                if (result._conflictFound && result.snapshot) {
-                    updateLocalVersionsFromCanonical(result.snapshot);
-                }
-                return result;
-            });
+    return runFullSyncV3().then(function(result) {
+        if (result && result.synced) {
+            return { success: true, result: result };
         }
-        return { success: false, error: (result && result.errorCode) || 'unknown' };
+        return { success: false, error: result ? result._pushError || 'unknown' : 'null result' };
     }).catch(function(e) { return { success: false, error: e.message }; });
 }
 async function triggerBackgroundSync() {
@@ -7073,10 +7129,14 @@ async function syncNow(opts) {
     var interactive = opts.interactive !== false;
     if (interactive) showToast('Syncing...', 'info');
     try {
-        await bootSyncManagerV3();
-        await flushOutboxV3();
+        await runFullSyncV3();
+        if (interactive) {
+            var total = (appState.inventory || []).filter(function(i) { return !i.deletedAt; }).length;
+            showToast('Synced \u2014 ' + total + ' items', 'success');
+        }
     } catch (e) {
         if (interactive) showToast('Sync failed.', 'error');
+        console.error('[syncNow]', e);
     }
 }
 function applyPushSuccess(interactive, pushedSnapshotVersion) {
@@ -7315,6 +7375,8 @@ function applySyncSuccess(interactive, cloudState) {
     if (interactive) showToast('Synced \u2014 ' + (appState.inventory || []).length + ' items', 'success');
 }
 
+// Legacy sync helper retained for backward reference only.
+// Protocol v3 runtime must use fullSync() + buildProjectedState().
 async function getCloudState(secret, endpoint) {
     // Use sync-core syncPull
     return syncPull().then(function(result) {
