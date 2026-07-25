@@ -1,9 +1,9 @@
 /**
  * Home Inventory Manager - Core Architecture Engine
- * Data Model (v2)
+ * Data Model (v3 sync protocol)
  * Copyright (c) Westdoor Streetson 2026
  */
-const APP_VERSION = '1.50';
+const APP_VERSION = '1.51';
 
 // ===== PWA: Service Worker Registration =====
 var _deferredInstallPrompt = null;
@@ -661,7 +661,6 @@ let appState = {
         lastSyncedAt: null,
         lastServerRevision: null
     },
-    syncQueue: [],
     segments: {},
     coordinates: {},
     categories: {},
@@ -676,6 +675,8 @@ let appState = {
     activeMappingNode: null,
     spatialBackgroundImage: null
 };
+// Expose appState reference for sync-core operation helpers
+window._appStateRef = appState;
 
 /* ==========================================================================
    IndexedDB Image Store — isolate photos from localStorage
@@ -1479,25 +1480,12 @@ function buildPersistedStateSnapshot(state) {
     snap.meta = state.meta ? {
         deviceId: state.meta.deviceId,
         lastSyncedAt: state.meta.lastSyncedAt,
-        lastServerRevision: state.meta.lastServerRevision,
-        lastPulledServerSeq: state.meta.lastPulledServerSeq || 0,
-        lastLocalChangeAt: state.meta.lastLocalChangeAt,
-        lastChangeBy: state.meta.lastChangeBy,
-        localSnapshotVersion: state.meta.localSnapshotVersion || 0,
-        lastPushedSnapshotVersion: state.meta.lastPushedSnapshotVersion || 0,
-        structureVersion: state.meta.structureVersion || 0,
-        categoryVersion: state.meta.categoryVersion || 0
+        lastServerRevision: state.meta.lastServerRevision
     } : {
         deviceId: getDeviceId(),
         lastSyncedAt: null,
-        lastServerRevision: null,
-        lastPulledServerSeq: 0,
-        localSnapshotVersion: 0,
-        lastPushedSnapshotVersion: 0,
-        structureVersion: 0,
-        categoryVersion: 0
+        lastServerRevision: null
     };
-    snap.syncQueue = deepCloneJsonSafe(state.syncQueue || []);
     snap.segments = deepCloneJsonSafe(state.segments || {});
     snap.coordinates = deepCloneJsonSafe(state.coordinates || {});
     snap.categories = deepCloneJsonSafe(state.categories || {});
@@ -1509,14 +1497,11 @@ function buildPersistedStateSnapshot(state) {
     snap.reminderLog = deepCloneJsonSafe(state.reminderLog || {});
     snap.language = state.language || 'en';
     snap.spatialBackgroundImage = state.spatialBackgroundImage || null;
-    snap.syncConflicts = deepCloneJsonSafe(state.syncConflicts || []);
     return snap;
 }
 
 function buildCloudSyncPayload(state) {
-    var payload = buildPersistedStateSnapshot(state);
-    payload.syncQueue = [];
-    return payload;
+    return buildPersistedStateSnapshot(state);
 }
 
 function replaceLocalStateWithCloud(cloud) {
@@ -1525,7 +1510,6 @@ function replaceLocalStateWithCloud(cloud) {
     var currentLocalVersion = (appState && appState.meta && appState.meta.localSnapshotVersion) || 0;
     var currentSelectedCategoryNodePath = appState && appState.selectedCategoryNodePath ? deepCloneJsonSafe(appState.selectedCategoryNodePath) : null;
     var currentActiveMappingNode = appState && appState.activeMappingNode ? deepCloneJsonSafe(appState.activeMappingNode) : null;
-    var currentPendingQueue = deepCloneJsonSafe((appState && appState.syncQueue) || []);
     var snapshot = buildPersistedStateSnapshot(cloud);
     snapshot = migrateLegacyState(snapshot);
     snapshot.meta = snapshot.meta || {};
@@ -1537,10 +1521,10 @@ function replaceLocalStateWithCloud(cloud) {
     snapshot.meta.categoryVersion = (cloud.meta && cloud.meta.categoryVersion) || snapshot.meta.categoryVersion || 0;
     snapshot.meta.localSnapshotVersion = Math.max(snapshot.meta.localSnapshotVersion || 0, currentLocalVersion);
     snapshot.meta.lastPushedSnapshotVersion = snapshot.meta.localSnapshotVersion;
-    snapshot.syncQueue = currentPendingQueue;
     snapshot.selectedCategoryNodePath = currentSelectedCategoryNodePath;
     snapshot.activeMappingNode = currentActiveMappingNode;
     appState = snapshot;
+    window._appStateRef = appState;
     normalizeAllItemImageFields();
     if (typeof _formDirty !== 'undefined') _formDirty = false;
     saveStateToLocalStorage();
@@ -1578,18 +1562,14 @@ async function startupLoadFromCloud() {
         updateLoginSyncStatus();
     }
 }
+// Removed — v3 sync uses IndexedDB outbox only
 function hasUnsyncedSnapshot(state) {
-    if (!state || !state.meta) return false;
-    var localVer = state.meta.localSnapshotVersion || 0;
-    var pushedVer = state.meta.lastPushedSnapshotVersion || 0;
-    if (localVer > pushedVer) return true;
-    var hasQueue = (state.syncQueue && state.syncQueue.length > 0);
-    return hasQueue;
+    return false; // Use idbGetPendingOutboxCount() for v3
 }
 
-// ===== Unified Mutation Entry Point =====
+// ===== Unified Mutation Entry Point (v3 sync-core integration) =====
 // All state changes MUST flow through mutateState().
-// mutates appState in-memory, persists to IDB outbox, then triggers flush.
+// mutates appState in-memory, queues a v3 operation via sync-core, then triggers flush.
 function mutateState(actionType, metadata) {
     appState.meta = appState.meta || {};
     var now = new Date().toISOString();
@@ -1597,31 +1577,137 @@ function mutateState(actionType, metadata) {
     appState.meta.lastChangeBy = appState.meta.deviceId || getDeviceId();
     appState.meta.localSnapshotVersion = (appState.meta.localSnapshotVersion || 0) + 1;
 
-    var opId = 'op_' + (appState.meta.deviceId || getDeviceId()) + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 6);
-    var op = {
-        opId: opId,
-        entityType: actionType,
-        entityId: (metadata && (metadata.itemId || metadata.name || metadata.id)) || '',
-        payload: captureSyncOperationPayload(actionType, metadata),
-        baseRevision: (appState.meta.lastServerRevision || 0),
-        deviceId: appState.meta.deviceId || getDeviceId(),
-        createdAt: now,
-        status: 'pending'
-    };
-
-    idbPutOutboxOp(deepCloneJsonSafe(op)).catch(function(){});
+    // Queue the appropriate v3 operation
+    queueV3Operation(actionType, metadata);
 
     saveStateToLocalStorage();
     updatePillSyncStatus();
     updateSyncStatusBadge();
 
     if (navigator.onLine) {
-        flushOutbox().catch(function(){});
+        triggerBackgroundSyncV3();
     }
 }
 
+// Map legacy actionType to v3 operations
+function queueV3Operation(actionType, metadata) {
+    metadata = metadata || {};
+    switch (actionType) {
+        case 'ADD_SEGMENT':
+        case 'RENAME_SEGMENT':
+        case 'DELETE_SEGMENT':
+        case 'ADD_CONTAINER':
+        case 'RENAME_CONTAINER':
+        case 'DELETE_CONTAINER':
+        case 'ADD_SUB_CONTAINER':
+        case 'RENAME_SUB_CONTAINER':
+        case 'DELETE_SUB_CONTAINER':
+            // Map structural changes to LOCATIONS_PUT
+            locPutDebounced();
+            break;
+        case 'ADD_CATEGORY':
+        case 'DELETE_CATEGORY':
+        case 'SAVE_CLASSIFICATION':
+            catPutDebounced();
+            break;
+        case 'ADD_USER':
+        case 'REMOVE_USER':
+            settingsPutDebounced();
+            break;
+        case 'SET_REMINDER':
+            settingsPutDebounced();
+            break;
+        case 'COMMIT_ITEM':
+        case 'EDIT_ITEM':
+            if (metadata && metadata.itemId) {
+                var item = findInventoryItem(metadata.itemId);
+                if (item) {
+                    queueItemPut(item, item.version || 0).catch(function(){});
+                }
+            }
+            break;
+        case 'REMOVE_ITEM':
+            if (metadata && metadata.itemId) {
+                var ditem = findInventoryItem(metadata.itemId);
+                queueItemDelete(metadata.itemId, ditem ? ditem.version || 0 : 0).catch(function(){});
+            }
+            break;
+        case 'STOCK_IN':
+        case 'STOCK_OUT':
+            if (metadata && metadata.itemId && metadata.entryId && metadata.amount) {
+                var delta = actionType === 'STOCK_OUT' ? -Math.abs(metadata.amount) : Math.abs(metadata.amount);
+                queueStockAdjust(metadata.itemId, metadata.entryId, delta).catch(function(){});
+            }
+            break;
+        case 'SAVE_LAYOUT':
+        case 'UPDATE_COORDINATE':
+        case 'UPDATE_BACKGROUND_IMAGE':
+            locPutDebounced();
+            break;
+        default:
+            break;
+    }
+}
+
+// Debounced structural writes to avoid queuing one per UI click
+var _locPutTimer = null;
+var _catPutTimer = null;
+var _settingsPutTimer = null;
+
+function locPutDebounced() {
+    if (_locPutTimer) clearTimeout(_locPutTimer);
+    _locationsDirty = true;
+    _locPutTimer = setTimeout(function() {
+        _locPutTimer = null;
+        // Get current locations version from canonical snapshot
+        getCanonicalSnapshot().then(function(snap) {
+            var ver = (snap && snap.meta) ? (snap.meta.locationsVersion || 0) : 0;
+            return queueLocationsPut(ver);
+        }).catch(function(){});
+    }, 500);
+}
+
+function catPutDebounced() {
+    if (_catPutTimer) clearTimeout(_catPutTimer);
+    _classesDirty = true;
+    _catPutTimer = setTimeout(function() {
+        _catPutTimer = null;
+        getCanonicalSnapshot().then(function(snap) {
+            var ver = (snap && snap.meta) ? (snap.meta.categoriesVersion || 0) : 0;
+            return queueCategoriesPut(ver);
+        }).catch(function(){});
+    }, 500);
+}
+
+function settingsPutDebounced() {
+    if (_settingsPutTimer) clearTimeout(_settingsPutTimer);
+    _settingsPutTimer = setTimeout(function() {
+        _settingsPutTimer = null;
+        getCanonicalSnapshot().then(function(snap) {
+            var ver = (snap && snap.meta) ? (snap.meta.householdSettingsVersion || 0) : 0;
+            return queueHouseholdSettingsPut(ver);
+        }).catch(function(){});
+    }, 500);
+}
+
+function triggerBackgroundSyncV3() {
+    if (_syncInProgress || _outboxFlushInProgress) return;
+    setTimeout(function() {
+        if (_syncInProgress || _outboxFlushInProgress) return;
+        flushOutboxV3().catch(function(){});
+    }, 300);
+}
+
 function hasUnsyncedLocalChanges(state) {
-    return hasUnsyncedSnapshot(state);
+    // Check outbox via sync-core
+    return idbGetPendingOutboxCount().then(function(count) {
+        return count > 0;
+    }).catch(function() { return false; });
+}
+
+// Helper to resolve item from appState
+function findInventoryItem(itemId) {
+    return (appState.inventory || []).find(function(i) { return i.id === itemId; }) || null;
 }
 
 function stampNow(obj) {
@@ -1632,64 +1718,7 @@ function stampNow(obj) {
     return obj;
 }
 
-
-function getOpBaseVersionForAction(actionType) {
-    switch (actionType) {
-        case 'ADD_SEGMENT':
-        case 'RENAME_SEGMENT':
-        case 'DELETE_SEGMENT':
-        case 'ADD_CONTAINER':
-        case 'RENAME_CONTAINER':
-        case 'DELETE_CONTAINER':
-        case 'ADD_SUBCONTAINER':
-        case 'RENAME_SUBCONTAINER':
-        case 'DELETE_SUBCONTAINER':
-            return (appState.meta && appState.meta.structureVersion) || 0;
-        case 'ADD_CATEGORY':
-        case 'DELETE_CATEGORY':
-        case 'SAVE_CLASSIFICATION':
-            return (appState.meta && appState.meta.categoryVersion) || 0;
-        default:
-            return 0;
-    }
-}
-
-function captureSyncOperationPayload(actionType, metadata) {
-    var payload = { meta: deepCloneJsonSafe(metadata || {}) };
-    switch (actionType) {
-        case 'ADD_SEGMENT':
-        case 'RENAME_SEGMENT':
-        case 'DELETE_SEGMENT':
-        case 'ADD_CONTAINER':
-        case 'RENAME_CONTAINER':
-        case 'DELETE_CONTAINER':
-        case 'ADD_SUBCONTAINER':
-        case 'RENAME_SUBCONTAINER':
-        case 'DELETE_SUBCONTAINER':
-            payload.docType = 'locations';
-            payload.baseDocVersion = (appState.meta && appState.meta.structureVersion) || 0;
-            payload.structures = {
-                segments: deepCloneJsonSafe(appState.segments || {}),
-                coordinates: deepCloneJsonSafe(appState.coordinates || {})
-            };
-            break;
-        case 'ADD_CATEGORY':
-        case 'DELETE_CATEGORY':
-        case 'SAVE_CLASSIFICATION':
-            payload.docType = 'categories';
-            payload.baseDocVersion = (appState.meta && appState.meta.categoryVersion) || 0;
-            payload.categories = deepCloneJsonSafe(appState.categories || {});
-            break;
-        default:
-            payload.docType = 'inventory';
-            payload.inventory = deepCloneJsonSafe(appState.inventory || []);
-            payload.users = deepCloneJsonSafe(appState.users || ['Default']);
-            payload.userEmails = deepCloneJsonSafe(appState.userEmails || {});
-            payload.reminderLog = deepCloneJsonSafe(appState.reminderLog || {});
-            break;
-    }
-    return payload;
-}
+// getOpBaseVersionForAction and captureSyncOperationPayload removed — v3 uses sync-core protocol
 
 function mergeRemoteInventoryPayload(payload) {
     if (!payload) return;
@@ -1754,95 +1783,40 @@ function applyRemoteLogOperations(ops, ackedOpIds) {
     return stats;
 }
 
-function enqueueSyncAction(actionType, metadata) {
-    if (!appState.syncQueue) appState.syncQueue = [];
-    appState.meta = appState.meta || {};
-    appState.meta.clientClock = (appState.meta.clientClock || 0) + 1;
-    var op = {
-        opId: 'op_' + (appState.meta.deviceId || getDeviceId()) + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 6),
-        deviceId: appState.meta.deviceId || getDeviceId(),
-        clientClock: appState.meta.clientClock,
-        timestamp: new Date().toISOString(),
-        type: actionType,
-        meta: deepCloneJsonSafe(metadata || {}),
-        baseRevision: (appState.meta.lastServerRevision || 0),
-        baseDocVersion: getOpBaseVersionForAction(actionType),
-        payload: captureSyncOperationPayload(actionType, metadata)
-    };
-    appState.syncQueue.push(op);
-}
+// ===== Outbox flush (v3) — sends queued ops to cloud via sync-core =====
+async function flushOutboxV3() {
+    if (_outboxFlushInProgress) return;
+    if (_syncInProgress) return;
 
-// ===== Outbox flush — sends queued ops to cloud via SYNCPUSH =====
-async function flushOutbox() {
     var endpoint = localStorage.getItem('sys_gas_url');
     var secret = localStorage.getItem('sys_api_pwd');
     if (!endpoint || !secret) return;
-    if (_outboxFlushInProgress) return;
 
     _outboxFlushInProgress = true;
-
-    var ops = await idbGetOutboxOps();
-    if (!ops || ops.length === 0) { _outboxFlushInProgress = false; return; }
-
     updatePillSyncStatus();
 
     try {
-        var params = new URLSearchParams();
-        params.append('token', secret);
-        params.append('action', 'SYNC_PUSH');
-        params.append('operations', JSON.stringify(ops.map(function(op) {
-            return {
-                opId: op.opId,
-                deviceId: op.deviceId,
-                type: op.entityType,
-                timestamp: op.createdAt,
-                payload: op.payload,
-                baseRevision: op.baseRevision,
-                entityId: op.entityId
-            };
-        })));
-        params.append('clientRevision', String((appState.meta && appState.meta.lastServerRevision) || 0));
-        params.append('lastPulledServerSeq', String((appState.meta && appState.meta.lastPulledServerSeq) || 0));
-        params.append('deviceId', (appState.meta && appState.meta.deviceId) || getDeviceId());
-
-        var resp = await fetch(endpoint, { method: 'POST', body: params });
-        var text = await resp.text();
-        var result = null;
-        try { result = JSON.parse(text); } catch (e) {}
-
-        if (result && result.success) {
-            var acked = result.ackedOpIds || result.receivedOpIds || [];
-            var ackMap = {};
-            acked.forEach(function(id) { ackMap[id] = true; });
-
-            for (var i = 0; i < ops.length; i++) {
-                if (ackMap[ops[i].opId]) {
-                    await idbDeleteOutboxOp(ops[i].opId);
-                }
+        var result = await syncPush();
+        if (!result || !result.success) {
+            if (result && result.errorCode === 'PROTOCOL_VERSION_MISMATCH') {
+                _syncState.protocolMismatch = true;
+            } else if (result && result.errorCode === 'SERVER_NOT_INITIALIZED') {
+                _syncState.cloudInitialized = false;
             }
-
-            applyRemoteLogOperations(result.remoteOps || [], acked);
-
-            if (result.latestServerSeq) {
-                appState.meta.lastPulledServerSeq = Math.max((appState.meta.lastPulledServerSeq || 0), result.latestServerSeq || 0);
-                appState.meta.lastServerRevision = Math.max((appState.meta.lastServerRevision || 0), result.latestServerSeq || 0);
-            }
-
-            appState.meta.lastPushedSnapshotVersion = appState.meta.localSnapshotVersion || 0;
-            appState.meta.lastSyncedAt = new Date().toISOString();
-
-            saveStateToLocalStorage();
-            await idbPutAppState(buildPersistedStateSnapshot(appState));
-            _syncLastFailed = false;
-        } else if (result && result.error === 'conflict') {
-            _syncConflict = true;
             _syncLastFailed = true;
         } else {
-            _syncLastFailed = true;
+            await processPushResults(result);
+            _syncLastFailed = false;
+            _syncConflict = false;
+            appState.meta.lastSyncedAt = new Date().toISOString();
+            if (result.serverSeq) {
+                appState.meta.lastServerRevision = result.serverSeq;
+            }
+            saveStateToLocalStorage();
         }
     } catch (e) {
         _syncLastFailed = true;
-        console.error('[flushOutbox] Failed:', e);
+        console.error('[flushOutboxV3] Failed:', e);
     } finally {
         _outboxFlushInProgress = false;
         updatePillSyncStatus();
@@ -1850,6 +1824,9 @@ async function flushOutbox() {
         updateLoginSyncStatus();
     }
 }
+
+// Legacy flushOutbox redirected to v3
+async function flushOutbox() { return flushOutboxV3(); }
 
 function getStockOpDelta(opType, amount) {
   var n = Number(amount || 0);
@@ -2004,46 +1981,56 @@ function fieldLevelMerge(localItem, remoteItem) {
     return result;
 }
 
-// ===== Sync status pill (5-state unified indicator) =====
+// ===== Sync status pill (v3 — 8-state) =====
 function updatePillSyncStatus() {
     var pills = [document.getElementById('syncStatusPill'), document.getElementById('syncStatusPillMobile')];
-    idbGetOutboxOps().then(function(ops) {
-        var outboxCount = ops ? ops.length : 0;
-        var now = new Date().toISOString();
+    getSyncStatusSummary().then(function(summary) {
         pills.forEach(function(pill) {
             if (!pill) return;
             var cls = '', text = '';
-            if (_syncInProgress || _outboxFlushInProgress) {
-                cls = 'pill-syncing'; text = '\u27F3 Syncing...';
-            } else if (_syncLastFailed && !_syncConflict) {
-                cls = 'pill-offline'; text = '\u26F0 Offline';
-            } else if (_syncConflict) {
-                cls = 'pill-conflict'; text = '\u26A0 Conflict';
-            } else if (outboxCount > 0) {
-                cls = 'pill-pending'; text = outboxCount + ' changes waiting';
-            } else if (appState.meta && appState.meta.lastSyncedAt) {
-                cls = 'pill-synced'; text = '\u2714 Synced';
-            } else {
-                cls = 'pill-offline'; text = 'Saved locally';
+            switch (summary.state) {
+                case 'syncing':
+                    cls = 'pill-syncing'; text = '\u27F3 Syncing...'; break;
+                case 'conflict':
+                    cls = 'pill-conflict'; text = '\u26A0 Conflict (' + summary.conflicts + ')'; break;
+                case 'pending':
+                    cls = 'pill-pending'; text = summary.pending + ' changes waiting'; break;
+                case 'synced':
+                    cls = 'pill-synced'; text = '\u2714 Synced'; break;
+                case 'protocol_mismatch':
+                    cls = 'pill-conflict'; text = 'Update required'; break;
+                case 'cloud_uninitialized':
+                    cls = 'pill-pending'; text = 'Cloud not init'; break;
+                case 'offline':
+                default:
+                    if (_syncLastFailed && summary.pending > 0) {
+                        cls = 'pill-offline'; text = '\u26F0 Offline (' + summary.pending + ' pending)';
+                    } else if (summary.pending > 0) {
+                        cls = 'pill-pending'; text = summary.pending + ' changes waiting';
+                    } else {
+                        cls = 'pill-offline'; text = 'Saved locally';
+                    }
+                    break;
             }
             pill.className = 'sync-pill ' + cls;
             pill.innerText = text;
         });
     }).catch(function() {
+        // Fallback on error
         pills.forEach(function(pill) {
             if (!pill) return;
             if (_syncInProgress || _outboxFlushInProgress) {
                 pill.className = 'sync-pill pill-syncing';
                 pill.innerText = '\u27F3 Syncing...';
+            } else if (_syncState.protocolMismatch) {
+                pill.className = 'sync-pill pill-conflict';
+                pill.innerText = 'Update required';
             } else if (_syncConflict) {
                 pill.className = 'sync-pill pill-conflict';
                 pill.innerText = '\u26A0 Conflict';
             } else if (_syncLastFailed) {
                 pill.className = 'sync-pill pill-offline';
                 pill.innerText = '\u26F0 Offline';
-            } else if (appState.meta && appState.meta.lastSyncedAt) {
-                pill.className = 'sync-pill pill-synced';
-                pill.innerText = '\u2714 Synced';
             } else {
                 pill.className = 'sync-pill pill-offline';
                 pill.innerText = 'Saved locally';
@@ -2055,61 +2042,47 @@ function updatePillSyncStatus() {
 function updateSyncStatusBadge() {
     var badge = document.getElementById('syncStatusBadge');
     if (!badge) return;
-    idbGetOutboxOps().then(function(ops) {
-        var pending = ops ? ops.length : 0;
-        var hasStructureDraft = !!((typeof _classesDirty !== 'undefined' && _classesDirty) || (typeof _locationsDirty !== 'undefined' && _locationsDirty));
-        var visiblePending = pending + (hasStructureDraft ? 1 : 0);
-        if (_syncInProgress) {
-            badge.innerText = '🔄 Syncing…';
-            badge.className = 'text-[10px] text-blue-600 font-medium ml-2';
-        } else if (_syncLastFailed) {
-            badge.innerText = '❌ Sync failed';
-            badge.className = 'text-[10px] text-red-500 font-medium ml-2';
-        } else if (_syncConflict) {
-            badge.innerText = '⚠️ Conflict detected';
-            badge.className = 'text-[10px] text-amber-600 font-medium ml-2';
-        } else if (visiblePending > 0) {
-            badge.innerText = '📤 Pending sync (' + visiblePending + ')';
-            badge.className = 'text-[10px] text-slate-500 font-medium ml-2';
-        } else if (appState.meta.lastSyncedAt) {
-            badge.innerText = '✅ Synced ' + formatRelativeTime(appState.meta.lastSyncedAt);
-            badge.className = 'text-[10px] text-emerald-600 font-medium ml-2';
-        } else {
-            badge.innerText = '⚪ Saved locally';
-            badge.className = 'text-[10px] text-slate-400 font-medium ml-2';
-        }
+    getSyncStatusSummary().then(function(summary) {
+        badge.innerText = syncStatusText(summary);
+        badge.className = 'text-[10px] ' + syncStatusColor(summary) + ' font-medium ml-2';
         updateSyncBanner();
         updateSyncAlertRow();
         updateLoginSyncStatus();
         updateSyncCallToActionState();
     }).catch(function() {
-        var pending = 0;
-        var hasStructureDraft = !!((typeof _classesDirty !== 'undefined' && _classesDirty) || (typeof _locationsDirty !== 'undefined' && _locationsDirty));
-        var visiblePending = pending + (hasStructureDraft ? 1 : 0);
-        if (_syncInProgress) {
-            badge.innerText = '🔄 Syncing…';
-            badge.className = 'text-[10px] text-blue-600 font-medium ml-2';
-        } else if (_syncLastFailed) {
-            badge.innerText = '❌ Sync failed';
-            badge.className = 'text-[10px] text-red-500 font-medium ml-2';
-        } else if (_syncConflict) {
-            badge.innerText = '⚠️ Conflict detected';
-            badge.className = 'text-[10px] text-amber-600 font-medium ml-2';
-        } else if (visiblePending > 0) {
-            badge.innerText = '📤 Pending sync (' + visiblePending + ')';
-            badge.className = 'text-[10px] text-slate-500 font-medium ml-2';
-        } else if (appState.meta.lastSyncedAt) {
-            badge.innerText = '✅ Synced ' + formatRelativeTime(appState.meta.lastSyncedAt);
-            badge.className = 'text-[10px] text-emerald-600 font-medium ml-2';
-        } else {
-            badge.innerText = '⚪ Saved locally';
-            badge.className = 'text-[10px] text-slate-400 font-medium ml-2';
-        }
+        badge.innerText = '\u26A0 Saved locally';
+        badge.className = 'text-[10px] text-slate-400 font-medium ml-2';
         updateSyncBanner();
         updateSyncAlertRow();
         updateLoginSyncStatus();
         updateSyncCallToActionState();
     });
+}
+
+function syncStatusText(s) {
+    switch (s.state) {
+        case 'syncing': return '\uD83D\uDD04 Syncing\u2026';
+        case 'conflict': return '\u26A0\uFE0F Conflict (' + s.conflicts + ')';
+        case 'pending': return '\uD83D\uDCE4 ' + s.pending + ' changes waiting';
+        case 'synced': return '\u2705 Synced ' + (appState.meta.lastSyncedAt ? formatRelativeTime(appState.meta.lastSyncedAt) : '');
+        case 'protocol_mismatch': return '\u274C Update required';
+        case 'cloud_uninitialized': return '\u2601\uFE0F Cloud empty';
+        case 'offline':
+        default:
+            return (_syncLastFailed && s.pending > 0) ? '\u274C Offline (' + s.pending + ' pending)' : '\u26AA Saved locally';
+    }
+}
+
+function syncStatusColor(s) {
+    switch (s.state) {
+        case 'syncing': return 'text-blue-600';
+        case 'conflict': return 'text-amber-600';
+        case 'pending': return 'text-slate-500';
+        case 'synced': return 'text-emerald-600';
+        case 'protocol_mismatch': return 'text-red-600';
+        case 'cloud_uninitialized': return 'text-slate-400';
+        default: return 'text-slate-400';
+    }
 }
 function updateSyncAlertRow() {
     var row = document.getElementById('syncAlertRow');
@@ -2124,6 +2097,61 @@ var _syncInProgress = false;
 var _syncLastFailed = false;
 var _syncConflict = false;
 var _syncPendingCount = 0;
+
+// Boot sync state (v3)
+var _bootSyncRetryTimer = null;
+var _outboxFlushInProgress = false;
+var _bootSyncDone = false;
+window._bootSyncDone = _bootSyncDone;
+window._syncInProgress = _syncInProgress;
+
+function scheduleBootRetry() {
+    if (_bootSyncRetryTimer) clearTimeout(_bootSyncRetryTimer);
+    _bootSyncRetryTimer = setTimeout(function() {
+        bootSyncManagerV3({ forceCloudWins: false });
+    }, 30000);
+}
+
+function hydrateFromIndexedDB() {
+    return idbGetAppState().then(function(state) {
+        if (state) {
+            appState = migrateLegacyState(state);
+            window._appStateRef = appState;
+            normalizeAllItemImageFields();
+            return true;
+        }
+        return false;
+    }).catch(function() {
+        restoreStateFromLocalStorage();
+        return false;
+    });
+}
+
+function showLoadingCloudOverlay() {
+    var overlay = document.getElementById('cloudLoadingOverlay');
+    if (!overlay) return;
+    overlay.classList.remove('hidden');
+}
+
+function hideLoadingCloudOverlay() {
+    var overlay = document.getElementById('cloudLoadingOverlay');
+    if (!overlay) return;
+    overlay.classList.add('hidden');
+}
+
+function showOfflineBanner(detail) {
+    var banner = document.getElementById('syncOfflineBanner');
+    if (!banner) return;
+    banner.classList.remove('hidden');
+    var detailEl = banner.querySelector('.offline-detail');
+    if (detailEl) detailEl.innerText = detail || 'Showing last saved data — retrying when online';
+}
+
+function hideOfflineBanner() {
+    var banner = document.getElementById('syncOfflineBanner');
+    if (!banner) return;
+    banner.classList.add('hidden');
+}
 
 function formatRelativeTime(isoStr) {
     if (!isoStr) return '';
@@ -2277,51 +2305,8 @@ function closeAppPrompt() {
     restoreFocusTrigger();
 }
 
-// ===== Boot Sync Manager (cloud-wins) =====
-var _bootSyncRetryTimer = null;
-var _bootSyncDone = false;
-var _outboxFlushInProgress = false;
-
-function hydrateFromIndexedDB() {
-    return idbGetAppState().then(function(state) {
-        if (state) {
-            appState = migrateLegacyState(state);
-            normalizeAllItemImageFields();
-            return true;
-        }
-        return false;
-    }).catch(function() {
-        restoreStateFromLocalStorage();
-        return false;
-    });
-}
-
-function showLoadingCloudOverlay() {
-    var overlay = document.getElementById('cloudLoadingOverlay');
-    if (!overlay) return;
-    overlay.classList.remove('hidden');
-}
-
-function hideLoadingCloudOverlay() {
-    var overlay = document.getElementById('cloudLoadingOverlay');
-    if (!overlay) return;
-    overlay.classList.add('hidden');
-}
-
-function showOfflineBanner(detail) {
-    var banner = document.getElementById('syncOfflineBanner');
-    if (!banner) return;
-    banner.classList.remove('hidden');
-    banner.querySelector('.offline-detail').innerText = detail || 'Showing last saved data — retrying when online';
-}
-
-function hideOfflineBanner() {
-    var banner = document.getElementById('syncOfflineBanner');
-    if (!banner) return;
-    banner.classList.add('hidden');
-}
-
-async function bootSyncManager(opts) {
+// ===== Boot Sync Manager (v3) — pulls canonical snapshot, pushes pending ops =====
+async function bootSyncManagerV3(opts) {
     opts = opts || {};
     var forceCloudWins = !!opts.forceCloudWins;
     var endpoint = localStorage.getItem('sys_gas_url');
@@ -2337,56 +2322,75 @@ async function bootSyncManager(opts) {
     updatePillSyncStatus();
 
     try {
-        var cloud = await getCloudState(secret, endpoint);
-        if (cloud) {
+        // Step 1: Pull canonical snapshot
+        var pullResult = await syncPull();
+
+        if (pullResult.success && pullResult.initialized && pullResult.snapshot) {
+            // Server has data
+            _syncState.cloudInitialized = true;
+            _syncState.lastServerSeq = pullResult.serverSeq || 0;
+
+            // Update canonical snapshot cache
+            await setCanonicalSnapshot(pullResult.snapshot);
+
             if (forceCloudWins) {
-                replaceLocalStateWithCloud(cloud);
-                idbClearOutbox().catch(function(){});
+                // Replace entire local state with cloud
+                replaceLocalStateWithCloud(pullResult.snapshot);
+                await idbClearOutbox().catch(function(){});
                 appState.meta = appState.meta || {};
                 appState.meta.lastSyncedAt = new Date().toISOString();
-                appState.meta.lastServerRevision = cloud.meta.lastServerRevision || appState.meta.lastServerRevision || 0;
+                appState.meta.lastServerRevision = pullResult.serverSeq || 0;
                 saveStateToLocalStorage();
             } else {
-                var beforeSnap = collectStructureSnapshot(appState);
-                mergeCloudPayloadToMemory(cloud);
-                var afterSnap = collectStructureSnapshot(appState);
-                var diff = diffStructureSnapshots(beforeSnap, afterSnap);
-                var outboxOps = await idbGetOutboxOps();
-                if (diff.anyLoss) {
-                    if (outboxOps.length === 0) {
-                        replaceLocalStateWithCloud(cloud);
-                    } else {
-                        console.warn('bootSyncManager: structure loss detected with pending outbox, keeping local');
-                        appState.meta = appState.meta || {};
-                        appState.meta.lastSyncedAt = new Date().toISOString();
-                        appState.meta.lastServerRevision = cloud.meta.lastServerRevision || appState.meta.lastServerRevision || 0;
-                        saveStateToLocalStorage();
-                        replayOutboxOnTop(outboxOps);
-                        await flushOutbox();
-                    }
-                } else {
-                    appState.meta = appState.meta || {};
+                // Merge: apply canonical snapshot, then push pending ops
+                mergeCanonicalIntoLocal(pullResult.snapshot);
+                saveStateToLocalStorage();
+
+                // Step 2: Push pending outbox ops
+                var pushResult = await syncPush();
+                if (pushResult && pushResult.success) {
+                    await processPushResults(pushResult);
                     appState.meta.lastSyncedAt = new Date().toISOString();
-                    appState.meta.lastServerRevision = cloud.meta.lastServerRevision || appState.meta.lastServerRevision || 0;
-                    saveStateToLocalStorage();
-                    if (outboxOps.length > 0) {
-                        replayOutboxOnTop(outboxOps);
-                        await flushOutbox();
+                    if (pushResult.serverSeq) {
+                        appState.meta.lastServerRevision = pushResult.serverSeq;
                     }
+
+                    // Re-project: apply remaining pending ops on top
+                    var proj = await buildProjectedStateV3();
+                    if (proj && proj.projected) {
+                        applyProjectedToAppState(proj.projected);
+                    }
+                    saveStateToLocalStorage();
                 }
             }
 
             _syncLastFailed = false;
             _syncConflict = false;
             _bootSyncDone = true;
+            window._bootSyncDone = true;
             if (_bootSyncRetryTimer) { clearTimeout(_bootSyncRetryTimer); _bootSyncRetryTimer = null; }
             hideOfflineBanner();
             showToast(t('syncOk'), 'success');
+
+        } else if (pullResult.success && !pullResult.initialized) {
+            // Server is uninitialized — show bootstrap UI
+            _syncState.cloudInitialized = false;
+            _syncLastFailed = false;
+            _bootSyncDone = true;
+            window._bootSyncDone = true;
+            hideOfflineBanner();
+            showBootstrapUI();
         } else {
-            throw new Error('Empty cloud response');
+            var errMsg = (pullResult && pullResult.message) || 'Cannot reach cloud';
+            if (pullResult && pullResult.errorCode === 'PROTOCOL_VERSION_MISMATCH') {
+                _syncState.protocolMismatch = true;
+                errMsg = 'Protocol version mismatch — please update the app';
+            }
+            throw new Error(errMsg);
         }
+
     } catch (e) {
-        console.error('[bootSyncManager] Failed:', e);
+        console.error('[bootSyncManagerV3] Failed:', e);
         _syncLastFailed = true;
         showOfflineBanner(e.message || 'Cannot reach cloud');
         scheduleBootRetry();
@@ -2400,6 +2404,94 @@ async function bootSyncManager(opts) {
     }
 }
 
+// Legacy redirect
+async function bootSyncManager(opts) { return bootSyncManagerV3(opts); }
+
+function buildProjectedStateV3() {
+    return Promise.all([
+        getCanonicalSnapshot(),
+        idbGetOutboxOps(),
+        idbGetConflicts()
+    ]).then(function(results) {
+        var canonical = results[0] || emptyCanonicalSnapshot();
+        var pendingOps = results[1] || [];
+        var conflicts = results[2] || [];
+        var projection = projectState(canonical, pendingOps);
+        return {
+            canonical: canonical,
+            projected: projection.projected,
+            pendingCount: pendingOps.length,
+            conflictCount: projection.conflictCount,
+            conflicts: conflicts
+        };
+    });
+}
+
+function mergeCanonicalIntoLocal(snap) {
+    // Apply canonical snapshot fields to appState
+    // Preserve device-local state (currentUser, language, etc.)
+    var localDeviceId = appState.meta && appState.meta.deviceId ? appState.meta.deviceId : getDeviceId();
+    var localCurrentUser = appState.currentUser || 'Default';
+    var localLanguage = appState.language || 'en';
+    var localCatPath = appState.selectedCategoryNodePath;
+    var localActiveNode = appState.activeMappingNode;
+
+    appState.segments = deepCloneJsonSafe(snap.segments || {});
+    appState.categories = deepCloneJsonSafe(snap.categories || {});
+    appState.coordinates = deepCloneJsonSafe(snap.coordinates || {});
+    appState.inventory = deepCloneJsonSafe(snap.inventory || []);
+    appState.users = deepCloneJsonSafe(snap.users || ['Default']);
+    appState.userEmails = deepCloneJsonSafe(snap.userEmails || {});
+    appState.reminderDays = snap.reminderDays || 30;
+    appState.spatialBackgroundImage = snap.spatialBackgroundImage || null;
+
+    // Preserve device-local state
+    appState.meta = appState.meta || {};
+    appState.meta.deviceId = localDeviceId;
+    appState.meta.lastServerRevision = (snap.meta && snap.meta.serverSeq) || 0;
+    appState.currentUser = localCurrentUser;
+    appState.language = localLanguage;
+    appState.selectedCategoryNodePath = localCatPath;
+    appState.activeMappingNode = localActiveNode;
+
+    window._appStateRef = appState;
+    normalizeAllItemImageFields();
+}
+
+function applyProjectedToAppState(projected) {
+    if (!projected) return;
+    var localDeviceId = appState.meta && appState.meta.deviceId ? appState.meta.deviceId : getDeviceId();
+    var localCurrentUser = appState.currentUser || 'Default';
+    var localLanguage = appState.language || 'en';
+    var localCatPath = appState.selectedCategoryNodePath;
+    var localActiveNode = appState.activeMappingNode;
+
+    appState.segments = deepCloneJsonSafe(projected.segments || {});
+    appState.categories = deepCloneJsonSafe(projected.categories || {});
+    appState.coordinates = deepCloneJsonSafe(projected.coordinates || {});
+    appState.inventory = deepCloneJsonSafe(projected.inventory || []);
+    appState.users = deepCloneJsonSafe(projected.users || ['Default']);
+    appState.userEmails = deepCloneJsonSafe(projected.userEmails || {});
+    appState.reminderDays = projected.reminderDays || 30;
+    appState.spatialBackgroundImage = projected.spatialBackgroundImage || null;
+
+    appState.meta = appState.meta || {};
+    appState.meta.deviceId = localDeviceId;
+    appState.currentUser = localCurrentUser;
+    appState.language = localLanguage;
+    appState.selectedCategoryNodePath = localCatPath;
+    appState.activeMappingNode = localActiveNode;
+
+    window._appStateRef = appState;
+    normalizeAllItemImageFields();
+}
+
+function showBootstrapUI() {
+    // Show explicit bootstrap decision
+    showToast('Cloud storage is empty. Use Settings to upload this device.', 'warning');
+    _syncState.cloudInitialized = false;
+}
+
 function scheduleBootRetry() {
     if (_bootSyncRetryTimer) clearTimeout(_bootSyncRetryTimer);
     _bootSyncRetryTimer = setTimeout(function() {
@@ -2411,7 +2503,7 @@ function replayOutboxOnTop(outboxOps) {
     if (!outboxOps || !outboxOps.length) return;
     outboxOps.sort(function(a, b) { return (a.createdAt || '').localeCompare(b.createdAt || ''); });
     outboxOps.forEach(function(op) {
-        applyClientOperation(appState, op);
+        applyOpToState(appState, op);
     });
 }
 
@@ -2448,20 +2540,20 @@ window.addEventListener('DOMContentLoaded', () => {
         installMapDragListeners();
         updateLoginSyncStatus();
 
-        // Online/offline/resume listeners for retry
+        // Online/offline/resume listeners for retry (v3)
         window.addEventListener('online', function() {
-            if (!_bootSyncDone && !_syncInProgress) {
-                bootSyncManager();
+            if (!window._bootSyncDone && !_syncInProgress) {
+                bootSyncManagerV3();
             } else {
-                flushOutbox();
+                flushOutboxV3();
             }
         });
         document.addEventListener('visibilitychange', function() {
             if (document.visibilityState === 'visible') {
-                if (!_bootSyncDone && !_syncInProgress) {
-                    bootSyncManager();
+                if (!window._bootSyncDone && !_syncInProgress) {
+                    bootSyncManagerV3();
                 } else if (!_syncInProgress) {
-                    flushOutbox();
+                    flushOutboxV3();
                 }
             }
         });
@@ -2478,11 +2570,12 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 window.addEventListener('beforeunload', function(e) {
-    var hasPendingSync = appState.syncQueue && appState.syncQueue.length > 0;
-    if (_formDirty || hasPendingSync) {
-        e.preventDefault();
-        e.returnValue = '';
-    }
+    idbGetPendingOutboxCount().then(function(count) {
+        if (_formDirty || count > 0) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    }).catch(function() {});
 });
 
 document.addEventListener('keydown', function(e) {
@@ -2572,51 +2665,55 @@ function validateSystemAccess() {
 }
 
 function getSyncStateSnapshot() {
-    var pending = (appState.syncQueue && appState.syncQueue.length) || 0;
-    var hasStructureDraft = !!((typeof _classesDirty !== 'undefined' && _classesDirty) || (typeof _locationsDirty !== 'undefined' && _locationsDirty));
-    if (_syncInProgress || _outboxFlushInProgress) return { state: 'syncing', pending: pending };
-    if (_syncConflict) return { state: 'conflict', pending: pending };
-    if (_syncLastFailed) return { state: 'offline', pending: pending };
-    if (pending > 0 || hasStructureDraft) return { state: 'pending', pending: pending + (hasStructureDraft ? 1 : 0) };
-    if (appState.meta.lastSyncedAt) return { state: 'synced', syncedAt: appState.meta.lastSyncedAt };
-    return { state: 'offline', pending: 0 };
+    // Synchronous wrapper for use in login screen
+    return getSyncStatusSummary();
 }
+
 function updateLoginSyncStatus() {
     var card = document.getElementById('loginSyncStatusCard');
     var text = document.getElementById('loginSyncStatusText');
     if (!card || !text) return;
 
-    var snap = getSyncStateSnapshot();
-    var msg = '';
-    card.className = 'bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-3 text-center';
+    getSyncStatusSummary().then(function(summary) {
+        var msg = '';
+        card.className = 'bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-3 text-center';
 
-    switch (snap.state) {
-        case 'syncing':
-            card.className = 'bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3 text-center';
-            msg = 'Syncing\u2026';
-            break;
-        case 'offline':
-            card.className = 'bg-slate-100 border border-slate-200 rounded-lg px-3 py-2 mb-3 text-center';
-            msg = 'Offline \u2014 showing last saved data';
-            break;
-        case 'conflict':
-            card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center cursor-pointer';
-            msg = 'Conflict \u2014 tap to resolve';
-            card.onclick = function() { bootSyncManager({ forceCloudWins: true }); };
-            break;
-        case 'pending':
-            card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center';
-            msg = snap.pending + ' changes waiting to sync';
-            break;
-        case 'synced':
-            card.className = 'bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mb-3 text-center';
-            msg = 'This device is using the latest cloud inventory';
-            break;
-        default:
-            msg = 'Saved locally';
-            break;
-    }
-    text.innerText = msg;
+        switch (summary.state) {
+            case 'syncing':
+                card.className = 'bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3 text-center';
+                msg = 'Syncing\u2026';
+                break;
+            case 'conflict':
+                card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center cursor-pointer';
+                msg = summary.conflicts + ' conflict(s) \u2014 tap to resolve';
+                card.onclick = function() { bootSyncManagerV3({ forceCloudWins: true }); };
+                break;
+            case 'pending':
+                card.className = 'bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-center';
+                msg = summary.pending + ' changes waiting to sync';
+                break;
+            case 'synced':
+                card.className = 'bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mb-3 text-center';
+                msg = 'This device is using the latest cloud inventory';
+                break;
+            case 'protocol_mismatch':
+                card.className = 'bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3 text-center';
+                msg = 'Update required \u2014 protocol mismatch';
+                break;
+            case 'cloud_uninitialized':
+                card.className = 'bg-slate-100 border border-slate-200 rounded-lg px-3 py-2 mb-3 text-center';
+                msg = 'Cloud is empty \u2014 upload from settings';
+                break;
+            case 'offline':
+            default:
+                card.className = 'bg-slate-100 border border-slate-200 rounded-lg px-3 py-2 mb-3 text-center';
+                msg = 'Offline \u2014 showing last saved data';
+                break;
+        }
+        text.innerText = msg;
+    }).catch(function() {
+        text.innerText = 'Saved locally';
+    });
 }
 
 function updateSyncCallToActionState() {
@@ -5966,40 +6063,17 @@ function commitCloudSystemCredentials() {
 }
 
 async function triggerSynchronousCloudBackupPush(baseRevision) {
-    const endpoint = localStorage.getItem('sys_gas_url');
-    const secret = localStorage.getItem('sys_api_pwd');
-    if (!endpoint) { return { success: false, error: 'No endpoint' }; }
-    try {
-        var opsToSend = deepCloneJsonSafe(appState.syncQueue || []);
-        var params = new URLSearchParams();
-        params.append('token', secret);
-        params.append('action', 'SYNC_PUSH');
-        params.append('operations', JSON.stringify(opsToSend));
-        params.append('clientRevision', String((appState.meta && appState.meta.lastServerRevision) || 0));
-        params.append('lastPulledServerSeq', String((appState.meta && appState.meta.lastPulledServerSeq) || 0));
-        params.append('deviceId', (appState.meta && appState.meta.deviceId) || getDeviceId());
-        params.append('bootstrapPayload', JSON.stringify(buildCloudSyncPayload(appState)));
-        if (baseRevision !== undefined && baseRevision !== null) params.append('baseRevision', String(baseRevision));
-        return fetch(endpoint, { method: 'POST', body: params })
-            .then(function(resp) { return resp.text(); })
-            .then(function(text) {
-                var result;
-                try { result = JSON.parse(text); } catch (e) { result = null; }
-                if (result && result.success) return result;
-                return { success: false, error: (result && result.error) || 'unknown', conflict: !!(result && result.conflict), conflicts: (result && result.conflicts) || [] };
-            })
-            .catch(function(e) { return { success: false, error: e.message }; });
-    } catch (e) {
-        return { success: false, error: e.message };
-    }
+    return syncPush().then(function(result) {
+        if (result && result.success) {
+            return processPushResults(result).then(function() { return result; });
+        }
+        return { success: false, error: (result && result.errorCode) || 'unknown' };
+    }).catch(function(e) { return { success: false, error: e.message }; });
 }
 async function triggerBackgroundSync() {
     var endpoint = localStorage.getItem('sys_gas_url');
     if (!endpoint) return;
-    setTimeout(function() {
-        if (_syncInProgress) return;
-        flushOutbox().catch(function() {});
-    }, 300);
+    triggerBackgroundSyncV3();
 }
 function buildSyncPayload() {
     return JSON.stringify(buildCloudSyncPayload(appState));
@@ -6328,21 +6402,17 @@ async function syncNow(opts) {
     var interactive = opts.interactive !== false;
     if (interactive) showToast('Syncing...', 'info');
     try {
-        await bootSyncManager();
-        await flushOutbox();
+        await bootSyncManagerV3();
+        await flushOutboxV3();
     } catch (e) {
         if (interactive) showToast('Sync failed.', 'error');
     }
 }
 function applyPushSuccess(interactive, pushedSnapshotVersion) {
     _syncInProgress = false; _syncLastFailed = false; _syncConflict = false;
-    appState.syncQueue = [];
-    appState.meta.lastPushedSnapshotVersion = pushedSnapshotVersion;
     appState.meta.lastSyncedAt = new Date().toISOString();
     saveStateToLocalStorage();
     updateSyncStatusBadge(); updateSyncBanner();
-    var bedroomCons = (appState.segments && appState.segments.Bedroom) ? Object.keys(appState.segments.Bedroom).join(',') : '(none)';
-    console.log('[applyPushSuccess] Bedroom containers: [' + bedroomCons + ']');
     syncUIComponents();
     triggerReminderCheckThrottled();
     if (interactive) showToast('Synced \u2014 ' + (appState.inventory || []).length + ' items', 'success');
@@ -6513,7 +6583,9 @@ function updateSyncDebugOverlay(stage, snap, extra) {
             (snap.coordCount !== undefined ? snap.coordCount : '?'));
     }
     lines.push('rev: ' + (appState.meta.lastServerRevision || 0));
-    lines.push('queue: ' + (appState.syncQueue || []).length);
+    idbGetPendingOutboxCount().then(function(qLen) {
+        if (qLen > 0) lines.push('pending: ' + qLen);
+    }).catch(function(){});
     if (extra) lines.push(extra);
     el.innerHTML = lines.join('\n');
 }
@@ -6531,19 +6603,14 @@ function applyMergedState(mergedState, revision) {
     if (candidate.meta && revision) candidate.meta.lastServerRevision = revision;
     candidate.meta.lastSyncedAt = new Date().toISOString();
     candidate.meta.deviceId = appState.meta.deviceId || getDeviceId();
-    candidate.syncQueue = []; // Clear only after push success
 
-    // Validate: merged must contain all local segments (minus explicit deletes)
+    // Validate: merged must contain all local segments
     var localSnap = collectStructureSnapshot(appState);
     var candSnap = collectStructureSnapshot(candidate);
-    var allowedLoss = collectExpectedDeletedPathsFromSyncQueue(appState.syncQueue);
     var diff = diffStructureSnapshots(localSnap, candSnap);
-    var unexpectedLoss = (diff.lostSegPaths || []).filter(function(p) {
-        return allowedLoss.indexOf(p) === -1;
-    });
-    if (unexpectedLoss.length > 0) {
-        console.error('[applyMergedState] BLOCKED: would lose segments: ' + unexpectedLoss.join('; '));
-        updateSyncDebugOverlay('BLOCKED', candSnap, 'would lose: ' + unexpectedLoss.join('; '));
+    if (diff.anyLoss) {
+        console.error('[applyMergedState] BLOCKED: would lose structure');
+        updateSyncDebugOverlay('BLOCKED', candSnap, 'would lose structure');
         return false;
     }
 
@@ -6560,53 +6627,31 @@ function applyMergedState(mergedState, revision) {
     appState.language = candidate.language;
     appState.spatialBackgroundImage = candidate.spatialBackgroundImage;
     appState.meta = candidate.meta;
-    appState.syncQueue = candidate.syncQueue;
+    window._appStateRef = appState;
     saveStateToLocalStorage();
     return true;
 }
 
 function applySyncSuccess(interactive, cloudState) {
-    var segsBefore = Object.keys(appState.segments || {}).length;
-    var catsBefore = countCategoryKeys(appState.categories);
-
     _syncInProgress = false;
     _syncLastFailed = false;
     _syncConflict = false;
-    appState.syncQueue = [];
     saveStateToLocalStorage();
     updateSyncStatusBadge();
     updateSyncBanner();
     syncUIComponents();
-
-    var segsAfter = Object.keys(appState.segments || {}).length;
-    var catsAfter = countCategoryKeys(appState.categories);
-    if (segsAfter < segsBefore || catsAfter < catsBefore) {
-        console.error('[applySyncSuccess] STRUCTURAL DATA LOSS: segs ' + segsBefore + '→' + segsAfter + ' cats ' + catsBefore + '→' + catsAfter);
-    }
-    console.log('[applySyncSuccess] segs=' + segsAfter + ' cats=' + catsAfter +
-        ' rev=' + (appState.meta.lastServerRevision || 0));
-
     triggerReminderCheckThrottled();
-    if (interactive) showToast('Synced \u2014 ' + ((cloudState && cloudState.inventory || []).length) + ' items', 'success');
+    if (interactive) showToast('Synced \u2014 ' + (appState.inventory || []).length + ' items', 'success');
 }
 
 async function getCloudState(secret, endpoint) {
-    try {
-        var params = 'token=' + encodeURIComponent(secret) + '&action=SYNC_PULL';
-        var resp = await fetch(endpoint + '?' + params, { method: 'GET' });
-        var json = await resp.json();
-        if (json && json.segments) {
-            json.meta = json.meta || {};
-            json.meta.lastServerRevision = json.meta.lastServerRevision || json.meta.latestServerSeq || 0;
-            json.meta.lastPulledServerSeq = json.meta.latestServerSeq || json.meta.lastPulledServerSeq || 0;
-            json.meta.structureVersion = json.meta.structureVersion || 0;
-            json.meta.categoryVersion = json.meta.categoryVersion || 0;
-            return json;
+    // Use sync-core syncPull
+    return syncPull().then(function(result) {
+        if (result && result.success && result.initialized && result.snapshot) {
+            return result.snapshot;
         }
         return null;
-    } catch (e) {
-        return null;
-    }
+    }).catch(function() { return null; });
 }
 /**
  * Merges cloud payload into appState in-memory (does NOT save to localStorage or update UI).
@@ -7092,22 +7137,13 @@ function saveStateToLocalStorage() {
 }
 
 function saveStateWithRecovery() {
-    var origQueue = (appState.syncQueue || []).slice();
-    var recovered = false;
-
-    if (origQueue.length > 10) {
-        appState.syncQueue = origQueue.slice(-10);
-    }
-
     try {
         localStorage.setItem('hk_inventory_state', JSON.stringify(appState));
-        recovered = true;
-        console.warn('[saveState] Recovery: trimmed sync queue ' + origQueue.length + '→' + (appState.syncQueue || []).length);
+        return true;
     } catch (e) {
-        appState.syncQueue = origQueue;
+        console.error('[saveState] Failed to save state (quota exceeded?)', e.message);
+        return false;
     }
-
-    return recovered;
 }
 
 function diagnoseStorage() {
@@ -7116,13 +7152,13 @@ function diagnoseStorage() {
     for (var i = 0; i < localStorage.length; i++) {
         var k = localStorage.key(i);
         var v = localStorage.getItem(k);
-        totalBytes += v ? v.length * 2 : 0; // UTF-16
+        totalBytes += v ? v.length * 2 : 0;
         keys.push({ key: k, bytes: v ? v.length * 2 : 0 });
     }
     var stateStr = localStorage.getItem('hk_inventory_state') || '';
     var stateBytes = stateStr.length * 2;
     var inventoryCount = appState.inventory.length;
-    var queueLen = (appState.syncQueue || []).length;
+    idbGetPendingOutboxCount().then(function(queueLen) {
     var idbImageCount = 0;
     var idbThumbBytes = 0;
     var idbFullBytes = 0;
@@ -7164,7 +7200,7 @@ function diagnoseStorage() {
     }
     report.push('');
     report.push('SUGGESTIONS:');
-    report.push('  - Run compactLocalStorage() to trim sync queue');
+    report.push('  - Run compactLocalStorage() to trim storage');
     report.push('  - Call cleanupOrphanedImages() to free unreferenced blobs');
     report.push('  - Remove unused items');
     report.push('  - Purge Local Cache as last resort (also wipes IndexedDB)');
@@ -7174,16 +7210,13 @@ function diagnoseStorage() {
 
 function compactLocalStorage() {
     var before = (localStorage.getItem('hk_inventory_state') || '').length * 2;
-    var origQueue = (appState.syncQueue || []).slice();
-    appState.syncQueue = (appState.syncQueue || []).slice(-10);
     try {
         localStorage.setItem('hk_inventory_state', JSON.stringify(appState));
         var after = (localStorage.getItem('hk_inventory_state') || '').length * 2;
         var saved = ((before - after) / 1024).toFixed(1);
-        console.log('[compact] Freed ' + saved + ' KB (sync queue: ' + origQueue.length + '→' + appState.syncQueue.length + ')');
-        showToast('Storage compacted. Freed ~' + saved + ' KB. Sync queue trimmed to last 10.', 'success');
+        console.log('[compact] Freed ' + saved + ' KB');
+        showToast('Storage compacted. Freed ~' + saved + ' KB.', 'success');
     } catch (e) {
-        appState.syncQueue = origQueue;
         console.error('[compact] Failed:', e);
         showToast('Compaction failed. Try Wipe Local Cache.', 'error');
     }
@@ -7239,15 +7272,7 @@ function migrateLegacyState(state) {
         migrated = true;
     }
 
-    // Ensure syncQueue
-    if (!state.syncQueue || !Array.isArray(state.syncQueue)) {
-        state.syncQueue = [];
-        migrated = true;
-    }
-    if (!state.syncConflicts || !Array.isArray(state.syncConflicts)) {
-        state.syncConflicts = [];
-        migrated = true;
-    }
+    // syncQueue and syncConflicts removed in v3 — IndexedDB outbox replaces them
 
     // Migrate segments: array of strings -> object of arrays
     for (var seg in state.segments) {

@@ -131,6 +131,18 @@ Each stock item carries a `stockEntries` array:
 }
 ```
 
+### Sync Status States
+
+| State | Meaning |
+|-------|---------|
+| `Synced` | No pending operations, no conflicts, last sync succeeded |
+| `Changes waiting` | Outbox has pending operations not yet uploaded |
+| `Syncing` | Active sync request in progress |
+| `Conflicts need attention` | Operations returned VERSION_CONFLICT — user must resolve |
+| `Offline` | Network error or retryable failure (will auto-retry) |
+| `Update required` | Protocol version mismatch — update the app |
+| `Cloud not initialized` | Server has no data — upload from Settings |
+
 ### Key Rules
 
 | Concept | Behavior |
@@ -177,9 +189,10 @@ Old stock items with single-location fields (`segment`, `container`, `subContain
 | `remarks` | string | Annotations |
 | `deletedAt` | string | ISO timestamp if soft-deleted, else `null` |
 | `createdAt` | string | ISO creation timestamp |
-| `updatedAt` | string | ISO last-update timestamp |
-| `version` | number | Incrementing tiebreaker version for sync conflict resolution |
-| `lastModifiedBy` | string | Device ID of last modifier |
+| `updatedAt` | string | ISO last-update timestamp (server-owned) |
+| `version` | number | Entity version for optimistic concurrency control |
+| `createdAt` | string | Server-assigned ISO creation timestamp |
+| `deletedAt` | string | Server-assigned ISO tombstone timestamp if soft-deleted |
 
 ### Segment Hierarchy
 
@@ -211,20 +224,56 @@ Old stock items with single-location fields (`segment`, `container`, `subContain
 
 ---
 
-## Google Sheets Sync Setup
+## Google Sheets Sync Setup (Protocol v3)
 
-The app pushes and pulls inventory state to a Google Apps Script web app. To configure:
+The app uses an explicit protocol-v3 synchronization protocol with Google Apps Script.
 
-1. Deploy a Google Apps Script web app that accepts `?token=...&action=SYNC_PULL` (GET) and `token=...&action=SYNC_PUSH&payload=...` (POST).
-2. Copy the deployment URL.
-3. In the app, open the **Cloud Engine** tab (desktop: nav button; mobile: More → Cloud).
-4. Paste the URL into **Google Apps Script Web App Deployment Endpoint URL**.
-5. Set a **Data Stream Transceiver Key** (shared secret between app and GAS).
-6. Press **Commit Network Profile Changes**.
+### Deploy the Backend
 
-The app uses timestamp-first conflict resolution (`deletedAt` → `updatedAt` → `timestamp` → `createdAt`) with `version` as a tiebreaker. Each item is resolved independently — a newer local record is never overwritten by an older cloud record, and vice versa. Deletions propagate only when the delete timestamp is newer than the other side's last update.
+1. Create a new Google Apps Script project.
+2. Copy the contents of `GoogleSheetSync.gs` into the editor.
+3. Set up **Script Properties**:
+   - Go to **File > Project Properties > Script Properties**
+   - Add property `SYNC_SECRET_TOKEN` with a strong random value (e.g. 256-bit hex).
+   - **Do NOT use the default `secretToken123`** — the server falls back to this only for migration.
+4. Deploy as a Web App: **Publish > Deploy as web app**
+   - Execute as: **Me**
+   - Access: **Anyone** (authentication is token-based, not Google account)
+5. Copy the deployment URL.
 
-> **Security note**: the GAS endpoint URL and API token are stored in `localStorage`. Never commit them to version control or share them publicly. This README intentionally omits real credentials.
+### Migrate Legacy Data
+
+If you have existing data in a legacy `Data` sheet, run `migrateLegacyDataToV3()` once from the Apps Script editor.
+This preserves a backup in `Data_LEGACY_BACKUP`, normalizes entity versions, and creates the new `Meta`/`Data_A`/`Data_B` sheets.
+
+### Configure the App
+
+1. Open the app and navigate to the **Cloud Engine** tab (desktop: nav; mobile: More → Cloud).
+2. Paste the deployment URL into **Google Apps Script Web App Deployment Endpoint URL**.
+3. Set **Data Stream Transceiver Key** (must match `SYNC_SECRET_TOKEN` on the server).
+4. Press **Commit Network Profile Changes**.
+
+### Sync Protocol
+
+- **Protocol version 3** replaces the legacy snapshot/operation protocol.
+- Operations are versioned by entity (item, stock entry, locations document, categories document, settings).
+- `LockService` serializes all server writes — concurrent pushes do not overwrite each other.
+- Operations are deduplicated by immutable `opId` — safe to retry after network timeout.
+- Stock quantities are changed only by explicit delta operations — stale metadata updates cannot overwrite stock levels.
+- Conflicts use optimistic concurrency control (entity versions), not client timestamps.
+
+### Sheets Layout
+
+| Sheet | Purpose |
+|-------|---------|
+| `Meta` | Server state: activeSlot, serverSeq, checksum, versions |
+| `Data_A` / `Data_B` | Double-buffered canonical snapshot (active slot alternates) |
+| `Ops` | Append-only operation log with per-op status and content hash |
+| `SyncAudit` | Per-request audit trail |
+| `DeadLetters` | Malformed or rejected operations |
+| `Reminders` | Server-owned reminder deduplication records |
+
+> **Security note**: the GAS endpoint URL and API token are stored in `localStorage`. Never commit them to version control or share them publicly. Anyone with the deployment URL and token can access the inventory API. Store the token in **Script Properties**, not in source code.
 
 ---
 
