@@ -1320,35 +1320,15 @@ function getItemPhotosFolder_() {
   return DriveApp.createFolder('ItemPhotos');
 }
 
-// ─── SEND_REMINDERS (unchanged from legacy) ────────────────────────────────
+// ─── SEND_REMINDERS (delegates to the built-in deduplicating engine) ────────
 
 function handleSendReminders_(params) {
-  var rawPayload = (params.payload || '').trim();
-  if (!rawPayload) return jsonResponse_({ success: false, error: 'Missing payload.' });
-
-  var groups;
-  try { groups = JSON.parse(rawPayload); } catch(err) {
-    return jsonResponse_({ success: false, error: 'Invalid payload JSON: ' + err.message });
+  try {
+    checkAndRemind();
+    return jsonResponse_({ success: true, message: 'Reminder check completed via built-in deduplicating engine.' });
+  } catch(err) {
+    return jsonResponse_({ success: false, error: err.toString() });
   }
-  if (!Array.isArray(groups) || groups.length === 0) {
-    return jsonResponse_({ success: true, sent: 0, recipients: 0 });
-  }
-
-  var tz = Session.getScriptTimeZone();
-  var todayStr = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
-  var sentCount = 0, recipientCount = 0, errors = [];
-
-  groups.forEach(function(group) {
-    var email = group.email, nOwner = group.owner || '', items = group.items || [];
-    if (!email || items.length === 0) return;
-    try {
-      var htmlBody = buildReminderEmailHtml_(nOwner, items, todayStr);
-      MailApp.sendEmail({ to: email, subject: 'Inventory Reminder: Expiry / Low Stock Alerts', htmlBody: htmlBody });
-      sentCount++; recipientCount++;
-    } catch(err) { errors.push('Failed for ' + email + ': ' + err.message); }
-  });
-
-  return jsonResponse_({ success: true, sent: sentCount, recipients: recipientCount, errors: errors.length > 0 ? errors : undefined });
 }
 
 function buildReminderEmailHtml_(ownerName, items, todayStr) {
@@ -1487,7 +1467,8 @@ function sendExpiryReminders_(inventory, reminderDays, userEmails) {
     var expiryDates = getItemExpiryDates_(item);
     expiryDates.forEach(function(ed) {
       if (ed.expiryDate >= todayStr && ed.expiryDate <= cutoffStr) {
-        expiring.push({ item: item, expiryDate: ed.expiryDate, locationLabel: ed.locationLabel });
+        var daysLeft = Math.floor((new Date(ed.expiryDate).getTime() - now.getTime()) / 86400000);
+        expiring.push({ item: item, expiryDate: ed.expiryDate, locationLabel: ed.locationLabel, daysLeft: daysLeft });
       }
     });
   });
@@ -1519,14 +1500,25 @@ function sendExpiryReminders_(inventory, reminderDays, userEmails) {
   var newReminders = [];
   Object.keys(byOwner).forEach(function(toEmail) {
     var recs = byOwner[toEmail];
-    var itemsList = recs.map(function(rec) {
-      var it = rec.item;
-      var key = it.id + '|' + rec.expiryDate;
+    var items = recs.map(function(rec) {
+      var key = rec.item.id + '|' + rec.expiryDate;
       if (rec.locationLabel) key += '|' + rec.locationLabel;
-      newReminders.push([key, 'expiry', todayStr2, it.name || '']);
-      return '- ' + (it.name || '') + ' | expiry: ' + rec.expiryDate;
-    }).join('\n');
-    try { MailApp.sendEmail(toEmail, 'Expiry Reminder: ' + recs.length + ' item(s)', itemsList); } catch(ex) {}
+      newReminders.push([key, 'expiry', todayStr2, rec.item.name || '']);
+      return {
+        name: rec.item.name || '',
+        itemId: rec.item.id || '',
+        category: rec.item.category || '',
+        reminderTypes: ['expiry'],
+        expiryDetails: [{ locationLabel: rec.locationLabel || '\u2014', expiryDate: rec.expiryDate, daysLeft: rec.daysLeft }],
+        remarks: rec.item.remarks || '',
+        quantity: rec.item.quantity || 0,
+        minQuantity: rec.item.minQuantity || 0,
+        uom: rec.item.uom || 'pcs'
+      };
+    });
+    var ownerName = (recs[0] && recs[0].item && recs[0].item.owner) || '';
+    var htmlBody = buildReminderEmailHtml_(ownerName, items, todayStr2);
+    try { MailApp.sendEmail({ to: toEmail, subject: 'Inventory Reminder: Expiry / Low Stock Alerts', htmlBody: htmlBody }); } catch(ex) {}
   });
   if (newReminders.length) saveRemindedRecords_(newReminders);
 }
@@ -1570,12 +1562,24 @@ function sendLowStockReminders_(inventory, userEmails) {
   var newReminders = [];
   Object.keys(byOwner).forEach(function(toEmail) {
     var items = byOwner[toEmail];
-    var itemsList = items.map(function(item) {
+    var formattedItems = items.map(function(item) {
       var key = item.id + '|low';
       newReminders.push([key, 'stock', todayStr, item.name || '']);
-      return '- ' + (item.name || '') + ' | stock: ' + sumStockQuantity_(item);
-    }).join('\n');
-    try { MailApp.sendEmail(toEmail, 'Low Stock Alert: ' + items.length + ' item(s)', itemsList); } catch(ex) {}
+      return {
+        name: item.name || '',
+        itemId: item.id || '',
+        category: item.category || '',
+        reminderTypes: ['low_stock'],
+        expiryDetails: [],
+        quantity: sumStockQuantity_(item),
+        minQuantity: Number(item.minQuantity || 0),
+        uom: item.uom || 'pcs',
+        remarks: item.remarks || ''
+      };
+    });
+    var ownerName = (items[0] && items[0].owner) || '';
+    var htmlBody = buildReminderEmailHtml_(ownerName, formattedItems, todayStr);
+    try { MailApp.sendEmail({ to: toEmail, subject: 'Inventory Reminder: Expiry / Low Stock Alerts', htmlBody: htmlBody }); } catch(ex) {}
   });
   if (newReminders.length) saveRemindedRecords_(newReminders);
 }
